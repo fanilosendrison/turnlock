@@ -6,7 +6,7 @@ import {
 	RunLockedError,
 } from "../../src/index";
 
-describe.skip("[GREEN-L1] error classes (C-ER-01..03)", () => {
+describe("[GREEN-L1] error classes (C-ER-01..03)", () => {
 	test("C-ER-01 | RunLockedError public props", () => {
 		const err = new RunLockedError("x", {
 			ownerPid: 12345,

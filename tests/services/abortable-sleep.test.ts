@@ -33,7 +33,7 @@ describe("abortableSleep (T-AS-01..05)", () => {
 });
 
 describe("abortableSleep properties (P-AS-a/b)", () => {
-	test.skip("[GREEN-L1] P-AS-a | no timer leak after resolve/reject (stub)", async () => {
+	test("[GREEN-L1] P-AS-a | no timer leak after resolve/reject (stub)", async () => {
 		const c = new AbortController();
 		const pre = process.listenerCount("beforeExit");
 		await abortableSleep(1, c.signal).catch(() => {});

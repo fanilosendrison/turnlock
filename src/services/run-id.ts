@@ -1,3 +1,5 @@
+import { ulid } from "ulid";
+
 export function generateRunId(): string {
-	throw new Error("Not implemented");
+	return ulid();
 }

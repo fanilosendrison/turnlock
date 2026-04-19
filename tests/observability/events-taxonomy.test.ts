@@ -142,7 +142,7 @@ function sampleEvents(): Record<string, OrchestratorEvent> {
 	};
 }
 
-describe.skip("[GREEN-L1] events taxonomy (T-OB-01..11)", () => {
+describe("[GREEN-L1] events taxonomy (T-OB-01..11)", () => {
 	const events = sampleEvents();
 	for (const [type, fields] of Object.entries(requiredFields)) {
 		test(`T-OB-${type} | ${type} has required fields`, () => {
@@ -154,7 +154,7 @@ describe.skip("[GREEN-L1] events taxonomy (T-OB-01..11)", () => {
 	}
 });
 
-describe.skip("[GREEN-L1] events closed taxonomy (T-OB-12..13)", () => {
+describe("[GREEN-L1] events closed taxonomy (T-OB-12..13)", () => {
 	test("T-OB-12 | eventType ∈ 11 known", () => {
 		const allowed = new Set(Object.keys(requiredFields));
 		for (const type of Object.keys(sampleEvents())) {
@@ -169,7 +169,7 @@ describe.skip("[GREEN-L1] events closed taxonomy (T-OB-12..13)", () => {
 	});
 });
 
-describe.skip("[GREEN-L1] events properties (P-OB-a..c)", () => {
+describe("[GREEN-L1] events properties (P-OB-a..c)", () => {
 	test("P-OB-a | JSON serializable", () => {
 		for (const ev of Object.values(sampleEvents())) {
 			expect(() => JSON.stringify(ev)).not.toThrow();

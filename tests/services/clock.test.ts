@@ -20,7 +20,7 @@ describe("clock interface (T-CK-01..04)", () => {
 	});
 });
 
-describe.skip("[GREEN-L1] mock clock (T-CK-05..08)", () => {
+describe("[GREEN-L1] mock clock (T-CK-05..08)", () => {
 	test("T-CK-05 | setWall returns set value", () => {
 		const mc = createMockClock();
 		mc.setWall("2026-04-19T12:00:00.000Z");
@@ -43,7 +43,7 @@ describe.skip("[GREEN-L1] mock clock (T-CK-05..08)", () => {
 	});
 });
 
-describe.skip("[GREEN-L1] clock properties (P-CK-a/b)", () => {
+describe("[GREEN-L1] clock properties (P-CK-a/b)", () => {
 	test("P-CK-a | mono cumulates advances", () => {
 		const mc = createMockClock(undefined, undefined, 0);
 		let total = 0;
