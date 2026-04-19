@@ -1,10 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ZodSchema } from "zod";
-import { agentBinding } from "../bindings/agent";
-import { agentBatchBinding } from "../bindings/agent-batch";
-import { skillBinding } from "../bindings/skill";
-import type { DelegationBinding, DelegationManifest } from "../bindings/types";
+import type { DelegationManifest } from "../bindings/types";
 import {
 	DEFAULT_BACKOFF_BASE_MS,
 	DEFAULT_MAX_ATTEMPTS,
@@ -42,19 +39,7 @@ import {
 	type LoadedResults,
 	writeFileSyncAtomic,
 } from "./context";
-
-function selectBinding(
-	kind: "skill" | "agent" | "agent-batch",
-): DelegationBinding<DelegationRequest> {
-	switch (kind) {
-		case "skill":
-			return skillBinding as DelegationBinding<DelegationRequest>;
-		case "agent":
-			return agentBinding as DelegationBinding<DelegationRequest>;
-		case "agent-batch":
-			return agentBatchBinding as DelegationBinding<DelegationRequest>;
-	}
-}
+import { reconstructManifest, selectBinding } from "./shared";
 
 function deepFreeze<T>(obj: T): T {
 	if (obj === null || typeof obj !== "object") return obj;
@@ -69,48 +54,6 @@ function deepFreeze<T>(obj: T): T {
 		}
 	}
 	return Object.freeze(obj);
-}
-
-function reconstructManifest(
-	old: DelegationManifest,
-	updates: {
-		attempt: number;
-		emittedAt: string;
-		emittedAtEpochMs: number;
-		deadlineAtEpochMs: number;
-		label: string;
-		runDir: string;
-	},
-): DelegationManifest {
-	const base: DelegationManifest = {
-		...old,
-		attempt: updates.attempt,
-		emittedAt: updates.emittedAt,
-		emittedAtEpochMs: updates.emittedAtEpochMs,
-		deadlineAtEpochMs: updates.deadlineAtEpochMs,
-	};
-	if (old.kind === "skill" || old.kind === "agent") {
-		return {
-			...base,
-			resultPath: path.join(
-				updates.runDir,
-				"results",
-				`${updates.label}-${updates.attempt}.json`,
-			),
-		};
-	}
-	return {
-		...base,
-		jobs: (old.jobs ?? []).map((j) => ({
-			...j,
-			resultPath: path.join(
-				updates.runDir,
-				"results",
-				`${updates.label}-${updates.attempt}`,
-				`${j.id}.json`,
-			),
-		})),
-	};
 }
 
 export async function executeRetryBranch<S extends object>(

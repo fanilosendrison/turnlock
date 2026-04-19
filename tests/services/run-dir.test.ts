@@ -63,7 +63,9 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			mkdirSync(base, { recursive: true });
 			const edge = join(base, "edge");
 			mkdirSync(edge);
-			touch(edge, 7);
+			// Use 6.999 days to avoid race between touch's Date.now() and
+			// cleanupOldRuns's Date.now() which can shift the threshold by a few ms.
+			touch(edge, 6.999);
 			cleanupOldRuns(dir, "orch", 7, "current");
 			expect(existsSync(edge)).toBe(true);
 		} finally {
