@@ -1,7 +1,7 @@
 ---
 id: NIB-T-CCOR
 type: nib-tddtests
-version: "1.0.0"
+version: "2.0.0"
 scope: cc-orchestrator-runtime
 status: approved
 consumers: [claude-code]
@@ -11,9 +11,16 @@ superseded_by: []
 # NIB-T-CCOR — TDD Tests Brief
 
 **Package** : `cc-orchestrator-runtime`
-**Statut** : v1.0 — éclatement RED, consommable par Claude Code
+**Statut** : v2.0 — séparation RED strict / GREEN Layer 1 companion (cf §0.4, NIB spec §2.3.1)
 **Source** : `docs/NX-CC-ORCHESTRATOR-RUNTIME.md` v0.8 (2026-04-19)
-**Date** : 2026-04-19
+**Date** : 2026-04-20
+
+**Changelog v1.0 → v2.0** :
+- Ajout §0.4 — règle de classification RED strict vs GREEN Layer 1 companion (amont : NIB spec §2.3.1 + §7.5)
+- Déplacés en §27.bis (GREEN-L1 companion, hors RED) : interface clock module (T-CK-01..04), event shape (T-OB-01..13), surface publique + constantes + typage + error kinds + error classes (C-GL-01..13, C-ER-01..03)
+- Retirés complètement du NIB-T : tests du `createMockClock` helper (T-CK-05..08, P-CK-a/b) — test-harness, pas runtime
+- Sections §27.1-§27.6 dépréciées en place avec pointeur vers §27.bis ; §27.7-§27.14 conservées en RED strict comme post-conditions transversales
+- §30 récap réécrit en 2 cohortes (~375 RED + ~33 GREEN-L1)
 
 ---
 
@@ -1653,6 +1660,61 @@ Référence : §5.3 (table canonique).
 
 ---
 
+## 27.bis GREEN Layer 1 companion (hors scope RED strict)
+
+**Référence normative** : §0.4 (classification), NIB spec §2.3.1 et §7.5.
+
+Cette section regroupe les vérifications **type-level / littérales / fixture-based** qui ne guident pas le RED mais doivent être exécutées **lorsque Layer 1 PUBLIC-API est implémenté** (premier palier du GREEN). Elles passent trivialement après `tsc --noEmit` + scaffolding des types et classes — leur valeur est de verrouiller le contrat de surface une fois la surface écrite.
+
+**Exécution** : ces tests vivent dans `tests/_green-layer-1/` (ou équivalent). Exclus du run RED initial via `test.skip("[GREEN-L1] ...")` ou un fichier glob pattern séparé. Décommentés / activés au moment de l'implémentation de Layer 1.
+
+**Contenu déplacé depuis** :
+
+### 27.bis.1 Interface du clock module (ex-§9.1)
+
+| ID | Propriété |
+| --- | --- |
+| T-CK-01 | `clock.nowWall()` retourne un `Date` |
+| T-CK-02 | `clock.nowWallIso()` retourne une string format ISO 8601 UTC |
+| T-CK-03 | `clock.nowEpochMs()` retourne un `number` entier ≥ 0 |
+| T-CK-04 | `clock.nowMono()` retourne un `number` ≥ 0 (monotonic) |
+
+### 27.bis.2 Forme des events (ex-§23.1, §23.2)
+
+`T-OB-01..13` — vérification de la shape de chaque `OrchestratorEvent` construit inline. Voir §23.1-§23.2 pour le détail des 13 vecteurs.
+
+Les **property tests P-OB-a/b/c** (§23.3) qui vérifient ces invariants sur des events **émis par le runtime** restent en RED strict — ils échouent si le runtime n'émet rien.
+
+### 27.bis.3 Surface publique exportée (ex-§27.1)
+
+`C-GL-01..04` — voir §27.1 pour le détail. Vérifications `module.exports` post-scaffold.
+
+### 27.bis.4 Constantes exportées (ex-§27.2)
+
+`C-GL-05..06` — `PROTOCOL_VERSION === 1`, `STATE_SCHEMA_VERSION === 1`.
+
+### 27.bis.5 Dépendances minimales (ex-§27.3)
+
+`C-GL-07..08` — inspection `package.json`.
+
+### 27.bis.6 Typage (ex-§27.4)
+
+`C-GL-09..11` — checks TS compile-time.
+
+### 27.bis.7 OrchestratorErrorKind fermé (ex-§27.5)
+
+`C-GL-12..13` — 11 valeurs littérales dans l'union.
+
+### 27.bis.8 Classes d'erreur — propriétés publiques (ex-§27.6)
+
+`C-ER-01..03` — `new RunLockedError(...).ownerPid`, etc.
+
+### 27.bis.9 Règle de consommation
+
+Ces tests sont **obligatoires** au moment où Layer 1 PUBLIC-API est implémenté (premier palier GREEN). Un consommateur Layer 2/3/4 ne doit pas construire au-dessus d'une surface non verrouillée par ces companions. En pratique : la CI a un run séparé `pnpm test:green-l1` qui passe dès que Layer 1 compile.
+
+---
+
 ## 28. Helpers de test
 
 Ce qui suit décrit les helpers à implémenter dans `tests/helpers/`. Ces helpers sont des **utilitaires de test**, pas du code de production — ils peuvent être écrits en parallèle des tests en RED.
@@ -1907,24 +1969,57 @@ Les fixtures ne contiennent **jamais** de données réelles de production. Toute
 
 ## 30. Total testable — récapitulatif
 
+**Deux cohortes distinctes** (cf §0.4) : RED strict vs GREEN Layer 1 companion.
+
+### 30.0 RED strict (doivent tous échouer avant implémentation runtime)
+
 | Catégorie | Compte approximatif |
 | --- | --- |
-| Acceptance tests (`T-`) — services transversaux (§2-§10) | ~80 |
+| Acceptance tests (`T-`) — services transversaux RED (§2-§8, §10) | ~72 (T-CK-01..04 retirés = §27.bis) |
 | Acceptance tests (`T-`) — lock (§11) | ~20 |
 | Acceptance tests (`T-`) — bindings (§12-§14) | ~20 |
 | Acceptance tests (`T-`) — engine initial + sous-cas (§15-§16) | ~55 |
 | Acceptance tests (`T-`) — engine resume + retry + isolation (§17-§19) | ~55 |
 | Acceptance tests (`T-`) — preflight + signals + composition (§20-§22) | ~35 |
 | Acceptance tests (`T-`) — temporal (§22.bis) | ~12 |
-| Acceptance tests (`T-`) — observabilité + PII (§23-§25) | ~27 |
+| Acceptance tests (`T-`) — observabilité PII + events.ndjson (§24-§25) | ~18 (T-OB-01..13 retirés = §27.bis) |
 | Property tests globaux (`P-NN`) | 30 (§26) |
-| Property tests locaux (`P-{trigramme}-{lettre}`) | ~35 |
-| Contract invariants (`C-`) | ~50 |
-| **Total** | **~419 tests** |
+| Property tests locaux (`P-{trigramme}-{lettre}`) | ~33 (P-CK-a/b supprimés) |
+| Contract invariants RED (`C-FC-*`, `C-OB-*`, `C-SI-*`, `C-MF-*`, `C-TM-*`) post-conditions transversales (§27.7-§27.14) | ~25 |
+| **Total RED strict** | **~375 tests** |
 
-Volume cohérent avec la surface du runtime (11 classes d'erreur, 4 actions protocole, 11 types d'events, 3 bindings, lock, deadline per-attempt, consumption exact-once, snapshot-authoritative, SIGKILL crash recovery, multi-delegation sequence, cumul temporel cross-reentry). Chaque sous-système et chaque invariant normatif du NX a son front de test adressable.
+**Garantie RED** : après scaffold de `tsc --noEmit` qui passe + exports de Layer 1, **100% de ces tests échouent**. Aucun n'est vacuously GREEN.
 
-Les chiffres sont des comptes au moment de l'éclatement RED ; des ajustements pendant GREEN (ajouts ciblés, regroupements parameterized) peuvent faire bouger le total dans les deux sens, sans changer la couverture du contrat observable.
+### 30.1 GREEN Layer 1 companion (hors scope RED, §27.bis)
+
+| Catégorie | Compte approximatif |
+| --- | --- |
+| Clock module interface (`T-CK-01..04`) | 4 |
+| Event shape + taxonomy closure (`T-OB-01..13`) | 13 |
+| Surface publique exportée (`C-GL-01..04`) | 4 |
+| Constantes (`C-GL-05..06`) | 2 |
+| Dépendances (`C-GL-07..08`) | 2 |
+| Typage (`C-GL-09..11`) | 3 |
+| Error kind union fermé (`C-GL-12..13`) | 2 |
+| Error class properties (`C-ER-01..03`) | 3 |
+| **Total GREEN L1 companion** | **~33 tests** |
+
+**Consommation** : décommentés / activés au moment de l'implémentation de Layer 1 PUBLIC-API. Exécutés via un run CI séparé (`pnpm test:green-l1`).
+
+### 30.2 Retirés complètement du NIB-T
+
+| Tests | Raison |
+| --- | --- |
+| `T-CK-05..08` + `P-CK-a`, `P-CK-b` | Testent `createMockClock` (test-harness), pas le runtime. |
+
+**Total retiré** : 6 tests (vs ~425 dans la v1.0 initiale du NIB-T).
+
+### 30.3 Volume global
+
+- **Total testable NIB-T v2.0** : ~375 RED + ~33 GREEN-L1 = **~408 tests**
+- **Delta vs v1.0** : -6 (mock self-tests retirés) + réclassification 33 en GREEN-L1
+
+Volume cohérent avec la surface du runtime. Chaque sous-système et chaque invariant normatif du NX a son front de test adressable. Les chiffres sont des comptes au moment de l'éclatement RED ; des ajustements pendant GREEN peuvent faire bouger le total sans changer la couverture du contrat observable.
 
 ### 30.1 Couverture des invariants normatifs du NX
 
