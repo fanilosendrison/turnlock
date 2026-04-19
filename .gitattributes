@@ -1,0 +1,105 @@
+# =============================================================================
+# .gitattributes — Line ending normalization & binary detection
+# =============================================================================
+
+# Auto-detect text files and normalize to LF on commit
+* text=auto eol=lf
+
+# ---------- Explicitly declare text files ----------
+*.md    text diff=markdown
+*.txt   text
+*.csv   text
+*.json  text
+*.xml   text
+*.yaml  text
+*.yml   text
+*.toml  text
+*.cfg   text
+*.ini   text
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# ---------- Source code ----------
+*.js    text
+*.ts    text
+*.jsx   text
+*.tsx   text
+*.py    text
+*.rb    text
+*.go    text
+*.rs    text
+*.java  text
+*.c     text
+*.h     text
+*.cpp   text
+*.hpp   text
+*.cs    text
+*.swift text
+*.kt    text
+*.php   text
+*.sql   text
+*.html  text diff=html
+*.css   text
+*.scss  text
+*.less  text
+
+# ---------- Config ----------
+*.env           text
+.gitattributes  text
+.gitignore      text
+.editorconfig   text
+Dockerfile      text
+Makefile        text
+*.mk            text
+
+# ---------- Binary files (no diff, no merge) ----------
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.svg   text
+*.webp  binary
+*.avif  binary
+
+*.zip   binary
+*.gz    binary
+*.tar   binary
+*.7z    binary
+*.bz2   binary
+*.rar   binary
+
+*.pdf   binary
+*.doc   binary
+*.docx  binary
+*.xls   binary
+*.xlsx  binary
+*.ppt   binary
+*.pptx  binary
+
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+*.eot   binary
+
+*.mp3   binary
+*.mp4   binary
+*.wav   binary
+*.avi   binary
+*.mov   binary
+*.webm  binary
+
+*.sqlite binary
+*.db    binary
+
+# ---------- Lock files (don't merge, use theirs) ----------
+package-lock.json   merge=ours
+yarn.lock           merge=ours
+pnpm-lock.yaml      merge=ours
+Cargo.lock          merge=ours
+poetry.lock         merge=ours
+Gemfile.lock        merge=ours

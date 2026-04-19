@@ -1,0 +1,83 @@
+# =============================================================================
+# .gitignore — Base template
+# Covers universally ignored files. Add language/framework-specific entries below.
+# Generator: https://www.toptal.com/developers/gitignore
+# =============================================================================
+
+# ---------- Environment & Secrets ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ---------- Dependencies ----------
+node_modules/
+venv/
+.venv/
+vendor/
+.bundle/
+
+# ---------- Build Artifacts ----------
+dist/
+build/
+out/
+target/
+*.pyc
+__pycache__/
+*.class
+*.o
+*.so
+*.dll
+
+# ---------- IDE & Editor ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/
+
+# ---------- OS ----------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ---------- Logs & Temp ----------
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# ---------- Coverage & Testing ----------
+coverage/
+.nyc_output/
+htmlcov/
+.coverage
+*.gcov
+
+# ---------- Stack-specific (add below) ----------
+
+# ---------- TypeScript / Bun / Node ----------
+*.tsbuildinfo
+.tsbuildinfo
+.turbo/
+.cache/
+.bun/
+
+# ---------- Local generated artifacts (tool outputs, not versioned) ----------
+STACK_EVAL.yaml
+LIBS_EVAL.yaml
+PROJECT_INDEX.md
+SPEC_MANIFEST.md
+.index-state.json
