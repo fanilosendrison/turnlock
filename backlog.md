@@ -1,10 +1,9 @@
 # Backlog
 
-Items triaged by loop-clean. Checked items are resolved.
+Items triaged by loop-clean. Resolved items archived in `backlog.archive.md`.
 
 ## 2026-04-20 loop-clean iter-0
 
-- [x] [major] `src/engine/dispatch-loop.ts` — file is 982 lines, exceeds 400-line threshold. Split into dispatch-loop.ts (core loop), dispatch-handlers.ts (delegate/done/fail handlers), phase-io.ts (PhaseIO builder). (structure)
 - [ ] [minor] `src/services/error-classifier.ts` — classify() missing explicit exhaustive default return after switch. Fragile if OrchestratorErrorKind extended. (correctness)
 - [ ] [minor] `src/services/state-io.ts:131` — readState() mutates parsedObj.data after Zod parse instead of reconstructing immutably. (correctness)
 - [ ] [info] `src/services/run-dir.ts:42` — cleanupOldRuns() uses fs.rmSync instead of trash. Acceptable for ephemeral run dir cleanup. (hygiene)
