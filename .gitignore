@@ -84,3 +84,6 @@ SPEC_MANIFEST.md
 .index-state.json
 CLAUDE.md
 docs/NX-CC-ORCHESTRATOR-RUNTIME.md
+
+# ---------- Claude Code loop-clean runtime artifacts ----------
+.claude/run/
