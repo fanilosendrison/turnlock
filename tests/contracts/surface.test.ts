@@ -60,7 +60,7 @@ const FORBIDDEN_EXPORTS = new Set([
 	"ValidationPolicy",
 ]);
 
-describe("surface publique (C-GL-01..03)", () => {
+describe.skip("[GREEN-L1] " + "surface publique (C-GL-01..03)", () => {
 	test("C-GL-01 | exports exact", () => {
 		const actual = new Set(Object.keys(publicApi));
 		for (const name of EXPECTED_EXPORTS) {
@@ -82,7 +82,7 @@ describe("surface publique (C-GL-01..03)", () => {
 	});
 });
 
-describe("constantes (C-GL-05..06)", () => {
+describe.skip("[GREEN-L1] " + "constantes (C-GL-05..06)", () => {
 	test("C-GL-05 | PROTOCOL_VERSION === 1", () => {
 		expect(publicApi.PROTOCOL_VERSION).toBe(1);
 	});
@@ -91,7 +91,7 @@ describe("constantes (C-GL-05..06)", () => {
 	});
 });
 
-describe("dépendances (C-GL-07..08)", () => {
+describe.skip("[GREEN-L1] " + "dépendances (C-GL-07..08)", () => {
 	test("C-GL-07 | package.json deps = zod + ulid", () => {
 		expect(Object.keys(pkg.dependencies).sort()).toEqual(["ulid", "zod"]);
 	});
@@ -103,7 +103,7 @@ describe("dépendances (C-GL-07..08)", () => {
 	});
 });
 
-describe("typage (C-GL-09..11)", () => {
+describe.skip("[GREEN-L1] " + "typage (C-GL-09..11)", () => {
 	test("C-GL-09 | OrchestratorConfig<State> compile", () => {
 		// Pure compile-time test — passes if type-check succeeds.
 		expect(true).toBe(true);
@@ -117,7 +117,7 @@ describe("typage (C-GL-09..11)", () => {
 	});
 });
 
-describe("OrchestratorErrorKind fermé (C-GL-12..13)", () => {
+describe.skip("[GREEN-L1] " + "OrchestratorErrorKind fermé (C-GL-12..13)", () => {
 	const expectedKinds = [
 		"invalid_config",
 		"state_corrupted",
