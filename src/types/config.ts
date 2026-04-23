@@ -13,6 +13,11 @@ export interface OrchestratorConfig<State extends object = object> {
 	readonly timeout?: TimeoutPolicy;
 	readonly logging?: LoggingPolicy;
 	readonly retentionDays?: number;
+	/**
+	 * Root directory for RUN_DIRs. Path = `<root>/<name>/<runId>`.
+	 * Precedence: env `TURNLOCK_RUN_DIR_ROOT` > this field > default `.turnlock/runs`.
+	 * Relative → joined to cwd. Absolute → used as-is. Empty string = unset.
+	 */
 	readonly runDirRoot?: string;
 }
 
