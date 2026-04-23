@@ -7,6 +7,7 @@ module: bindings
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/bindings/**/*.ts", "src/types/delegation.ts", "tests/bindings/**/*.test.ts"]
 ---
 
 # NIB-M-BINDINGS — SkillBinding + AgentBinding + AgentBatchBinding

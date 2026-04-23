@@ -7,6 +7,7 @@ module: handle-resume
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/engine/handle-resume.ts", "tests/engine/run-resume-happy-path.test.ts"]
 ---
 
 # NIB-M-HANDLE-RESUME — Logique spécifique du resume (§14.2 steps 11-15)

@@ -7,6 +7,7 @@ module: infra-utils
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/services/abortable-sleep.ts", "src/services/clock.ts", "src/services/run-id.ts", "tests/services/abortable-sleep.test.ts", "tests/services/clock.test.ts", "tests/services/run-id.test.ts", "tests/temporal/temporal.test.ts"]
 ---
 
 # NIB-M-INFRA-UTILS — Utilitaires techniques triviaux groupés

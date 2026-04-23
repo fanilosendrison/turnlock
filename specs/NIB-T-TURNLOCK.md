@@ -6,6 +6,7 @@ scope: turnlock
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["tests/**/*.test.ts", "tests/helpers/**/*.ts"]
 ---
 
 # NIB-T-TURNLOCK — TDD Tests Brief

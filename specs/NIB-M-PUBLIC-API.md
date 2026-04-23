@@ -7,6 +7,7 @@ module: public-api
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/index.ts", "src/define-phase.ts", "src/constants.ts", "src/types/**/*.ts", "tests/contracts/surface.test.ts"]
 ---
 
 # NIB-M-PUBLIC-API — Surface publique (exports, `definePhase`, constantes)

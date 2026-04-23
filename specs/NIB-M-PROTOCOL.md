@@ -7,6 +7,7 @@ module: protocol
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/services/protocol.ts", "tests/services/protocol.test.ts"]
 ---
 
 # NIB-M-PROTOCOL — Writer et parser du bloc `@@TURNLOCK@@`

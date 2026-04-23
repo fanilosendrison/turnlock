@@ -7,6 +7,7 @@ module: logger
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/services/logger.ts", "src/types/events.ts", "tests/observability/events-ndjson.test.ts", "tests/observability/events-taxonomy.test.ts", "tests/observability/pii.test.ts"]
 ---
 
 # NIB-M-LOGGER — Double-emitter stderr + `events.ndjson` owner-only

@@ -7,6 +7,7 @@ module: errors
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/errors/**/*.ts", "tests/contracts/errors.test.ts"]
 ---
 
 # NIB-M-ERRORS — Taxonomie d'erreurs

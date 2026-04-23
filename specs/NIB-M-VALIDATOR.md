@@ -7,6 +7,7 @@ module: validator
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/services/validator.ts", "tests/services/validator.test.ts"]
 ---
 
 # NIB-M-VALIDATOR — Validation zod + summary d'erreur

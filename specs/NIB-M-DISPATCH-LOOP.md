@@ -7,6 +7,7 @@ module: dispatch-loop
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/engine/dispatch-loop.ts", "src/engine/dispatch-handlers.ts", "src/engine/phase-io.ts", "src/engine/context.ts", "src/engine/shared.ts", "src/types/phase.ts", "tests/engine/run-composition.test.ts", "tests/engine/run-deep-freeze.test.ts", "tests/engine/run-per-attempt-isolation.test.ts", "tests/integration/ping-pong.test.ts"]
 ---
 
 # NIB-M-DISPATCH-LOOP — Boucle de dispatch + PhaseIO + PhaseResult handling

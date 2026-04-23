@@ -7,6 +7,7 @@ module: retry-resolver
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/services/retry-resolver.ts", "src/types/policies.ts", "tests/services/retry-resolver.test.ts", "tests/engine/run-retry.test.ts"]
 ---
 
 # NIB-M-RETRY-RESOLVER — Décision de retry matérialisée

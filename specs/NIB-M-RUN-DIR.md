@@ -7,6 +7,7 @@ module: run-dir
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/services/run-dir.ts", "tests/services/run-dir.test.ts"]
 ---
 
 # NIB-M-RUN-DIR — Résolution du RUN_DIR + cleanup rétention

@@ -6,6 +6,7 @@ scope: turnlock
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/**/*.ts", "tests/contracts/**/*.test.ts", "tests/properties/**/*.test.ts"]
 ---
 
 # NIB-S-TURNLOCK — System Brief

@@ -7,6 +7,7 @@ module: lock
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/services/lock.ts", "tests/lock/lock.test.ts"]
 ---
 
 # NIB-M-LOCK — Lock file par run (acquire O_EXCL + refresh + release)

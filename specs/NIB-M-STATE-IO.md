@@ -7,6 +7,7 @@ module: state-io
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/services/state-io.ts", "tests/services/state-io.test.ts", "tests/contracts/state-manifest.test.ts"]
 ---
 
 # NIB-M-STATE-IO — Lecture/écriture atomique du `state.json`

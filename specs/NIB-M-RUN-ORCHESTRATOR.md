@@ -7,6 +7,7 @@ module: run-orchestrator
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/engine/run-orchestrator.ts", "src/types/config.ts", "tests/engine/run-initial-happy-path.test.ts", "tests/engine/run-preflight-errors.test.ts", "tests/engine/run-signals.test.ts", "tests/contracts/fail-closed.test.ts"]
 ---
 
 # NIB-M-RUN-ORCHESTRATOR — Entry point `runOrchestrator` + préflight + mode dispatch

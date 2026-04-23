@@ -7,6 +7,7 @@ module: error-classifier
 status: approved
 consumers: [claude-code]
 superseded_by: []
+validates: ["src/services/error-classifier.ts", "tests/services/error-classifier.test.ts"]
 ---
 
 # NIB-M-ERROR-CLASSIFIER — Classification transient / permanent / abort / unknown
