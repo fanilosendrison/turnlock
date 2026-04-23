@@ -8,7 +8,11 @@ const RUN_DIR_ROOT_ENV_VAR = "TURNLOCK_RUN_DIR_ROOT";
 function resolveRunDirRoot(cwd: string, configRoot?: string): string {
 	const envRoot = process.env[RUN_DIR_ROOT_ENV_VAR];
 	const root =
-		envRoot && envRoot !== "" ? envRoot : (configRoot ?? DEFAULT_RUN_DIR_ROOT);
+		envRoot !== undefined && envRoot !== ""
+			? envRoot
+			: configRoot !== undefined && configRoot !== ""
+				? configRoot
+				: DEFAULT_RUN_DIR_ROOT;
 	return path.isAbsolute(root) ? root : path.join(cwd, root);
 }
 

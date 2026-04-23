@@ -61,7 +61,14 @@ const RUN_DIR_ROOT_ENV_VAR = "TURNLOCK_RUN_DIR_ROOT";
 
 function resolveRunDirRoot(cwd: string, configRoot?: string): string {
   const envRoot = process.env[RUN_DIR_ROOT_ENV_VAR];
-  const root = envRoot && envRoot !== "" ? envRoot : (configRoot ?? DEFAULT_RUN_DIR_ROOT);
+  // Empty string is treated as "unset" on both layers — prevents silent
+  // collapse to `<cwd>/<name>/<runId>` if a caller wires `runDirRoot: ""`.
+  const root =
+    envRoot !== undefined && envRoot !== ""
+      ? envRoot
+      : configRoot !== undefined && configRoot !== ""
+        ? configRoot
+        : DEFAULT_RUN_DIR_ROOT;
   return path.isAbsolute(root) ? root : path.join(cwd, root);
 }
 
@@ -83,7 +90,7 @@ function resolveRunDir(
 - **Fonction pure** — pas d'I/O, pas d'effet de bord. Pour un même tuple `(cwd, name, runId, runDirRoot, env)`, deux appels produisent la même string.
 - **Utilise `path.join`** (Node `node:path`) pour normaliser les séparateurs et gérer les cwd avec/sans slash final.
 - **Défaut `.turnlock/runs/`** : préfixe neutre propre au runtime, relatif au `cwd`. Les consommateurs peuvent surcharger via env var ou champ config (voir §1 Précédence).
-- **Env var string vide** → traité comme non défini (fallback sur config ou défaut). Une valeur vide dans l'env n'a aucun effet silencieux.
+- **String vide** (env var ou `runDirRoot` config) → traitée comme non définie (fallback sur le niveau suivant). Évite un collapse silencieux vers `<cwd>/<name>/<runId>` si un caller wire `runDirRoot: ""` par inadvertance.
 - **`runDirRoot` absolu** → utilisé tel quel. **Relatif** → joint à `cwd` via `path.join`.
 - **Cwd vide** → throw `InvalidConfigError("cwd cannot be empty")`. Défensif, même quand `runDirRoot` est absolu (on garde la règle simple : `cwd` est toujours obligatoire). Aucun appel légitime ne passe `""` — c'est un bug caller.
 - **Pas de validation de format** sur `orchestratorName` et `runId` — le caller (engine) a déjà validé en amont (§6.1 NIB-S pour `name`, ULID regex implicite pour `runId`).
@@ -100,6 +107,7 @@ function resolveRunDir(
 | T-RD-10 | `runDirRoot="/abs/path"` (absolu) | `"/abs/path/<name>/<runId>"` (cwd ignoré) |
 | T-RD-11 | Env `TURNLOCK_RUN_DIR_ROOT=".x"` prime sur `runDirRoot=".y"` | chemin basé sur `.x` |
 | T-RD-12 | Env `TURNLOCK_RUN_DIR_ROOT=""` (vide) | fallback sur config ou défaut |
+| T-RD-14 | `runDirRoot=""` (vide côté config) | fallback sur défaut (pas de collapse) |
 
 ### 2.5 Edge cases
 

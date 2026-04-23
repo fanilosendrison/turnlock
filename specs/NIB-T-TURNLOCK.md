@@ -547,6 +547,7 @@ Référence : §5.5.
 | T-RD-10 | `runDirRoot="/abs/path"` (absolu) | `"/abs/path/<name>/<runId>"` (cwd non préfixé) |
 | T-RD-11 | Env `TURNLOCK_RUN_DIR_ROOT=".x"` + arg `".y"` | chemin basé sur `.x` (env > arg) |
 | T-RD-12 | Env `TURNLOCK_RUN_DIR_ROOT=""` (vide) | fallback sur arg ou défaut |
+| T-RD-14 | `runDirRoot=""` (vide côté config) | fallback sur défaut (pas de collapse) |
 
 ### 7.2 Acceptance tests — cleanupOldRuns
 

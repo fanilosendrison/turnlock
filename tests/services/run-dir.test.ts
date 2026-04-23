@@ -55,6 +55,11 @@ describe("resolveRunDir (T-RD-01..03, T-RD-09..12)", () => {
 			join("/repo", ".custom", "orch", "id"),
 		);
 	});
+	test("T-RD-14 | empty config runDirRoot falls back to default", () => {
+		expect(resolveRunDir("/repo", "orch", "id", "")).toBe(
+			join("/repo", DEFAULT_ROOT, "orch", "id"),
+		);
+	});
 });
 
 function touch(path: string, daysAgo: number): void {
