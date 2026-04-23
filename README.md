@@ -2,6 +2,8 @@
 
 **A deterministic, reliable, auditable, host-agnostic runtime for orchestrating mixed mechanical and agent-delegated steps from a TypeScript script.**
 
+> In Claude Code, you can make an agent launch a script. Can you make a script launch an agent?
+
 `turnlock` was built for a concrete need: when Claude Code generates code that ships to production, you need stronger guarantees than "the agent said it's done". The review-fix-verify loop that enforces those guarantees must be orchestrated from outside the agent — because the agent cannot reliably police its own work across long iterations. Most of that loop — linters, structural checks, spec-drift detection — is better done by deterministic code than by an expensive and fallible agent call. `turnlock` runs the whole pipeline as a deterministic TypeScript FSM from inside the agent session itself (Claude Code, Codex), executing mechanical phases directly and delegating only the agent-worthy ones back to the host. It lets you choose, phase by phase, when to run a deterministic script and when to invoke the agent. The four requirements below emerged from that problem, not from an abstract design exercise.
 
 `turnlock` satisfies four non-negotiable requirements simultaneously:
