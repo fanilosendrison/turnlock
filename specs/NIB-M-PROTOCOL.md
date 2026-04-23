@@ -343,7 +343,7 @@ Testé sur 4 actions × 5 variantes chacune (T-PR-01 à T-PR-12 pour le writer, 
 
 ## 5. Examples
 
-> **Note** : les noms d'orchestrateur (`senior-review`) et chemins (`/tmp/.claude/run/cc-orch/...`) utilisés dans les exemples ci-dessous proviennent du premier consommateur (Claude Code, voir `docs/consumers/claude-code/`). Ce sont des labels et chemins opaques pour le runtime — toute autre convention est valide tant que le format protocole est respecté.
+> **Note** : les noms d'orchestrateur (`senior-review`) utilisés dans les exemples ci-dessous proviennent du premier consommateur (Claude Code, voir `docs/consumers/claude-code/`). Ce sont des labels opaques pour le runtime — toute autre convention est valide tant que le format protocole est respecté. Les chemins utilisent le RUN_DIR root par défaut `.turnlock/runs/` (surchargeable via env / config, cf NIB-M-RUN-DIR §1).
 
 ### 5.1 Writer DELEGATE
 
@@ -351,7 +351,7 @@ Testé sur 4 actions × 5 variantes chacune (T-PR-01 à T-PR-12 pour le writer, 
 const block = writeProtocolBlock("DELEGATE", {
   runId: "01HXABC",
   orchestrator: "senior-review",
-  manifest: "/tmp/.claude/run/cc-orch/senior-review/01HXABC/delegations/review-0.json",
+  manifest: "/tmp/.turnlock/runs/senior-review/01HXABC/delegations/review-0.json",
   kind: "skill",
   resumeCmd: "bun run ./main.ts --run-id 01HXABC --resume",
 });
@@ -362,7 +362,7 @@ const block = writeProtocolBlock("DELEGATE", {
 // run_id: 01HXABC
 // orchestrator: senior-review
 // action: DELEGATE
-// manifest: /tmp/.claude/run/cc-orch/senior-review/01HXABC/delegations/review-0.json
+// manifest: /tmp/.turnlock/runs/senior-review/01HXABC/delegations/review-0.json
 // kind: skill
 // resume_cmd: "bun run ./main.ts --run-id 01HXABC --resume"
 // @@END@@

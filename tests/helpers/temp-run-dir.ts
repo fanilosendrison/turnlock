@@ -20,14 +20,7 @@ export async function withTempRunDir(
 	fn: (runDir: string) => Promise<void>,
 ): Promise<void> {
 	const base = makeTempDir();
-	const runDir = join(
-		base,
-		".claude",
-		"run",
-		"cc-orch",
-		orchestratorName,
-		runId,
-	);
+	const runDir = join(base, ".turnlock", "runs", orchestratorName, runId);
 	try {
 		await fn(runDir);
 	} finally {

@@ -1045,7 +1045,7 @@ runOrchestrator(config) [mode initial, pas de --resume]
   1. Valider config → preflight ERROR si invalide (run_id: null)
   2. Parse argv (--resume absent, --run-id optionnel)
   3. Générer/adopter runId (ULID)
-  4. Résoudre RUN_DIR (convention par défaut : `<cwd>/.claude/run/cc-orch/<config.name>/<runId>/` — héritée du premier consommateur Claude Code, voir L2-2 dans `docs/SEPARATION.md`)
+  4. Résoudre RUN_DIR (défaut : `<cwd>/.turnlock/runs/<config.name>/<runId>/`, surchargeable via env `TURNLOCK_RUN_DIR_ROOT` ou champ `OrchestratorConfig.runDirRoot` — voir NIB-M-RUN-DIR §1)
   5. Créer RUN_DIR + sous-dossiers (delegations/, results/)
   6. Installer stderr logger uniquement (pas encore events.ndjson)
   7. Acquire lock (O_EXCL) :

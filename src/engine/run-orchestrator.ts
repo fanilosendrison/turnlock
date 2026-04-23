@@ -181,7 +181,7 @@ async function runInitialMode<S extends object>(
 ): Promise<void> {
 	const runId = argv.runId ?? generateRunId();
 	const cwd = process.cwd();
-	const runDir = resolveRunDir(cwd, config.name, runId);
+	const runDir = resolveRunDir(cwd, config.name, runId, config.runDirRoot);
 
 	fs.mkdirSync(runDir, { recursive: true });
 	fs.mkdirSync(path.join(runDir, "delegations"), { recursive: true });
@@ -259,7 +259,13 @@ async function runInitialMode<S extends object>(
 
 	installSignalHandlers(ctx);
 	try {
-		cleanupOldRuns(cwd, config.name, config.retentionDays ?? 7, runId);
+		cleanupOldRuns(
+			cwd,
+			config.name,
+			config.retentionDays ?? 7,
+			runId,
+			config.runDirRoot,
+		);
 	} catch {
 		// best-effort
 	}
@@ -276,7 +282,7 @@ async function runResumeMode<S extends object>(
 	}
 	const runId = argv.runId;
 	const cwd = process.cwd();
-	const runDir = resolveRunDir(cwd, config.name, runId);
+	const runDir = resolveRunDir(cwd, config.name, runId, config.runDirRoot);
 	if (!fs.existsSync(runDir)) {
 		throw new StateMissingError(`RUN_DIR does not exist: ${runDir}`, {
 			runId,

@@ -87,5 +87,6 @@ docs/NX-TURNLOCK.md
 docs/consumers/claude-code/EXECUTION-FLOW-WALKTHROUGH.md
 docs/consumers/claude-code/UX-VISION-AND-GAPS.md
 
-# ---------- Claude Code loop-clean runtime artifacts ----------
+# ---------- turnlock run artifacts (default root + legacy Claude Code override) ----------
+.turnlock/
 .claude/run/

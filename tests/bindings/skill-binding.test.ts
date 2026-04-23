@@ -4,7 +4,7 @@ import { skillBinding } from "../../src/bindings/skill";
 import type { DelegationContext } from "../../src/bindings/types";
 import type { SkillDelegationRequest } from "../../src/types/delegation";
 
-const RUN_DIR = "/tmp/.claude/run/cc-orch/senior-review/01HX";
+const RUN_DIR = "/tmp/.turnlock/runs/senior-review/01HX";
 
 function makeContext(
 	overrides: Partial<DelegationContext> = {},

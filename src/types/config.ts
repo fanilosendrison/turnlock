@@ -13,6 +13,7 @@ export interface OrchestratorConfig<State extends object = object> {
 	readonly timeout?: TimeoutPolicy;
 	readonly logging?: LoggingPolicy;
 	readonly retentionDays?: number;
+	readonly runDirRoot?: string;
 }
 
 export interface Clock {

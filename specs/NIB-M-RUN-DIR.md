@@ -22,12 +22,17 @@ superseded_by: []
 
 Deux fonctions utilitaires pour la gestion des répertoires de run :
 
-- **`resolveRunDir`** — construit le chemin absolu du RUN_DIR selon la convention par défaut `<cwd>/.claude/run/cc-orch/<name>/<runId>/`. Pas d'I/O, fonction pure.
-
-> **Note (L2-2 — `docs/SEPARATION.md`)** : la convention `<cwd>/.claude/run/cc-orch/...` est héritée du premier consommateur Claude Code. Elle est en attente de généralisation (mécanisme de surcharge env var ou champ config). Tant que L2-2 n'est pas exécuté, c'est la seule convention supportée.
+- **`resolveRunDir`** — construit le chemin absolu du RUN_DIR selon la convention par défaut `<cwd>/.turnlock/runs/<name>/<runId>/`, surchargeable via env var ou config. Pas d'I/O, fonction pure.
 - **`cleanupOldRuns`** — supprime les RUN_DIRs plus anciens que `retentionDays` jours, en préservant **impérativement** le `currentRunId`. Effet de bord filesystem.
 
-**Principe normatif structurant** : le RUN_DIR est scopé au triplet `(cwd, orchestratorName, runId)`. Deux runs sur des `cwd` différents (même `name`, même `runId` théoriquement) ne se marchent jamais dessus. C'est le `cwd` qui porte l'isolement filesystem naturel.
+**Principe normatif structurant** : le RUN_DIR est scopé au quadruplet `(cwd, runDirRoot, orchestratorName, runId)`. Deux runs sur des `cwd` ou `runDirRoot` différents ne se marchent jamais dessus. C'est le couple `(cwd, runDirRoot)` qui porte l'isolement filesystem naturel.
+
+**Précédence `runDirRoot`** (du plus prioritaire au plus faible) :
+1. Env var `TURNLOCK_RUN_DIR_ROOT` — override externe (tests, wrappers consommateurs).
+2. Champ `OrchestratorConfig.runDirRoot` — contrôle programmatique dans le script TS.
+3. Défaut : `.turnlock/runs` (relatif à `cwd`).
+
+Si `runDirRoot` est **relatif**, il est joint à `cwd`. Si **absolu**, il est utilisé tel quel (le `cwd` n'entre plus en ligne de compte). Path final : `<root>/<orchestratorName>/<runId>`.
 
 **Fichier cible** : `src/services/run-dir.ts`
 
@@ -40,26 +45,47 @@ Deux fonctions utilitaires pour la gestion des répertoires de run :
 ### 2.1 Signature
 
 ```ts
-export function resolveRunDir(cwd: string, orchestratorName: string, runId: string): string;
+export function resolveRunDir(
+  cwd: string,
+  orchestratorName: string,
+  runId: string,
+  runDirRoot?: string,
+): string;
 ```
 
 ### 2.2 Spécification
 
 ```ts
-function resolveRunDir(cwd: string, orchestratorName: string, runId: string): string {
+const DEFAULT_RUN_DIR_ROOT = path.join(".turnlock", "runs");
+const RUN_DIR_ROOT_ENV_VAR = "TURNLOCK_RUN_DIR_ROOT";
+
+function resolveRunDirRoot(cwd: string, configRoot?: string): string {
+  const envRoot = process.env[RUN_DIR_ROOT_ENV_VAR];
+  const root = envRoot && envRoot !== "" ? envRoot : (configRoot ?? DEFAULT_RUN_DIR_ROOT);
+  return path.isAbsolute(root) ? root : path.join(cwd, root);
+}
+
+function resolveRunDir(
+  cwd: string,
+  orchestratorName: string,
+  runId: string,
+  runDirRoot?: string,
+): string {
   if (cwd === "") throw new InvalidConfigError("cwd cannot be empty");
   // Note : orchestratorName et runId sont validés en amont par runOrchestrator.
   // Cette fonction ne re-valide pas leur format — elle compose mécaniquement.
-  return path.join(cwd, ".claude", "run", "cc-orch", orchestratorName, runId);
+  return path.join(resolveRunDirRoot(cwd, runDirRoot), orchestratorName, runId);
 }
 ```
 
 ### 2.3 Règles normatives
 
-- **Fonction pure** — pas d'I/O, pas d'effet de bord. Deux appels avec mêmes arguments produisent la même string.
+- **Fonction pure** — pas d'I/O, pas d'effet de bord. Pour un même tuple `(cwd, name, runId, runDirRoot, env)`, deux appels produisent la même string.
 - **Utilise `path.join`** (Node `node:path`) pour normaliser les séparateurs et gérer les cwd avec/sans slash final.
-- **Préfixe `.claude/run/cc-orch/`** : convention par défaut héritée du premier consommateur Claude Code. Le runtime **n'a pas** de surcharge configurable v1 — c'est l'item L2-2 (`docs/SEPARATION.md`) qui généralisera ce préfixe (env var ou champ config). Tant que L2-2 n'est pas exécuté, ce segment est en dur dans `path.join`.
-- **Cwd vide** → throw `InvalidConfigError("cwd cannot be empty")`. Défensif. Aucun appel légitime ne passe `""` — c'est un bug caller.
+- **Défaut `.turnlock/runs/`** : préfixe neutre propre au runtime, relatif au `cwd`. Les consommateurs peuvent surcharger via env var ou champ config (voir §1 Précédence).
+- **Env var string vide** → traité comme non défini (fallback sur config ou défaut). Une valeur vide dans l'env n'a aucun effet silencieux.
+- **`runDirRoot` absolu** → utilisé tel quel. **Relatif** → joint à `cwd` via `path.join`.
+- **Cwd vide** → throw `InvalidConfigError("cwd cannot be empty")`. Défensif, même quand `runDirRoot` est absolu (on garde la règle simple : `cwd` est toujours obligatoire). Aucun appel légitime ne passe `""` — c'est un bug caller.
 - **Pas de validation de format** sur `orchestratorName` et `runId` — le caller (engine) a déjà validé en amont (§6.1 NIB-S pour `name`, ULID regex implicite pour `runId`).
 - **Pas de `path.resolve`** — on veut conserver `cwd` tel quel, pas le résoudre en chemin absolu. C'est au caller de passer un cwd absolu (typiquement `process.cwd()`).
 
@@ -67,9 +93,13 @@ function resolveRunDir(cwd: string, orchestratorName: string, runId: string): st
 
 | Test | Input | Output |
 |---|---|---|
-| T-RD-01 | `cwd="/repo"`, `name="senior-review"`, `runId="01HX"` | `"/repo/.claude/run/cc-orch/senior-review/01HX"` |
-| T-RD-02 | `cwd` avec espaces | chemin correctement composé (`path.join` gère) |
+| T-RD-01 | `cwd="/repo"`, `name="senior-review"`, `runId="01HX"` (défaut) | `"/repo/.turnlock/runs/senior-review/01HX"` |
+| T-RD-02 | `cwd` avec espaces (défaut) | chemin correctement composé (`path.join` gère) |
 | T-RD-03 | `cwd=""` | throw `InvalidConfigError("cwd cannot be empty")` |
+| T-RD-09 | `runDirRoot=".claude/run/cc-orch"` (relatif) | `"<cwd>/.claude/run/cc-orch/<name>/<runId>"` |
+| T-RD-10 | `runDirRoot="/abs/path"` (absolu) | `"/abs/path/<name>/<runId>"` (cwd ignoré) |
+| T-RD-11 | Env `TURNLOCK_RUN_DIR_ROOT=".x"` prime sur `runDirRoot=".y"` | chemin basé sur `.x` |
+| T-RD-12 | Env `TURNLOCK_RUN_DIR_ROOT=""` (vide) | fallback sur config ou défaut |
 
 ### 2.5 Edge cases
 
@@ -90,7 +120,8 @@ export function cleanupOldRuns(
   cwd: string,
   orchestratorName: string,
   retentionDays: number,
-  currentRunId: string
+  currentRunId: string,
+  runDirRoot?: string,
 ): number;
 ```
 
@@ -103,9 +134,10 @@ function cleanupOldRuns(
   cwd: string,
   orchestratorName: string,
   retentionDays: number,
-  currentRunId: string
+  currentRunId: string,
+  runDirRoot?: string,
 ): number {
-  const baseDir = path.join(cwd, ".claude", "run", "cc-orch", orchestratorName);
+  const baseDir = path.join(resolveRunDirRoot(cwd, runDirRoot), orchestratorName);
   if (!fs.existsSync(baseDir)) return 0;
 
   const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
@@ -142,7 +174,7 @@ function cleanupOldRuns(
 ### 3.3 Règles normatives
 
 - **P-RD-a — Jamais supprimer `currentRunId`** : garde-fou en tête de boucle. Même si `currentRunId` avait (improbablement) une `mtime` trop vieille, il est protégé par nom.
-- **Scope strict par `orchestratorName`** : l'opération ne touche **jamais** les RUN_DIRs d'autres orchestrateurs (§7.1 T-RD-08). C'est l'isolement par `path.join(cwd, ".claude/run/cc-orch", orchestratorName)`.
+- **Scope strict par `orchestratorName`** : l'opération ne touche **jamais** les RUN_DIRs d'autres orchestrateurs (§7.1 T-RD-08). C'est l'isolement par `path.join(<runDirRoot>, orchestratorName)`.
 - **Rétention strict `>`** : un dir pile à `retentionDays` jours (mtime === threshold) est conservé. Évite les effets de bord liés à la granularité ms.
 - **Best-effort sur les erreurs fs** : un `stat` qui throw (dir disparu entre `readdir` et `stat`) ou un `rmSync` qui throw (fichier verrouillé) est ignoré. **Jamais** de throw qui remonte. Le cleanup est un housekeeping optionnel — un échec ne doit pas casser le démarrage du run.
 - **Pas de log ici** — la fonction retourne le count. Le caller (engine) peut logger ou non.
@@ -195,7 +227,7 @@ Setup : créer 5 RUN_DIRs avec mtimes variées, retention = 7 jours.
 ```ts
 import { resolveRunDir, cleanupOldRuns } from "../services/run-dir";
 
-const runDir = resolveRunDir(cwd, config.name, runId);
+const runDir = resolveRunDir(cwd, config.name, runId, config.runDirRoot);
 fs.mkdirSync(runDir, { recursive: true });
 fs.mkdirSync(path.join(runDir, "delegations"), { recursive: true });
 fs.mkdirSync(path.join(runDir, "results"), { recursive: true });
@@ -203,14 +235,20 @@ fs.mkdirSync(path.join(runDir, "results"), { recursive: true });
 // ... lock acquire, state init, logger ...
 
 // Step 15 : cleanup runs anciennes (ne jamais toucher le RUN_DIR courant).
-const deleted = cleanupOldRuns(cwd, config.name, config.retentionDays ?? 7, runId);
+const deleted = cleanupOldRuns(
+  cwd,
+  config.name,
+  config.retentionDays ?? 7,
+  runId,
+  config.runDirRoot,
+);
 // Pas d'event dédié pour le cleanup en v1 — optionnel.
 ```
 
 ### 5.2 Consommation par `handle-resume` (flux §14.2 step 4-5)
 
 ```ts
-const runDir = resolveRunDir(cwd, config.name, argv.runId);
+const runDir = resolveRunDir(cwd, config.name, argv.runId, config.runDirRoot);
 if (!fs.existsSync(runDir)) {
   // Emit ERROR state_missing preflight.
 }
@@ -221,10 +259,10 @@ if (!fs.existsSync(runDir)) {
 
 ## 6. Definition of Done (DoD)
 
-1. **1 fichier** créé : `src/services/run-dir.ts` avec deux exports nommés `resolveRunDir`, `cleanupOldRuns`.
+1. **1 fichier** créé : `src/services/run-dir.ts` avec deux exports nommés `resolveRunDir`, `cleanupOldRuns`, plus un helper interne `resolveRunDirRoot`.
 2. **`resolveRunDir`** :
-   - Pure : même inputs → même output.
-   - Compose exactement `<cwd>/.claude/run/cc-orch/<name>/<runId>` via `path.join`.
+   - Pure : mêmes inputs + même env → même output.
+   - Compose `<root>/<name>/<runId>` via `path.join` où `root` = env `TURNLOCK_RUN_DIR_ROOT` > `runDirRoot` arg > `.turnlock/runs` (défaut, relatif à `cwd`).
    - Throw `InvalidConfigError("cwd cannot be empty")` si `cwd === ""`.
 3. **`cleanupOldRuns`** :
    - Jamais supprime `currentRunId` (invariant P-RD-a).
@@ -233,9 +271,9 @@ if (!fs.existsSync(runDir)) {
    - Retourne le count des dirs supprimés.
    - Best-effort : aucune erreur fs ne remonte.
    - Retour 0 si `baseDir` inexistant.
-4. **Tests NIB-T passent** : T-RD-01 à T-RD-08, P-RD-a, P-RD-b.
+4. **Tests NIB-T passent** : T-RD-01 à T-RD-08, T-RD-09 à T-RD-12 (override), P-RD-a, P-RD-b.
 5. **Imports** :
-   - `node:path` (`path.join`)
+   - `node:path` (`path.join`, `path.isAbsolute`)
    - `node:fs` (`fs.existsSync`, `fs.readdirSync`, `fs.statSync`, `fs.rmSync`)
    - `../errors/concrete` (`InvalidConfigError`)
 6. **LOC** : 70-100.

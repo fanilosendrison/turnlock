@@ -1,7 +1,7 @@
 # Runtime / Consumer Separation — Work Log
 
 **Date d'ouverture** : 2026-04-22
-**Statut** : Level 1 terminé (éditorial), Level 2 — L2-1 / L2-3 / L2-4 / L2-6 clos au 2026-04-23 (avec passe positionnement README + NIB-S §1 sur frame 4-exigences). Reste : L2-2 (RUN_DIR), L2-5 extraction repo B.
+**Statut** : Level 1 terminé (éditorial), Level 2 — L2-1 / L2-2 / L2-3 / L2-4 / L2-6 clos au 2026-04-23 (avec passe positionnement README + NIB-S §1 sur frame 4-exigences). Reste : L2-5 extraction repo B.
 
 ## Contexte
 
@@ -44,22 +44,34 @@ Changements qui touchent le **contrat du runtime** et/ou les **specs autoritativ
 
 **Impact** : changement de protocole (breaking). Pas d'impact externe (aucun consommateur publié). `PROTOCOL_VERSION` reste à `1` (dé-ornementation du tag, pas changement de sémantique). Bump package version `0.1.0` → `0.2.0`.
 
-### L2-2 · Généraliser le chemin `RUN_DIR`
+### L2-2 · Généraliser le chemin `RUN_DIR` — ✅ EXÉCUTÉ 2026-04-23
 
-**Scope** :
-- `src/services/run-dir.ts` — aujourd'hui hardcodé à `<cwd>/.claude/run/cc-orch/<orchestratorName>/<runId>/` (2 endroits).
-- **Tests qui hardcodent le chemin** (à migrer en cohérence, sinon les tests cassent) :
-  - `tests/bindings/skill-binding.test.ts:7`
-  - `tests/bindings/agent-binding.test.ts:7`
-  - `tests/bindings/agent-batch-binding.test.ts:8`
-  - `tests/services/run-dir.test.ts` (10+ occurrences)
-  - `tests/helpers/temp-run-dir.ts:25-27` (le helper qui fabrique les chemins temp)
-- `.gitignore` contient `.claude/run/` (ligne 91) — à ajuster selon la nouvelle convention.
-- NIBs qui décrivent la convention `RUN_DIR` (cf L2-4).
+**Décisions prises** :
+- **Nouveau défaut** : `<cwd>/.turnlock/runs/<orchestratorName>/<runId>/` (préfixe neutre propre au runtime, relatif à `cwd`).
+- **Précédence d'override** (plus prioritaire → plus faible) :
+  1. Env var `TURNLOCK_RUN_DIR_ROOT` — override externe (tests, wrappers consommateurs, dont le futur Claude Code).
+  2. Champ `OrchestratorConfig.runDirRoot?: string` — contrôle programmatique dans le script TS.
+  3. Défaut `.turnlock/runs` (relatif à `cwd`).
+- Si `runDirRoot` est **relatif**, il est joint à `cwd`. Si **absolu**, utilisé tel quel. Path final = `<root>/<name>/<runId>`.
+- Env var string vide → traité comme non défini (fallback sur config/défaut).
 
-**Impact** : changement breaking pour quiconque se base sur ce chemin (aucun consommateur public aujourd'hui). Le chemin par défaut pourrait devenir `<cwd>/.orch-runs/<orchestratorName>/<runId>/` ou paramétrable via env var / config.
+**Scope exécuté** :
+- [x] `src/types/config.ts` : ajout `runDirRoot?: string` à `OrchestratorConfig`.
+- [x] `src/services/run-dir.ts` réécrit : helper interne `resolveRunDirRoot(cwd, configRoot?)` qui applique la précédence env > config > défaut. Signatures `resolveRunDir` et `cleanupOldRuns` étendues avec `runDirRoot?: string` optionnel.
+- [x] `src/engine/run-orchestrator.ts` : threading de `config.runDirRoot` aux 3 call sites (initial `resolveRunDir`, `cleanupOldRuns`, resume `resolveRunDir`).
+- [x] `specs/NIB-M-RUN-DIR.md` mis à jour : §1 précédence, §2 signature + règles + tests T-RD-09..12, §3 signature, §5 snippets consommation, §6 DoD.
+- [x] `specs/NIB-S-TURNLOCK.md` §10.1 step 4 reformulé avec la précédence.
+- [x] `specs/NIB-T-TURNLOCK.md` §7.1 : tableau T-RD-01 output refresh (`.turnlock/runs/`) + ajout T-RD-09..12 pour override. §12.1 : fixture `runDir` refresh. Notes de provenance refresh.
+- [x] `specs/NIB-M-PROTOCOL.md` §5 : exemples `manifest:` refresh vers `/tmp/.turnlock/runs/...` + note intro reformulée.
+- [x] `docs/NX-TURNLOCK.md` : 7 mentions refresh (§4.3, §5, §6, §12.1, §14.1, §14.2, §25).
+- [x] `tests/services/run-dir.test.ts` : migré vers nouveau défaut + 5 nouveaux tests (T-RD-09..12, T-RD-13 cleanup honors custom root). Env var nettoyée avant/après chaque test.
+- [x] `tests/bindings/{skill,agent,agent-batch}-binding.test.ts` : constante `RUN_DIR` refresh vers `/tmp/.turnlock/runs/...`.
+- [x] `tests/helpers/temp-run-dir.ts` : helper refresh vers `.turnlock/runs/`.
+- [x] `.gitignore` : ajout `.turnlock/` (ligne dédiée au nouveau défaut) + conservation `.claude/run/` (override legacy toujours possible via env var pour le futur wrapper Claude Code).
 
-**Condition d'exécution** : réflexion sur la convention par défaut et le mécanisme de surcharge (env var `ORCH_RUN_DIR` ? Champ `OrchestratorConfig.runDirRoot` ?).
+**Compat wrapper Claude Code (L2-5, à venir)** : le futur binaire `cc-orch` setera `TURNLOCK_RUN_DIR_ROOT=.claude/run/cc-orch` avant de lancer le runtime — zéro code à toucher côté runtime.
+
+**Impact** : breaking sur le chemin des RUN_DIRs (aucun consommateur publié aujourd'hui). Les scripts existants en dev local qui référencent `.claude/run/cc-orch/…` doivent soit migrer vers `.turnlock/runs/…`, soit setter `TURNLOCK_RUN_DIR_ROOT=.claude/run/cc-orch` pour conserver l'ancien chemin.
 
 ### L2-3 · Renommer le package npm + métadonnées associées — ✅ CLOS 2026-04-23 (réservation seule)
 

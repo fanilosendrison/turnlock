@@ -536,13 +536,17 @@ Référence : §5.5.
 
 ### 7.1 Acceptance tests — resolveRunDir
 
-> **Note** : les noms d'orchestrateur (`senior-review`) et le segment `.claude/run/cc-orch/` proviennent du premier consommateur (Claude Code, voir `docs/consumers/claude-code/`). Pour le runtime, ce sont des labels et un préfixe de chemin opaques. Voir L2-2 dans `docs/SEPARATION.md` pour la généralisation prévue de ce préfixe.
+> **Note** : les noms d'orchestrateur (`senior-review`) proviennent du premier consommateur (Claude Code, voir `docs/consumers/claude-code/`). Pour le runtime, ce sont des labels opaques. Le préfixe `.turnlock/runs/` est le défaut du runtime, surchargeable via env `TURNLOCK_RUN_DIR_ROOT` ou champ `OrchestratorConfig.runDirRoot` (cf NIB-M-RUN-DIR §1).
 
 | ID | Input | Output |
 | --- | --- | --- |
-| T-RD-01 | `cwd="/repo"`, `name="senior-review"`, `runId="01HX"` | `"/repo/.claude/run/cc-orch/senior-review/01HX"` |
+| T-RD-01 | `cwd="/repo"`, `name="senior-review"`, `runId="01HX"` (défaut) | `"/repo/.turnlock/runs/senior-review/01HX"` |
 | T-RD-02 | `cwd` avec espaces | chemin correctement composé |
 | T-RD-03 | `cwd` vide | throw ou retourne chemin relatif — **DÉCISION** : throw `InvalidConfigError("cwd cannot be empty")` |
+| T-RD-09 | `runDirRoot=".claude/run/cc-orch"` (relatif) | `"<cwd>/.claude/run/cc-orch/<name>/<runId>"` |
+| T-RD-10 | `runDirRoot="/abs/path"` (absolu) | `"/abs/path/<name>/<runId>"` (cwd non préfixé) |
+| T-RD-11 | Env `TURNLOCK_RUN_DIR_ROOT=".x"` + arg `".y"` | chemin basé sur `.x` (env > arg) |
+| T-RD-12 | Env `TURNLOCK_RUN_DIR_ROOT=""` (vide) | fallback sur arg ou défaut |
 
 ### 7.2 Acceptance tests — cleanupOldRuns
 
@@ -703,13 +707,13 @@ Signature : `SkillBinding.buildManifest(request, context): DelegationManifest` +
 
 ### 12.1 Acceptance tests — buildManifest
 
-> **Note** : les noms (`senior-review`, `dedup-codebase`, etc.) et chemins (`/tmp/.claude/run/cc-orch/...`) utilisés dans les fixtures de §12 et suivants proviennent du premier consommateur Claude Code. Pour le runtime, ce sont des labels et chemins opaques. Voir `docs/consumers/claude-code/` pour le contexte de provenance.
+> **Note** : les noms (`senior-review`, `dedup-codebase`, etc.) proviennent du premier consommateur Claude Code. Pour le runtime, ce sont des labels opaques. Voir `docs/consumers/claude-code/` pour le contexte de provenance. Les chemins utilisent le RUN_DIR root par défaut `.turnlock/runs/` (surchargeable, cf NIB-M-RUN-DIR §1).
 
-Context fixture : `{ runId: "01HX", orchestratorName: "senior-review", phase: "dispatch", resumeAt: "consolidate", attempt: 0, maxAttempts: 3, emittedAt: "2026-04-19T12:00:00.000Z", emittedAtEpochMs: 1745062800000, timeoutMs: 600000, deadlineAtEpochMs: 1745063400000, runDir: "/tmp/.claude/run/cc-orch/senior-review/01HX" }`.
+Context fixture : `{ runId: "01HX", orchestratorName: "senior-review", phase: "dispatch", resumeAt: "consolidate", attempt: 0, maxAttempts: 3, emittedAt: "2026-04-19T12:00:00.000Z", emittedAtEpochMs: 1745062800000, timeoutMs: 600000, deadlineAtEpochMs: 1745063400000, runDir: "/tmp/.turnlock/runs/senior-review/01HX" }`.
 
 | ID | Request | Champs clés du manifest attendu |
 | --- | --- | --- |
-| T-SK-01 | `{ kind: "skill", skill: "dedup-codebase", label: "cleanup", args: { path: "src/" } }` | `manifestVersion: 1`, `runId`, `orchestratorName`, `phase: "dispatch"`, `resumeAt: "consolidate"`, `label: "cleanup"`, `kind: "skill"`, `skill: "dedup-codebase"`, `skillArgs: { path: "src/" }`, `resultPath: "/tmp/.claude/run/cc-orch/senior-review/01HX/results/cleanup-0.json"`, `emittedAt`, `emittedAtEpochMs`, `timeoutMs: 600000`, `deadlineAtEpochMs`, `attempt: 0`, `maxAttempts: 3` |
+| T-SK-01 | `{ kind: "skill", skill: "dedup-codebase", label: "cleanup", args: { path: "src/" } }` | `manifestVersion: 1`, `runId`, `orchestratorName`, `phase: "dispatch"`, `resumeAt: "consolidate"`, `label: "cleanup"`, `kind: "skill"`, `skill: "dedup-codebase"`, `skillArgs: { path: "src/" }`, `resultPath: "/tmp/.turnlock/runs/senior-review/01HX/results/cleanup-0.json"`, `emittedAt`, `emittedAtEpochMs`, `timeoutMs: 600000`, `deadlineAtEpochMs`, `attempt: 0`, `maxAttempts: 3` |
 | T-SK-02 | Sans `args` | `skillArgs` absent ou `{}` — **DÉCISION** : **absent** (cohérent JSON) |
 | T-SK-03 | `attempt: 2` | `resultPath` contient `cleanup-2.json` (per-attempt §7.2) |
 | T-SK-04 | `label` contient caractères invalides (`UPPER`) | throw `ProtocolError` ? — **NON** : la validation de label est faite en amont par l'engine (§14.1 step 16.n). Le binding n'a pas cette responsabilité. |

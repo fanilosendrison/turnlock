@@ -4,7 +4,7 @@ import { agentBinding } from "../../src/bindings/agent";
 import type { DelegationContext } from "../../src/bindings/types";
 import type { AgentDelegationRequest } from "../../src/types/delegation";
 
-const RUN_DIR = "/tmp/.claude/run/cc-orch/orch/01HX";
+const RUN_DIR = "/tmp/.turnlock/runs/orch/01HX";
 
 function makeContext(
 	overrides: Partial<DelegationContext> = {},
