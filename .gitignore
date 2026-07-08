@@ -91,3 +91,4 @@ docs/formalizing-fsm-builder/
 # ---------- turnlock run artifacts (default root + legacy Claude Code override) ----------
 .turnlock/
 .claude/run/
+AGENTS.md
