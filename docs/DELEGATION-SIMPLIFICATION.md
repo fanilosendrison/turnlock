@@ -1,8 +1,9 @@
 # Delegation Simplification — 3→2 kinds
 
-**Status** : Plan d'implémentation — amendement de design approuvé
+**Status** : Implémenté côté runtime turnlock — amendement de design appliqué
 **Date** : 2026-07-11
 **Version cible** : v0.8.0 (breaking)
+**Implémentation** : source, tests, fixtures et NIBs turnlock alignés le 2026-07-11. La publication npm et la mise à jour de consumers externes restent des étapes de release séparées.
 
 **Version contract** :
 - `PROTOCOL_VERSION: 1 → 2` — le champ `kind` dans le bloc `@@TURNLOCK@@` change de valeurs (nouvelle taxonomie)
@@ -44,7 +45,7 @@ Changements de nommage associés :
 | `delegateAgent()` | `delegate()` |
 | `delegateAgentBatch()` | `delegateBatch()` |
 
-`MANIFEST_VERSION` passe de `1` à `2` — c'est un changement de contrat qu'un ancien consumer doit pouvoir détecter (principe fail-closed I-2).
+Les trois versions de contrat passent à `2`. Le changement est visible dans le protocole stdout, les manifests JSON, et le snapshot `state.json` ; un ancien consumer ou un ancien run doit donc être rejeté explicitement (principe fail-closed I-2).
 
 ## 3. Design decisions
 
@@ -65,7 +66,7 @@ Le protocole ne spécifie pas le défaut — c'est une décision du consumer. Ex
 
 ### 3.3 Pas de rétrocompatibilité
 
-Les runs existants avec `MANIFEST_VERSION: 1` ne seront plus relançables après la mise à jour. Acceptable : aucun run productif longue durée n'existe aujourd'hui.
+Les runs existants avec `schemaVersion: 1` ne seront plus relançables après la mise à jour. Acceptable : aucun run productif longue durée n'existe aujourd'hui.
 
 ## 4. Avant/Après — signatures publiques
 
@@ -190,14 +191,14 @@ interface DelegationManifest {
 | 10 | `src/engine/shared.ts` | `selectBinding()` → switch sur `"prompt"`, `"batch"`. `reconstructManifest()` → `kind === "batch"`. |
 | 11 | `src/engine/phase-io.ts` | Remplacer 3 méthodes par 2. Gardes : `kind === "batch"`. |
 | 12 | `src/engine/dispatch-handlers.ts` | `handleDelegate()` : `kind === "batch"`, `worker`. |
-| 13 | `src/engine/handle-resume.ts` | `classifyResultFiles()`, `buildExpectedResultPaths()` : `kind === "batch"`. |
+| 13 | `src/engine/handle-resume.ts` | `classifyResultFiles()`, `buildExpectedResultPaths()` : `kind === "batch"`. Retry : quand l'ancien manifest est relu pour reconstruire une tentative, valider `manifestVersion === 2` avant `reconstructManifest()`. |
 | 14 | `src/engine/context.ts` | `LoadedResults.kind` : `"prompt" \| "batch"` |
-| 15 | `src/engine/run-orchestrator.ts` | `runOrchestrator()` : vérifier `stateSchemaVersion` dans `readState()`. Rejeter `schemaVersion !== 2`. Si `schemaVersion === 1` → `StateVersionMismatchError`. |
+| 15 | `src/engine/run-orchestrator.ts` | Remplacer les écritures `schemaVersion: 1` par `STATE_SCHEMA_VERSION` (`2`) lors de la création du state initial. Le rejet `schemaVersion !== 2` reste centralisé dans `readState()`. |
 | 16 | `src/services/state-io.ts` | `PendingDelegationRecord.kind` : `"prompt" \| "batch"`. `readState()` : `schemaVersion !== 2` → erreur. Validation kind : `["prompt", "batch"]`. |
 | 17 | `src/services/protocol.ts` | `DelegateFields.kind` : `"prompt" \| "batch"`. `parseProtocolBlock()` rejette `version !== 2`. |
 | 18 | `src/index.ts` | Exports : supprimer `SkillDelegationRequest`, `AgentDelegationRequest`. Ajouter `PromptDelegationRequest`. Renommer `AgentBatchDelegationRequest` → `BatchDelegationRequest`. |
 
-### 5.2 Turnlock — tests (12 fichiers)
+### 5.2 Turnlock — tests (14 fichiers)
 
 | # | Fichier | Changement |
 |---|---------|------------|
@@ -205,39 +206,41 @@ interface DelegationManifest {
 | 20 | `tests/bindings/agent-binding.test.ts` | Renommer en `prompt-binding.test.ts`. Adapter. |
 | 21 | `tests/bindings/agent-batch-binding.test.ts` | Renommer en `batch-binding.test.ts`. Adapter. |
 | 22 | `tests/services/protocol.test.ts` | Remplacer `"skill"`/`"agent"`/`"agent-batch"` → `"prompt"`/`"batch"`. Mettre à jour `version` dans les blocs. |
-| 23 | `tests/helpers/state-builder.ts` | `buildPendingSkill()` → `buildPendingPrompt()`. Kinds mis à jour. `schemaVersion: 2`. |
-| 24 | `tests/engine/run-initial-happy-path.test.ts` | Remplacer `delegateSkill` → `delegate`, kinds mis à jour (7 occurrences). |
-| 25 | `tests/engine/run-resume-happy-path.test.ts` | Idem. |
-| 26 | `tests/engine/run-composition.test.ts` | Compilation : types `PhaseIO`, `DelegationRequest` mis à jour. |
-| 27 | `tests/engine/run-retry.test.ts` | Compilation : idem. |
-| 28 | `tests/engine/run-signals.test.ts` | Compilation : idem. |
-| 29 | `tests/integration/ping-pong.test.ts` | Remplacer méthodes et kinds. |
-| 30 | `tests/observability/events-taxonomy.test.ts` | Valider `"prompt"` et `"batch"`. |
+| 23 | `tests/services/state-io.test.ts` | `schemaVersion: 2` devient valide ; `schemaVersion: 1` devient le cas `StateVersionMismatchError`. |
+| 24 | `tests/contracts/surface.test.ts` | Constantes attendues : `PROTOCOL_VERSION === 2`, `STATE_SCHEMA_VERSION === 2`; surface publique mise à jour avec les nouveaux types exportés. |
+| 25 | `tests/helpers/state-builder.ts` | `buildPendingSkill()` → `buildPendingPrompt()`. Kinds mis à jour. `schemaVersion: 2`. |
+| 26 | `tests/engine/run-initial-happy-path.test.ts` | Remplacer `delegateSkill` → `delegate`, kinds mis à jour (7 occurrences). |
+| 27 | `tests/engine/run-resume-happy-path.test.ts` | Idem. |
+| 28 | `tests/engine/run-composition.test.ts` | Compilation : types `PhaseIO`, `DelegationRequest` mis à jour. |
+| 29 | `tests/engine/run-retry.test.ts` | Compilation : idem. Ajouter un cas fail-closed si le manifest relu pour retry est `manifestVersion: 1`. |
+| 30 | `tests/engine/run-signals.test.ts` | Compilation : idem. |
+| 31 | `tests/integration/ping-pong.test.ts` | Remplacer méthodes et kinds. |
+| 32 | `tests/observability/events-taxonomy.test.ts` | Valider `"prompt"` et `"batch"`. |
 
-### 5.3 Turnlock — fixtures (14 fichiers)
+### 5.3 Turnlock — fixtures et snapshots
 
 | # | Fichier | Changement |
 |---|---------|------------|
-| 31 | `tests/fixtures/manifests/skill-attempt-0.json` | **Supprimer** |
-| 32 | `tests/fixtures/manifests/skill-attempt-1.json` | **Supprimer** |
-| 33 | `tests/fixtures/manifests/agent-attempt-0.json` | `manifestVersion: 2`, `kind: "prompt"`, `agentType` → `worker` |
-| 34 | `tests/fixtures/manifests/agent-batch-3jobs.json` | `manifestVersion: 2`, `kind: "batch"`, `agentType` → `worker` |
-| 35 | `tests/fixtures/manifests/agent-batch-5jobs-attempt-1.json` | Idem |
-| 36 | `tests/fixtures/protocol/delegate-skill.txt` | **Supprimer** |
-| 37 | `tests/fixtures/protocol/delegate-agent.txt` | `version: 2`, `kind: prompt` |
-| 38 | `tests/fixtures/protocol/delegate-batch.txt` | `version: 2`, `kind: batch` |
-| 39 | `tests/fixtures/protocol/done-minimal.txt` | `version: 2` |
-| 40 | `tests/fixtures/protocol/error-*.txt` (2 fichiers) | `version: 2` |
-| 41 | `tests/fixtures/protocol/aborted-sigint.txt` | `version: 2` |
-| 42 | `tests/fixtures/states/mid-run-skill-pending.json` | **Supprimer** |
-| 43 | `tests/fixtures/states/mid-run-agent-pending.json` | `schemaVersion: 2`, `kind: "prompt"` |
-| 44 | `tests/fixtures/states/mid-run-batch-pending.json` | `schemaVersion: 2`, `kind: "batch"` |
-| 45 | `tests/fixtures/states/mid-run-retry-attempt-1.json` | `schemaVersion: 2` |
-| 46 | `tests/fixtures/states/mid-run-no-pending.json` | `schemaVersion: 2` |
-| 47 | `tests/fixtures/states/initial-empty.json` | `schemaVersion: 2` |
-| 48 | `tests/fixtures/states/corrupted-schema.json` | Inchangé (teste le rejet → ajuster le test si besoin) |
-| 49 | `tests/fixtures/states/version-mismatch.json` | `schemaVersion: 1` (teste le rejet v1 → devient un test de rejet valide) |
-| 50 | `tests/fixtures/events/*.ndjson` (3 fichiers) | Remplacer les occurrences de `"kind":"skill"`/`"agent"`/`"agent-batch"` → `"prompt"`/`"batch"` |
+| 33 | `tests/fixtures/manifests/skill-attempt-0.json` | **Supprimer** |
+| 34 | `tests/fixtures/manifests/skill-attempt-1.json` | **Supprimer** |
+| 35 | `tests/fixtures/manifests/agent-attempt-0.json` | `manifestVersion: 2`, `kind: "prompt"`, `agentType` → `worker` |
+| 36 | `tests/fixtures/manifests/agent-batch-3jobs.json` | `manifestVersion: 2`, `kind: "batch"`, `agentType` → `worker` |
+| 37 | `tests/fixtures/manifests/agent-batch-5jobs-attempt-1.json` | Idem |
+| 38 | `tests/fixtures/protocol/delegate-skill.txt` | **Supprimer** |
+| 39 | `tests/fixtures/protocol/delegate-agent.txt` | `version: 2`, `kind: prompt` |
+| 40 | `tests/fixtures/protocol/delegate-batch.txt` | `version: 2`, `kind: batch` |
+| 41 | `tests/fixtures/protocol/done-minimal.txt` | `version: 2` |
+| 42 | `tests/fixtures/protocol/error-*.txt` (2 fichiers) | `version: 2` |
+| 43 | `tests/fixtures/protocol/aborted-sigint.txt` | `version: 2` |
+| 44 | `tests/fixtures/states/mid-run-skill-pending.json` | **Supprimer** |
+| 45 | `tests/fixtures/states/mid-run-agent-pending.json` | `schemaVersion: 2`, `kind: "prompt"` |
+| 46 | `tests/fixtures/states/mid-run-batch-pending.json` | `schemaVersion: 2`, `kind: "batch"` |
+| 47 | `tests/fixtures/states/mid-run-retry-attempt-1.json` | `schemaVersion: 2`, `kind: "prompt"` |
+| 48 | `tests/fixtures/states/mid-run-no-pending.json` | `schemaVersion: 2` |
+| 49 | `tests/fixtures/states/initial-empty.json` | `schemaVersion: 2` |
+| 50 | `tests/fixtures/states/corrupted-schema.json` | Inchangé (teste le rejet → ajuster le test si besoin) |
+| 51 | `tests/fixtures/states/version-mismatch.json` | `schemaVersion: 1` (teste le rejet v1 → devient un test de rejet valide) |
+| 52 | `tests/fixtures/events/*.ndjson` (3 fichiers) | Remplacer les occurrences de `"kind":"skill"`/`"agent"`/`"agent-batch"` → `"prompt"`/`"batch"` |
 
 ### 5.4 Turnlock — specs et docs (22 fichiers)
 
@@ -282,7 +285,7 @@ Deux repos, séquence contrainte :
 
 1. Créer ce document (`docs/DELEGATION-SIMPLIFICATION.md`)
 2. Mettre à jour `docs/SEPARATION.md` : remplacer L2-6 par une référence à ce document (annulation de la décision CLOS 2026-04-23)
-3. Modifier les 21 fichiers de specs/docs : remplacer mécaniquement tous les noms de types et valeurs de `kind`
+3. Modifier les fichiers de specs/docs listés en §5.4 : remplacer tous les noms de types, valeurs de `kind`, constantes de version et exemples de protocole/state/manifest
 4. Commit : `docs: amend delegation kinds from 3 to 2 (prompt/batch) — supersedes SEPARATION L2-6`
 
 ### Phase B — Implémentation turnlock (commits groupés, repo turnlock)
@@ -298,8 +301,8 @@ L'ordre est dicté par les dépendances internes. Blocs atomiques :
 
 ### Phase C — Tests et fixtures (commit groupé, repo turnlock)
 
-9. Fixtures : supprimer 3, modifier 5
-10. Tests : supprimer `skill-binding.test.ts`, renommer 2, adapter tous les autres
+9. Fixtures/snapshots : appliquer tous les changements listés en §5.3 (manifests, protocoles, states, events)
+10. Tests : appliquer tous les changements listés en §5.2 (bindings, protocol, state-io, surface, engine, integration, observability)
 11. `bun test` — doit passer au vert
 
 ### Phase D — Publish turnlock v0.8.0
@@ -317,5 +320,5 @@ L'ordre est dicté par les dépendances internes. Blocs atomiques :
 ## 7. Comportement fail-closed
 
 - **Protocole** : `PROTOCOL_VERSION` passe à 2. `parseProtocolBlock()` rejette `version !== 2`. Un ancien consumer qui lit un bloc v2 → parse échoue → `null`. Pas d'interprétation erronée du `kind`. Un nouveau consumer qui lit un bloc v1 → parse échoue aussi (le code vérifie `parsed.version !== PROTOCOL_VERSION`).
-- **Manifest** : `MANIFEST_VERSION` passe à 2. Le runtime lui-même ne reparse pas les manifests — c'est le consumer qui les lit. Un consumer doit vérifier `manifestVersion === 2`.
+- **Manifest** : `MANIFEST_VERSION` passe à 2. Les consumers doivent vérifier `manifestVersion === 2`. Le runtime relit aussi l'ancien manifest lors d'un retry pour reconstruire une nouvelle tentative ; cette lecture doit valider `manifestVersion === 2` et rejeter un manifest v1 au lieu de le reconstruire silencieusement.
 - **State** : `STATE_SCHEMA_VERSION` passe à 2. `readState()` vérifie `schemaVersion !== 2` → `StateVersionMismatchError`. Les runs v1 (avec `pendingDelegation.kind: "skill"` ou `"agent"`) sont rejetés proprement dès la phase de resume.

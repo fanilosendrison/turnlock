@@ -65,7 +65,7 @@ Changements qui touchent le **contrat du runtime** et/ou les **specs autoritativ
 - [x] `specs/NIB-M-PROTOCOL.md` §5 : exemples `manifest:` refresh vers `/tmp/.turnlock/runs/...` + note intro reformulée.
 - [x] `docs/NX-TURNLOCK.md` : 7 mentions refresh (§4.3, §5, §6, §12.1, §14.1, §14.2, §25).
 - [x] `tests/services/run-dir.test.ts` : migré vers nouveau défaut + 5 nouveaux tests (T-RD-09..12, T-RD-13 cleanup honors custom root). Env var nettoyée avant/après chaque test.
-- [x] `tests/bindings/{skill,agent,agent-batch}-binding.test.ts` : constante `RUN_DIR` refresh vers `/tmp/.turnlock/runs/...`.
+- [x] `tests/bindings/{skill,agent,batch}-binding.test.ts` : constante `RUN_DIR` refresh vers `/tmp/.turnlock/runs/...`.
 - [x] `tests/helpers/temp-run-dir.ts` : helper refresh vers `.turnlock/runs/`.
 - [x] `.gitignore` : ajout `.turnlock/` (ligne dédiée au nouveau défaut) + conservation `.claude/run/` (override legacy toujours possible via env var pour le futur wrapper Claude Code).
 
@@ -124,7 +124,7 @@ Changements qui touchent le **contrat du runtime** et/ou les **specs autoritativ
 
 **Hors scope L2-4** (déférés) :
 - Enrichissement des `validates: []` des NIBs vers des globs explicites pointant vers `src/`/`tests/` — chantier transverse via repo-indexer step 1.5, à faire avant L2-5.
-- Renommage des `kind: "skill" | "agent" | "agent-batch"` → c'est L2-6 (vocabulaire bindings).
+- Renommage des `kind: "prompt" | "batch"` → c'est L2-6 (vocabulaire bindings).
 - Généralisation effective du chemin `RUN_DIR` → c'est L2-2.
 
 **Vérification résidus finale** : `grep -rn -iE "@@CC_ORCH@@|cc-orchestrator-runtime|CC_ORCH\\b|CCOR\\b|ccor-test|NX-CC-ORCHESTRATOR" specs/ docs/` retourne **uniquement** `docs/SEPARATION.md` (work log historique — mentions légitimes décrivant les renames eux-mêmes). Tout le reste est neutralisé.
@@ -152,32 +152,17 @@ Changements qui touchent le **contrat du runtime** et/ou les **specs autoritativ
 - Décision sur la stratégie de publication npm pour B (publier ? garder privé ? publier seulement le runtime A ?)
 - Décision sur la licence de B (peut différer de A)
 
-### L2-6 · Vocabulaire des bindings (`skill` / `agent` / `agent-batch`) — ✅ CLOS 2026-04-23 par décision Option A
+### L2-6 · Vocabulaire des bindings (`prompt` / `batch`) — ✅ REMPLACÉ 2026-07-11
 
-**Décision** : garder `kind: "skill" | "agent" | "agent-batch"` tel quel, sans renommage. Pas de breaking change. La passe éditoriale ré-encadre ce vocabulaire dans le cadrage correct (positionnement turnlock, voir ci-dessous).
+**Décision remplacée** : l'ancienne décision du 2026-04-23 qui conservait trois kinds (`skill`, `agent`, `agent-batch`) est annulée par [`docs/DELEGATION-SIMPLIFICATION.md`](DELEGATION-SIMPLIFICATION.md).
 
-**Justification (acquise par délibération 2026-04-23 sur le frame public correct)** :
+**Nouveau contrat** :
 
-L'analyse initiale (Option A vs B) reposait sur le présupposé "le vocabulaire est onomastiquement Claude → c'est une dette". Cette analyse était **fausse**.
+- `kind: "prompt"` : délégation single à partir d'un prompt inline.
+- `kind: "batch"` : N jobs indépendants, chacun avec son prompt et son `resultPath`.
+- `worker?: string` : hint opaque optionnel interprété par le consumer.
 
-Le frame public correct de turnlock (formalisé dans README.md et NIB-S §1.1-§1.3 le 2026-04-23) est : **"a deterministic, reliable, auditable, host-agnostic runtime for orchestrating agent-host primitives from a TypeScript script"**. turnlock n'est **pas** un runtime FSM durable générique — c'est un **protocole de passerelle** entre un script TS déterministe et les **primitives agentiques internes à la session d'un host** (Claude Code, Codex, Aider, …) que le script ne peut pas invoquer directement.
-
-Dans ce frame, `skill / agent / agent-batch` n'encodent **pas** une hypothèse Claude-specific. Ce sont les **trois catégories canoniques de primitives agent-host** que le runtime sait demander :
-
-- `skill` = capacité nommée invokable du host avec args structurés (Claude Code SKILL.md, Codex command, etc.)
-- `agent` = délégation freeform à un sub-agent du host (Claude Code Task tool, Codex sub-agent, etc.)
-- `agent-batch` = N délégations parallèles à des sub-agents
-
-Renommer (`skill → tool`, `kind: sync/async/parallel`, ou réduction à cardinalité pure `single/batch`) **dénaturerait** le propos : turnlock ne traite ni avec des "tools" génériques (au sens OpenAI/MCP — qui sont des appels que le script peut faire lui-même via SDK), ni avec de la cardinalité abstraite. Il traite **spécifiquement** avec ces trois shapes de primitives, et chaque host fournit son propre mapping concret (table dans `docs/consumers/README.md`).
-
-**Le présupposé rejeté** : "un consommateur non-Claude n'aurait pas de skills/agents". Faux — tout host agent-capable (Codex, Aider, agent shell custom) expose les mêmes 3 catégories de primitives, sous des noms différents. Le runtime parle de **catégories**, le mapping vers les noms locaux du host vit chez le consommateur.
-
-**Cas où le vocabulaire deviendrait inadéquat** : si un consommateur émerge dont les primitives ne tombent dans **aucune** de ces 3 catégories (ex. un host purement async avec des callbacks, ou un host à granularité fine type "1 message LLM = 1 délégation"). Dans ce cas, ce serait probablement le signe que ce consommateur n'est pas dans le scope cible de turnlock (cf. README "What turnlock is not"). On rouvrirait alors la décision.
-
-**Action éditoriale faite en parallèle (passe positionnement 2026-04-23)** :
-- [x] README.md réécrit : préambule passe de "durable FSM runtime" à "deterministic, reliable, auditable, host-agnostic runtime for orchestrating agent-host primitives". 4 exigences non-négociables explicitées (déterminisme + fiabilité + auditabilité + host-agnosticisme). Section "What turnlock is not" élargie (4 contre-positionnements : Temporal, AI SDK, in-process FSM, agent framework).
-- [x] NIB-S §1.1 / §1.2 / §1.3 reformulés sur le même frame 4-exigences. §1.1 explicite l'origine concrète (boucles review-fix-verify dans Claude Code) et liste les approches plus simples qui violent au moins une exigence. §1.2 montre le mapping mécanisme→exigences. §1.3 contraste turnlock avec Temporal, SDK LLM, FSM libs, agent frameworks, bash+jq.
-- [x] `docs/consumers/README.md` augmenté d'une table mapping `kind` → primitive host (Claude Code remplie, Codex / Aider en TBD).
+Cette simplification retire du cœur runtime les termes qui présupposaient un mode d'exécution host-side précis. Le consumer décide librement si un prompt est exécuté par un sub-agent, un appel API direct, une skill locale, ou autre.
 
 ---
 
@@ -195,4 +180,4 @@ Ce chantier a été ouvert (2026-04-22) suite à une conversation où il est dev
 
 **Rename** exécuté le 2026-04-23 : le runtime s'appelle désormais **turnlock** — les trois lectures (tour agentique, transition atomique, O_EXCL lock single-writer) convergent toutes sur ce que fait le produit.
 
-**Vocabulaire `skill / agent / agent-batch`** : conservé (L2-6 clos par décision Option A). Ce sont les trois catégories canoniques de primitives agent-host, pas une dette Claude-specific.
+**Vocabulaire `prompt / batch`** : L2-6 a été remplacé le 2026-07-11 par `docs/DELEGATION-SIMPLIFICATION.md`. Le runtime expose désormais deux shapes neutres et laisse le mapping concret au consumer.
