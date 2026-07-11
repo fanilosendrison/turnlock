@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import { writeProtocolBlock } from "../services/protocol";
-import type { SkillDelegationRequest } from "../types/delegation";
+import type { PromptDelegationRequest } from "../types/delegation";
 import type {
 	DelegationBinding,
 	DelegationContext,
@@ -8,11 +8,11 @@ import type {
 } from "./types";
 import { MANIFEST_VERSION } from "./types";
 
-export const skillBinding: DelegationBinding<SkillDelegationRequest> = {
-	kind: "skill",
+export const promptBinding: DelegationBinding<PromptDelegationRequest> = {
+	kind: "prompt",
 
 	buildManifest(
-		request: SkillDelegationRequest,
+		request: PromptDelegationRequest,
 		context: DelegationContext,
 	): DelegationManifest {
 		const resultPath = path.join(
@@ -21,26 +21,24 @@ export const skillBinding: DelegationBinding<SkillDelegationRequest> = {
 			`${request.label}-${context.attempt}.json`,
 		);
 
-		const manifest: DelegationManifest = {
+		return {
 			manifestVersion: MANIFEST_VERSION,
 			runId: context.runId,
 			orchestratorName: context.orchestratorName,
 			phase: context.phase,
 			resumeAt: context.resumeAt,
 			label: request.label,
-			kind: "skill",
+			kind: "prompt",
 			emittedAt: context.emittedAt,
 			emittedAtEpochMs: context.emittedAtEpochMs,
 			timeoutMs: context.timeoutMs,
 			deadlineAtEpochMs: context.deadlineAtEpochMs,
 			attempt: context.attempt,
 			maxAttempts: context.maxAttempts,
-			skill: request.skill,
-			...(request.args !== undefined ? { skillArgs: request.args } : {}),
+			...(request.worker !== undefined ? { worker: request.worker } : {}),
+			prompt: request.prompt,
 			resultPath,
 		};
-
-		return manifest;
 	},
 
 	buildProtocolBlock(

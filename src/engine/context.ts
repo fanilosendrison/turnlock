@@ -18,7 +18,7 @@ export interface DispatchContext<S extends object> {
 
 export interface LoadedResults {
 	readonly label: string;
-	readonly kind: "skill" | "agent" | "agent-batch";
+	readonly kind: "prompt" | "batch";
 	readonly data: unknown | readonly unknown[];
 }
 

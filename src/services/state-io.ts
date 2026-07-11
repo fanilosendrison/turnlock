@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ZodSchema } from "zod";
+import { STATE_SCHEMA_VERSION } from "../constants";
 import {
 	StateCorruptedError,
 	StateVersionMismatchError,
@@ -9,7 +10,7 @@ import { summarizeZodError } from "./validator";
 
 export interface PendingDelegationRecord {
 	readonly label: string;
-	readonly kind: "skill" | "agent" | "agent-batch";
+	readonly kind: "prompt" | "batch";
 	readonly resumeAt: string;
 	readonly manifestPath: string;
 	readonly emittedAtEpochMs: number;
@@ -24,7 +25,7 @@ export interface PendingDelegationRecord {
 }
 
 export interface StateFile<State> {
-	readonly schemaVersion: 1;
+	readonly schemaVersion: typeof STATE_SCHEMA_VERSION;
 	readonly runId: string;
 	readonly orchestratorName: string;
 	readonly startedAt: string;
@@ -75,7 +76,7 @@ function validateCanonicalShape(obj: Record<string, unknown>): void {
 	}
 	if (obj.pendingDelegation !== undefined && obj.pendingDelegation !== null) {
 		const pd = obj.pendingDelegation as Record<string, unknown>;
-		if (!["skill", "agent", "agent-batch"].includes(pd.kind as string)) {
+		if (!["prompt", "batch"].includes(pd.kind as string)) {
 			throw new StateCorruptedError(
 				`pendingDelegation.kind invalid: ${String(pd.kind)}`,
 			);
@@ -119,9 +120,9 @@ export function readState<S>(
 		);
 	}
 	const sv = (parsed as { schemaVersion: unknown }).schemaVersion;
-	if (sv !== 1) {
+	if (sv !== STATE_SCHEMA_VERSION) {
 		throw new StateVersionMismatchError(
-			`state.json schemaVersion mismatch: expected 1, got ${String(sv)}`,
+			`state.json schemaVersion mismatch: expected ${STATE_SCHEMA_VERSION}, got ${String(sv)}`,
 		);
 	}
 
@@ -156,9 +157,9 @@ export function writeStateAtomic<S>(
 			);
 		}
 	}
-	if (state.schemaVersion !== 1) {
+	if (state.schemaVersion !== STATE_SCHEMA_VERSION) {
 		throw new StateCorruptedError(
-			`cannot write state: schemaVersion must be 1, got ${state.schemaVersion}`,
+			`cannot write state: schemaVersion must be ${STATE_SCHEMA_VERSION}, got ${state.schemaVersion}`,
 		);
 	}
 

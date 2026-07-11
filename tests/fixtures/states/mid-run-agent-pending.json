@@ -1,5 +1,5 @@
 {
-	"schemaVersion": 1,
+	"schemaVersion": 2,
 	"runId": "01HX0000000000000000000003",
 	"orchestratorName": "test-orch",
 	"startedAt": "2026-04-19T12:00:00.000Z",
@@ -12,7 +12,7 @@
 	"data": {},
 	"pendingDelegation": {
 		"label": "rev",
-		"kind": "agent",
+		"kind": "prompt",
 		"resumeAt": "b",
 		"manifestPath": "/tmp/delegations/rev-0.json",
 		"emittedAtEpochMs": 1745063400000,

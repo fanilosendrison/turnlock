@@ -1,11 +1,10 @@
 
 @@TURNLOCK@@
-version: 1
+version: 2
 run_id: 01HX0000000000000000000004
 orchestrator: test-orch
 action: DELEGATE
 manifest: /tmp/delegations/batch-0.json
-kind: agent-batch
+kind: batch
 resume_cmd: "bun run ./main.ts --run-id 01HX0000000000000000000004 --resume"
 @@END@@
-

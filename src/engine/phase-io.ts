@@ -66,15 +66,11 @@ export function buildPhaseIO<S extends object>(args: {
 					: { kind: "transition", nextPhase, nextState, input },
 			);
 		},
-		delegateSkill(request, resumeAt, nextState) {
+		delegate(request, resumeAt, nextState) {
 			guardCommitted();
 			return commit({ kind: "delegate", request, resumeAt, nextState });
 		},
-		delegateAgent(request, resumeAt, nextState) {
-			guardCommitted();
-			return commit({ kind: "delegate", request, resumeAt, nextState });
-		},
-		delegateAgentBatch(request, resumeAt, nextState) {
+		delegateBatch(request, resumeAt, nextState) {
 			guardCommitted();
 			return commit({ kind: "delegate", request, resumeAt, nextState });
 		},
@@ -95,7 +91,7 @@ export function buildPhaseIO<S extends object>(args: {
 
 		consumePendingResult<T>(schema: ZodSchema<T>): T {
 			const pd = assertPending();
-			if (pd.kind === "agent-batch") {
+			if (pd.kind === "batch") {
 				throw new ProtocolError(
 					"use consumePendingBatchResults for batch delegations",
 					{
@@ -158,7 +154,7 @@ export function buildPhaseIO<S extends object>(args: {
 
 		consumePendingBatchResults<T>(schema: ZodSchema<T>): readonly T[] {
 			const pd = assertPending();
-			if (pd.kind !== "agent-batch") {
+			if (pd.kind !== "batch") {
 				throw new ProtocolError(
 					"use consumePendingResult for single delegations",
 					{

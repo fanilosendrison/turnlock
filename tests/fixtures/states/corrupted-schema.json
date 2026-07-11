@@ -1,5 +1,5 @@
 {
-	"schemaVersion": 1,
+	"schemaVersion": 2,
 	"runId": "01HX0000000000000000000007",
 	"orchestratorName": "test-orch",
 	"startedAt": "2026-04-19T12:00:00.000Z",

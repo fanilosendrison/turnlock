@@ -1,6 +1,7 @@
 import * as path from "node:path";
+import { InvalidConfigError } from "../errors/concrete";
 import { writeProtocolBlock } from "../services/protocol";
-import type { AgentDelegationRequest } from "../types/delegation";
+import type { BatchDelegationRequest } from "../types/delegation";
 import type {
 	DelegationBinding,
 	DelegationContext,
@@ -8,18 +9,29 @@ import type {
 } from "./types";
 import { MANIFEST_VERSION } from "./types";
 
-export const agentBinding: DelegationBinding<AgentDelegationRequest> = {
-	kind: "agent",
+export const batchBinding: DelegationBinding<BatchDelegationRequest> = {
+	kind: "batch",
 
 	buildManifest(
-		request: AgentDelegationRequest,
+		request: BatchDelegationRequest,
 		context: DelegationContext,
 	): DelegationManifest {
-		const resultPath = path.join(
+		if (request.jobs.length === 0) {
+			throw new InvalidConfigError(
+				`batch delegation '${request.label}' has no jobs`,
+			);
+		}
+
+		const batchDir = path.join(
 			context.runDir,
 			"results",
-			`${request.label}-${context.attempt}.json`,
+			`${request.label}-${context.attempt}`,
 		);
+		const jobs = request.jobs.map((job) => ({
+			id: job.id,
+			prompt: job.prompt,
+			resultPath: path.join(batchDir, `${job.id}.json`),
+		}));
 
 		return {
 			manifestVersion: MANIFEST_VERSION,
@@ -28,16 +40,15 @@ export const agentBinding: DelegationBinding<AgentDelegationRequest> = {
 			phase: context.phase,
 			resumeAt: context.resumeAt,
 			label: request.label,
-			kind: "agent",
+			kind: "batch",
 			emittedAt: context.emittedAt,
 			emittedAtEpochMs: context.emittedAtEpochMs,
 			timeoutMs: context.timeoutMs,
 			deadlineAtEpochMs: context.deadlineAtEpochMs,
 			attempt: context.attempt,
 			maxAttempts: context.maxAttempts,
-			agentType: request.agentType,
-			prompt: request.prompt,
-			resultPath,
+			...(request.worker !== undefined ? { worker: request.worker } : {}),
+			jobs,
 		};
 	},
 

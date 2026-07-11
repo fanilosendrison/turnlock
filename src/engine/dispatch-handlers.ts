@@ -6,6 +6,8 @@ import {
 	DEFAULT_MAX_ATTEMPTS,
 	DEFAULT_MAX_BACKOFF_MS,
 	DEFAULT_TIMEOUT_MS,
+	MANIFEST_VERSION,
+	STATE_SCHEMA_VERSION,
 } from "../constants";
 import { enrich, OrchestratorError } from "../errors/base";
 import {
@@ -24,7 +26,7 @@ import {
 	writeStateAtomic,
 } from "../services/state-io";
 import type {
-	AgentBatchDelegationRequest,
+	BatchDelegationRequest,
 	DelegationRequest,
 } from "../types/delegation";
 import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
@@ -61,6 +63,16 @@ export async function executeRetryBranch<S extends object>(
 	const oldManifest = JSON.parse(
 		fs.readFileSync(pd.manifestPath, "utf-8"),
 	) as DelegationManifest;
+	if (oldManifest.manifestVersion !== MANIFEST_VERSION) {
+		throw new ProtocolError(
+			`manifestVersion mismatch: expected ${MANIFEST_VERSION}, got ${String(oldManifest.manifestVersion)}`,
+			{
+				runId: ctx.runId,
+				orchestratorName: ctx.config.name,
+				phase,
+			},
+		);
+	}
 	const newAttempt = pd.attempt + 1;
 	const newEmittedAtEpochMs = clock.nowEpochMs();
 	const newEmittedAt = clock.nowWallIso();
@@ -200,7 +212,7 @@ export async function handleTransition<S extends object>(
 	const nowEpoch = clock.nowEpochMs();
 
 	const newState: StateFile<S> = {
-		schemaVersion: 1,
+		schemaVersion: STATE_SCHEMA_VERSION,
 		runId: state.runId,
 		orchestratorName: state.orchestratorName,
 		startedAt: state.startedAt,
@@ -255,8 +267,8 @@ export async function handleDelegate<S extends object>(
 		});
 	}
 
-	if (kind === "agent-batch") {
-		const req = request as AgentBatchDelegationRequest;
+	if (kind === "batch") {
+		const req = request as BatchDelegationRequest;
 		if (req.jobs.length === 0) {
 			throw new InvalidConfigError(`batch delegation '${label}' has no jobs`);
 		}
@@ -328,11 +340,9 @@ export async function handleDelegate<S extends object>(
 		deadlineAtEpochMs,
 		attempt,
 		effectiveRetryPolicy,
-		...(kind === "agent-batch"
+		...(kind === "batch"
 			? {
-					jobIds: (request as AgentBatchDelegationRequest).jobs.map(
-						(j) => j.id,
-					),
+					jobIds: (request as BatchDelegationRequest).jobs.map((j) => j.id),
 				}
 			: {}),
 	};
@@ -356,9 +366,7 @@ export async function handleDelegate<S extends object>(
 		label,
 		kind,
 		jobCount:
-			kind === "agent-batch"
-				? (request as AgentBatchDelegationRequest).jobs.length
-				: 1,
+			kind === "batch" ? (request as BatchDelegationRequest).jobs.length : 1,
 		timestamp: emittedAt,
 	});
 
@@ -410,7 +418,7 @@ export async function handleDone<S extends object>(
 	}
 
 	const newState: StateFile<S> = {
-		schemaVersion: 1,
+		schemaVersion: STATE_SCHEMA_VERSION,
 		runId: state.runId,
 		orchestratorName: state.orchestratorName,
 		startedAt: state.startedAt,
@@ -462,7 +470,7 @@ export async function handleFail<S extends object>(
 			: "phase_error";
 
 	const newState: StateFile<S> = {
-		schemaVersion: 1,
+		schemaVersion: STATE_SCHEMA_VERSION,
 		runId: state.runId,
 		orchestratorName: state.orchestratorName,
 		startedAt: state.startedAt,

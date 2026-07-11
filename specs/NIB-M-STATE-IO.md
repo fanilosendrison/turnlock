@@ -48,7 +48,7 @@ import { StateCorruptedError, StateVersionMismatchError } from "../errors/concre
  * Dupliquée ici pour clarté d'implémentation — la source de vérité reste le NIB-S.
  */
 export interface StateFile<State> {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly runId: string;
   readonly orchestratorName: string;
   readonly startedAt: string;
@@ -65,7 +65,7 @@ export interface StateFile<State> {
 
 export interface PendingDelegationRecord {
   readonly label: string;
-  readonly kind: "skill" | "agent" | "agent-batch";
+  readonly kind: "prompt" | "batch";
   readonly resumeAt: string;
   readonly manifestPath: string;
   readonly emittedAtEpochMs: number;
@@ -120,7 +120,7 @@ function readState<S>(runDir: string, schema?: ZodSchema<S>): StateFile<S> | nul
     throw new StateCorruptedError(`state.json is not valid JSON: ${describeError(err)}`, { cause: err });
   }
 
-  // 4. Validation schemaVersion présent + === 1.
+  // 4. Validation schemaVersion présent + === 2.
   if (typeof parsed !== "object" || parsed === null) {
     throw new StateCorruptedError("state.json must be a JSON object");
   }
@@ -128,9 +128,9 @@ function readState<S>(runDir: string, schema?: ZodSchema<S>): StateFile<S> | nul
     throw new StateCorruptedError("state.json missing required field: schemaVersion");
   }
   const sv = (parsed as { schemaVersion: unknown }).schemaVersion;
-  if (sv !== 1) {
+  if (sv !== 2) {
     throw new StateVersionMismatchError(
-      `state.json schemaVersion mismatch: expected 1, got ${String(sv)}`
+      `state.json schemaVersion mismatch: expected 2, got ${String(sv)}`
     );
   }
 
@@ -183,7 +183,7 @@ function validateCanonicalShape(obj: Record<string, unknown>): void {
   // pendingDelegation optionnel — si présent, check minimal de kind.
   if (obj.pendingDelegation !== undefined && obj.pendingDelegation !== null) {
     const pd = obj.pendingDelegation as Record<string, unknown>;
-    if (!["skill", "agent", "agent-batch"].includes(pd.kind as string)) {
+    if (!["prompt", "batch"].includes(pd.kind as string)) {
       throw new StateCorruptedError(`pendingDelegation.kind invalid: ${String(pd.kind)}`);
     }
   }
@@ -210,9 +210,9 @@ function writeStateAtomic<S>(runDir: string, state: StateFile<S>, schema?: ZodSc
     }
   }
 
-  // 2. Validation schemaVersion === 1 (défense en profondeur).
-  if (state.schemaVersion !== 1) {
-    throw new StateCorruptedError(`cannot write state: schemaVersion must be 1, got ${state.schemaVersion}`);
+  // 2. Validation schemaVersion === 2 (défense en profondeur).
+  if (state.schemaVersion !== 2) {
+    throw new StateCorruptedError(`cannot write state: schemaVersion must be 2, got ${state.schemaVersion}`);
   }
 
   // 3. Sérialiser.
@@ -232,7 +232,7 @@ function writeStateAtomic<S>(runDir: string, state: StateFile<S>, schema?: ZodSc
 
 - **P-ATOMIC-WRITE** : `writeFileSync(tmp)` puis `renameSync(tmp, real)`. `rename` est atomique sur même FS POSIX. Un lecteur concurrent voit toujours soit l'ancien fichier soit le nouveau, jamais partiel (I-3 NIB-S, testé par P-SI-b).
 - **Pré-validation schema** : si `schema` fourni, `state.data` est validé **avant** tout write. Un state invalide throw `StateCorruptedError` sans rien écrire (ni tmp, ni rename — testé par T-SI-10).
-- **`schemaVersion === 1` obligatoire** : défense en profondeur. Un caller qui passe `{...state, schemaVersion: 2}` throw avant write.
+- **`schemaVersion === 2` obligatoire** : défense en profondeur. Un caller qui passe `{...state, schemaVersion: 1}` throw avant write.
 - **Pas de cleanup du tmp en cas d'échec** : si `writeFileSync(tmp)` réussit mais `renameSync` échoue (cas rare — perms, FS différent), le tmp peut rester. Accepté : le prochain write l'écrasera (T-SI-11). Le `state.json` original reste intact — invariant critique.
 - **Pas de flush/fsync explicite** : `renameSync` garantit visibilité atomique après retour, suffisant v1. Durabilité kernel post-crash = accepté (cas SIGKILL, cf §3.2 NX, hors scope v1).
 - **JSON compact sans indentation** (pas de `JSON.stringify(state, null, 2)`) : économise IO et ne change pas la sémantique. Les outils externes (debug humain) peuvent reformatter au besoin.
@@ -263,18 +263,18 @@ const state = readState("/tmp/run/01HX", schema);
 readState("/tmp/run/01HX");  // throw StateCorruptedError("state.json is not valid JSON: ...")
 ```
 
-### 5.4 Read d'un state version 2
+### 5.4 Read d'un state version 1
 
 ```ts
-// /tmp/run/01HX/state.json contient { schemaVersion: 2, ... }
-readState("/tmp/run/01HX");  // throw StateVersionMismatchError("expected 1, got 2")
+// /tmp/run/01HX/state.json contient { schemaVersion: 1, ... }
+readState("/tmp/run/01HX");  // throw StateVersionMismatchError("expected 2, got 1")
 ```
 
 ### 5.5 Write simple
 
 ```ts
 const state: StateFile<MyState> = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   runId: "01HX",
   orchestratorName: "senior-review",
   startedAt: "2026-04-19T12:00:00.000Z",
@@ -310,8 +310,8 @@ writeStateAtomic("/tmp/run/01HX", state, schema);
 | `state.json` absent au read | Retour `null` (premier run, pas une erreur) |
 | `state.json` valide JSON mais objet `null` | `StateCorruptedError("must be a JSON object")` |
 | `state.json` sans `schemaVersion` | `StateCorruptedError("missing required field: schemaVersion")` |
-| `state.json` avec `schemaVersion: "1"` (string) | `StateVersionMismatchError` (check strict === 1 number) |
-| `state.json` avec `schemaVersion: 2` | `StateVersionMismatchError("expected 1, got 2")` |
+| `state.json` avec `schemaVersion: "2"` (string) | `StateVersionMismatchError` (check strict === 2 number) |
+| `state.json` avec `schemaVersion: 1` | `StateVersionMismatchError("expected 2, got 1")` |
 | `state.json` valide avec `data: null` sans schema | OK — `data` accepte `null` si pas de schema. |
 | `state.json` valide avec `data: null` avec schema strict | `StateCorruptedError` (zod rejette selon le schema) |
 | Write avec `pendingDelegation: undefined` | Champ omis de JSON (convention §7.1) — pas `"pendingDelegation": null`. Testé T-SI-12. |
@@ -343,9 +343,9 @@ writeStateAtomic("/tmp/run/01HX", state, schema);
 | Test | Couverture |
 |---|---|
 | T-SI-01 | `state.json` absent → `null` |
-| T-SI-02 | `state.json` valide v1 → StateFile typé |
+| T-SI-02 | `state.json` valide v2 → StateFile typé |
 | T-SI-03 | JSON invalide → `StateCorruptedError` |
-| T-SI-04 | `schemaVersion: 2` → `StateVersionMismatchError` |
+| T-SI-04 | `schemaVersion: 1` → `StateVersionMismatchError` |
 | T-SI-05 | `schemaVersion` absent → `StateCorruptedError` |
 | T-SI-06 | Valide + schema + data conforme → OK |
 | T-SI-07 | Valide + schema + data non-conforme → `StateCorruptedError` avec cause ZodError |
@@ -367,7 +367,7 @@ writeStateAtomic("/tmp/run/01HX", state, schema);
 ```ts
 import { writeStateAtomic } from "../services/state-io";
 
-const initialState: StateFile<S> = { schemaVersion: 1, runId, orchestratorName: config.name, ... };
+const initialState: StateFile<S> = { schemaVersion: 2, runId, orchestratorName: config.name, ... };
 writeStateAtomic(runDir, initialState, config.stateSchema);
 ```
 
@@ -406,12 +406,12 @@ writeStateAtomic(runDir, newState, config.stateSchema);
 2. **`readState`** :
    - Retourne `null` si fichier absent.
    - Throw `StateCorruptedError` sur JSON invalide, champ obligatoire absent, type incorrect.
-   - Throw `StateVersionMismatchError` sur `schemaVersion !== 1`.
+   - Throw `StateVersionMismatchError` sur `schemaVersion !== 2`.
    - Throw `StateCorruptedError` (cause = ZodError) sur échec validation schema.
    - Valide shape canonique minimale (11 champs obligatoires + `pendingDelegation.kind` si présent).
 3. **`writeStateAtomic`** :
    - Pré-valide `state.data` contre schema si fourni — aucun write si échec.
-   - Pré-valide `schemaVersion === 1`.
+   - Pré-valide `schemaVersion === 2`.
    - Écrit via `tmp + rename` atomique.
    - Aucun résidu `state.json.tmp` post-write réussi.
    - Omet `pendingDelegation: undefined` du JSON (convention).

@@ -32,7 +32,7 @@ export type OrchestratorEvent =
 			runId: string;
 			phase: string;
 			label: string;
-			kind: "skill" | "agent" | "agent-batch";
+			kind: "prompt" | "batch";
 			jobCount: number;
 			timestamp: string;
 	  }

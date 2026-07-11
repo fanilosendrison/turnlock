@@ -168,16 +168,16 @@ function classifyResultFiles(runDir: string, pd: PendingDelegationRecord): Class
     allParseable,
     anyMalformed,
     loadedData: allParseable
-      ? (pd.kind === "agent-batch" ? parsedValues : parsedValues[0] ?? null)
+      ? (pd.kind === "batch" ? parsedValues : parsedValues[0] ?? null)
       : null,
   };
 }
 
 function buildExpectedResultPaths(runDir: string, pd: PendingDelegationRecord): string[] {
-  if (pd.kind === "skill" || pd.kind === "agent") {
+  if (pd.kind === "prompt") {
     return [path.join(runDir, "results", `${pd.label}-${pd.attempt}.json`)];
   }
-  // agent-batch
+  // batch
   const batchDir = path.join(runDir, "results", `${pd.label}-${pd.attempt}`);
   return (pd.jobIds ?? []).map((id) => path.join(batchDir, `${id}.json`));
 }

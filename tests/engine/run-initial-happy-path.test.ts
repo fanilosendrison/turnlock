@@ -81,10 +81,10 @@ describe("runOrchestrator initial happy (T-RO-01..09)", () => {
 		});
 		await runOrchestrator(cfg);
 	});
-	test("T-RO-05 | delegate skill emits DELEGATE block", async () => {
+	test("T-RO-05 | delegate prompt emits DELEGATE block", async () => {
 		const cfg = buildConfig({
 			a: definePhase<S>(async (_s, io) =>
-				io.delegateSkill({ kind: "skill", skill: "foo", label: "bar" }, "b", {
+				io.delegate({ kind: "prompt", prompt: "foo", label: "bar" }, "b", {
 					count: 1,
 				}),
 			),
@@ -101,7 +101,7 @@ describe("runOrchestrator initial happy (T-RO-01..09)", () => {
 	test("T-RO-07 | usedLabels register", async () => {
 		const cfg = buildConfig({
 			a: definePhase<S>(async (_s, io) =>
-				io.delegateSkill({ kind: "skill", skill: "f", label: "bar" }, "b", {
+				io.delegate({ kind: "prompt", prompt: "f", label: "bar" }, "b", {
 					count: 0,
 				}),
 			),
@@ -109,11 +109,11 @@ describe("runOrchestrator initial happy (T-RO-01..09)", () => {
 		});
 		await runOrchestrator(cfg);
 	});
-	test("T-RO-08 | delegate agent unique", async () => {
+	test("T-RO-08 | delegate prompt with worker unique", async () => {
 		const cfg = buildConfig({
 			a: definePhase<S>(async (_s, io) =>
-				io.delegateAgent(
-					{ kind: "agent", agentType: "reviewer", prompt: "p", label: "rev" },
+				io.delegate(
+					{ kind: "prompt", worker: "reviewer", prompt: "p", label: "rev" },
 					"b",
 					{ count: 0 },
 				),
@@ -122,13 +122,13 @@ describe("runOrchestrator initial happy (T-RO-01..09)", () => {
 		});
 		await runOrchestrator(cfg);
 	});
-	test("T-RO-09 | delegate agent-batch 3 jobs", async () => {
+	test("T-RO-09 | delegate batch 3 jobs", async () => {
 		const cfg = buildConfig({
 			a: definePhase<S>(async (_s, io) =>
-				io.delegateAgentBatch(
+				io.delegateBatch(
 					{
-						kind: "agent-batch",
-						agentType: "r",
+						kind: "batch",
+						worker: "r",
 						jobs: [
 							{ id: "j1", prompt: "p1" },
 							{ id: "j2", prompt: "p2" },
@@ -184,7 +184,7 @@ describe("runOrchestrator events order (T-RO-13..15)", () => {
 	test("T-RO-15 | delegate exit: no orchestrator_end emitted", async () => {
 		const cfg = buildConfig({
 			a: definePhase<S>(async (_s, io) =>
-				io.delegateSkill({ kind: "skill", skill: "f", label: "l" }, "b", {
+				io.delegate({ kind: "prompt", prompt: "f", label: "l" }, "b", {
 					count: 0,
 				}),
 			),

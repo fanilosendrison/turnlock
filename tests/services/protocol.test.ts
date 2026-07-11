@@ -10,39 +10,39 @@ const RID = "01HX0000000000000000000001";
 const RCMD = "bun run ./main.ts --run-id 01HX0000000000000000000001 --resume";
 
 describe("writeProtocolBlock DELEGATE (T-PR-01..03)", () => {
-	test("T-PR-01 | skill", () => {
+	test("T-PR-01 | prompt", () => {
 		const out = writeProtocolBlock("DELEGATE", {
 			runId: RID,
 			orchestrator: "senior-review",
 			manifest: "/abs/path.json",
-			kind: "skill",
+			kind: "prompt",
 			resumeCmd: RCMD,
 		});
 		expect(out).toContain("@@TURNLOCK@@");
 		expect(out).toContain("@@END@@");
 		expect(out).toContain("action: DELEGATE");
-		expect(out).toContain("kind: skill");
+		expect(out).toContain("kind: prompt");
 		expect(out).toContain("manifest: /abs/path.json");
 	});
-	test("T-PR-02 | agent", () => {
+	test("T-PR-02 | batch", () => {
 		const out = writeProtocolBlock("DELEGATE", {
 			runId: RID,
 			orchestrator: "x",
 			manifest: "/a.json",
-			kind: "agent",
+			kind: "batch",
 			resumeCmd: RCMD,
 		});
-		expect(out).toContain("kind: agent");
+		expect(out).toContain("kind: batch");
 	});
-	test("T-PR-03 | agent-batch", () => {
+	test("T-PR-03 | prompt with alternate orchestrator", () => {
 		const out = writeProtocolBlock("DELEGATE", {
 			runId: RID,
 			orchestrator: "x",
 			manifest: "/a.json",
-			kind: "agent-batch",
+			kind: "prompt",
 			resumeCmd: RCMD,
 		});
-		expect(out).toContain("kind: agent-batch");
+		expect(out).toContain("kind: prompt");
 	});
 });
 
@@ -164,11 +164,11 @@ describe("writeProtocolBlock ABORTED (T-PR-11..12)", () => {
 describe("parseProtocolBlock happy (T-PR-13..19)", () => {
 	test("T-PR-13 | DELEGATE full", () => {
 		const parsed = parseProtocolBlock(
-			loadFixture("protocol/delegate-skill.txt"),
+			loadFixture("protocol/delegate-prompt.txt"),
 		);
 		expect(parsed).not.toBeNull();
 		expect(parsed!.action).toBe("DELEGATE");
-		expect(parsed!.fields.kind).toBe("skill");
+		expect(parsed!.fields.kind).toBe("prompt");
 	});
 	test("T-PR-14 | DONE full", () => {
 		const parsed = parseProtocolBlock(loadFixture("protocol/done-minimal.txt"));
@@ -217,16 +217,16 @@ describe("parseProtocolBlock rejects (T-PR-20..24)", () => {
 		).toBeNull();
 	});
 	test("T-PR-22 | missing @@TURNLOCK@@ → null", () => {
-		expect(parseProtocolBlock("version: 1\nrun_id: X\n@@END@@")).toBeNull();
+		expect(parseProtocolBlock("version: 2\nrun_id: X\n@@END@@")).toBeNull();
 	});
 	test("T-PR-23 | version incompatible → null", () => {
 		const s =
-			"\n@@TURNLOCK@@\nversion: 2\nrun_id: X\norchestrator: y\naction: DONE\n@@END@@\n";
+			"\n@@TURNLOCK@@\nversion: 1\nrun_id: X\norchestrator: y\naction: DONE\n@@END@@\n";
 		expect(parseProtocolBlock(s)).toBeNull();
 	});
 	test("T-PR-24 | unknown action → null", () => {
 		const s =
-			"\n@@TURNLOCK@@\nversion: 1\nrun_id: X\norchestrator: y\naction: FOOBAR\n@@END@@\n";
+			"\n@@TURNLOCK@@\nversion: 2\nrun_id: X\norchestrator: y\naction: FOOBAR\n@@END@@\n";
 		expect(parseProtocolBlock(s)).toBeNull();
 	});
 });
@@ -253,13 +253,13 @@ describe("protocol properties (P-PR-a..d)", () => {
 			runId: RID,
 			orchestrator: "x",
 			manifest: "/a.json",
-			kind: "skill",
+			kind: "prompt",
 			resumeCmd: RCMD,
 		});
 		const parsed = parseProtocolBlock(block);
 		expect(parsed).not.toBeNull();
 		expect(parsed!.action).toBe("DELEGATE");
-		expect(parsed!.fields.kind).toBe("skill");
+		expect(parsed!.fields.kind).toBe("prompt");
 	});
 	test("P-PR-b | pure (same input → same output)", () => {
 		const fields = {

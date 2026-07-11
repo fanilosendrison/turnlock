@@ -1,5 +1,5 @@
 {
-	"schemaVersion": 1,
+	"schemaVersion": 2,
 	"runId": "01HX0000000000000000000005",
 	"orchestratorName": "test-orch",
 	"startedAt": "2026-04-19T12:00:00.000Z",
@@ -12,7 +12,7 @@
 	"data": {},
 	"pendingDelegation": {
 		"label": "foo",
-		"kind": "skill",
+		"kind": "prompt",
 		"resumeAt": "b",
 		"manifestPath": "/tmp/delegations/foo-1.json",
 		"emittedAtEpochMs": 1745063400000,

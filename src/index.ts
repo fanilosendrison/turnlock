@@ -18,10 +18,9 @@ export {
 } from "./errors/concrete";
 export type { Clock, OrchestratorConfig } from "./types/config";
 export type {
-	AgentBatchDelegationRequest,
-	AgentDelegationRequest,
+	BatchDelegationRequest,
 	DelegationRequest,
-	SkillDelegationRequest,
+	PromptDelegationRequest,
 } from "./types/delegation";
 export type { OrchestratorEvent, OrchestratorLogger } from "./types/events";
 export type { Phase, PhaseIO, PhaseResult } from "./types/phase";

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { DelegationManifest } from "../bindings/types";
+import { MANIFEST_VERSION } from "../constants";
 import {
 	AbortedError,
 	DelegationMissingResultError,
@@ -25,7 +26,7 @@ function buildExpectedResultPaths(
 	runDir: string,
 	pd: PendingDelegationRecord,
 ): string[] {
-	if (pd.kind === "skill" || pd.kind === "agent") {
+	if (pd.kind === "prompt") {
 		return [path.join(runDir, "results", `${pd.label}-${pd.attempt}.json`)];
 	}
 	const batchDir = path.join(runDir, "results", `${pd.label}-${pd.attempt}`);
@@ -74,7 +75,7 @@ function classifyResultFiles(
 		allParseable,
 		anyMalformed,
 		loadedData: allParseable
-			? pd.kind === "agent-batch"
+			? pd.kind === "batch"
 				? parsedValues
 				: (parsedValues[0] ?? null)
 			: null,
@@ -135,6 +136,16 @@ async function executeResumeRetry<S extends object>(
 	const oldManifest = JSON.parse(
 		fs.readFileSync(pd.manifestPath, "utf-8"),
 	) as DelegationManifest;
+	if (oldManifest.manifestVersion !== MANIFEST_VERSION) {
+		throw new ProtocolError(
+			`manifestVersion mismatch: expected ${MANIFEST_VERSION}, got ${String(oldManifest.manifestVersion)}`,
+			{
+				runId: ctx.runId,
+				orchestratorName: ctx.config.name,
+				phase: pd.resumeAt,
+			},
+		);
+	}
 	const newAttempt = pd.attempt + 1;
 	const newEmittedAtEpochMs = clock.nowEpochMs();
 	const newEmittedAt = clock.nowWallIso();

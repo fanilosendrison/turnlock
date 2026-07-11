@@ -83,11 +83,11 @@ describe("[GREEN-L1] " + "surface publique (C-GL-01..03)", () => {
 });
 
 describe("[GREEN-L1] " + "constantes (C-GL-05..06)", () => {
-	test("C-GL-05 | PROTOCOL_VERSION === 1", () => {
-		expect(publicApi.PROTOCOL_VERSION).toBe(1);
+	test("C-GL-05 | PROTOCOL_VERSION === 2", () => {
+		expect(publicApi.PROTOCOL_VERSION).toBe(2);
 	});
-	test("C-GL-06 | STATE_SCHEMA_VERSION === 1", () => {
-		expect(publicApi.STATE_SCHEMA_VERSION).toBe(1);
+	test("C-GL-06 | STATE_SCHEMA_VERSION === 2", () => {
+		expect(publicApi.STATE_SCHEMA_VERSION).toBe(2);
 	});
 });
 

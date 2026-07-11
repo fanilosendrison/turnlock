@@ -205,7 +205,7 @@ async function runInitialMode<S>(config: OrchestratorConfig<S>, argv: ParsedArgv
 
   // Step 10-11 : construire StateFile initial.
   const initialState: StateFile<S> = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId,
     orchestratorName: config.name,
     startedAt: nowIso,

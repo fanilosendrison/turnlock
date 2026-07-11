@@ -56,7 +56,7 @@ export interface DelegateFields {
   readonly runId: string;
   readonly orchestrator: string;
   readonly manifest: string;             // chemin absolu manifestPath
-  readonly kind: "skill" | "agent" | "agent-batch";
+  readonly kind: "prompt" | "batch";
   readonly resumeCmd: string;
 }
 
@@ -102,7 +102,7 @@ export function parseProtocolBlock(stdout: string): ParsedProtocolBlock | null;
 ```
 <ligne vide>
 @@TURNLOCK@@
-version: 1
+version: 2
 run_id: <value | null>
 orchestrator: <value>
 action: <ACTION>
@@ -328,7 +328,7 @@ function snakeToCamel(s: string): string {
 - **Bruit avant/après le bloc toléré** : le parser scan pour la première ligne `@@TURNLOCK@@` (T-PR-26). Tout ce qui précède est ignoré.
 - **Pas de `@@END@@`** → `null` (T-PR-21).
 - **Pas de `@@TURNLOCK@@`** → `null` (T-PR-22).
-- **Version incompatible (`version: 2`)** → `null` (T-PR-23). Le runtime émetteur et le parser côté parent agent sont alignés sur `PROTOCOL_VERSION` ; un mismatch signale une incompatibilité de versions runtime.
+- **Version incompatible (`version: 1`)** → `null` (T-PR-23). Le runtime émetteur et le parser côté parent agent sont alignés sur `PROTOCOL_VERSION` ; un mismatch signale une incompatibilité de versions runtime.
 - **Action inconnue** → `null` (T-PR-24).
 - **Deux blocs dans la même string** : retourne le **premier** (T-PR-25). La règle §7.4 "un seul bloc par invocation" est garantie par le runtime émetteur ; le parser est tolérant.
 - **Normalisation snake_case → camelCase** : les champs dans le bloc utilisent snake_case (`run_id`, `phases_executed`, `resume_cmd`). Le `ParsedProtocolBlock.fields` expose en camelCase (`runId`, `phasesExecuted`, `resumeCmd`) pour uniformité avec le reste du code TS. **Exception** : `runId` est extrait comme champ top-level, pas dans `fields`. Idem `orchestrator`, `action`, `version`.
@@ -353,18 +353,18 @@ const block = writeProtocolBlock("DELEGATE", {
   runId: "01HXABC",
   orchestrator: "senior-review",
   manifest: "/tmp/.turnlock/runs/senior-review/01HXABC/delegations/review-0.json",
-  kind: "skill",
+  kind: "prompt",
   resumeCmd: "bun run ./main.ts --run-id 01HXABC --resume",
 });
 // Produit (avec lignes vides auto) :
 //
 // @@TURNLOCK@@
-// version: 1
+// version: 2
 // run_id: 01HXABC
 // orchestrator: senior-review
 // action: DELEGATE
 // manifest: /tmp/.turnlock/runs/senior-review/01HXABC/delegations/review-0.json
-// kind: skill
+// kind: prompt
 // resume_cmd: "bun run ./main.ts --run-id 01HXABC --resume"
 // @@END@@
 ```
@@ -397,7 +397,7 @@ const stdout = `
 Some stderr leak
 Another line
 @@TURNLOCK@@
-version: 1
+version: 2
 run_id: 01HX
 orchestrator: foo
 action: DONE
@@ -410,7 +410,7 @@ duration_ms: 1234
 
 const block = parseProtocolBlock(stdout);
 // {
-//   version: 1,
+//   version: 2,
 //   runId: "01HX",
 //   orchestrator: "foo",
 //   action: "DONE",
@@ -427,7 +427,7 @@ const block = parseProtocolBlock(stdout);
 | String vide en entrée | `null` |
 | Bloc avec ligne vide au milieu | Tolérée (skip) |
 | Bloc avec trailing whitespace sur une ligne | `line.trim()` pour détecter `@@TURNLOCK@@` / `@@END@@`, mais parsing strict sur `key: value` |
-| `version: 1.0` (avec décimale) | Parsé comme `1` (nombre) → match `PROTOCOL_VERSION` si === 1, sinon `null` |
+| `version: 2.0` (avec décimale) | Parsé comme `2` (nombre) → match `PROTOCOL_VERSION` si === 2, sinon `null` |
 | Message contient des `"` | Quoted et échappé par `JSON.stringify` : `"escape \\\"inside\\\""` |
 | Message contient `\n` | Quoted, sérialisé `"with\\nnewline"` |
 | Valeur `null` non quoté dans le bloc (writer) | Correct, littéral `null` |
@@ -444,7 +444,7 @@ const block = parseProtocolBlock(stdout);
 - **Parser tolérant au bruit, strict sur format** : toute incohérence structurelle → `null`. Aucune tolérance sur version mismatch.
 - **Writer produit toujours du valid round-trip** : garantie par P-PR-a (testée sur 20 variantes).
 - **Pas de validation des champs métier** : le writer fait confiance au caller (ex. `manifest` est un chemin absolu, `output` existe, etc.). Le parser ne re-valide pas non plus — c'est le caller du parser (parent agent) qui interprète.
-- **`PROTOCOL_VERSION = 1`** constant importé d'un module central (cf NIB-M-PUBLIC-API). Toute modification = breaking change major.
+- **`PROTOCOL_VERSION = 2`** constant importé d'un module central (cf NIB-M-PUBLIC-API). Toute modification = breaking change major.
 
 ---
 
@@ -452,7 +452,7 @@ const block = parseProtocolBlock(stdout);
 
 | Groupe | Tests |
 |---|---|
-| Writer DELEGATE | T-PR-01 à T-PR-03 (skill/agent/agent-batch) |
+| Writer DELEGATE | T-PR-01 à T-PR-03 (prompt/batch) |
 | Writer DONE | T-PR-04, T-PR-05 |
 | Writer ERROR | T-PR-06 à T-PR-10 (preflight, avec phase, avec quoting) |
 | Writer ABORTED | T-PR-11, T-PR-12 |
@@ -503,7 +503,7 @@ const stdout = await captureStdout(cmd);
 const block = parseProtocolBlock(stdout);
 if (!block) throw new Error("No TURNLOCK block in stdout");
 switch (block.action) {
-  case "DELEGATE": /* lire manifest, invoquer skill/agent/batch, relancer resume_cmd */ break;
+  case "DELEGATE": /* lire manifest, invoquer prompt/batch, relancer resume_cmd */ break;
   case "DONE":     /* lire output, présenter */ break;
   case "ERROR":    /* afficher error_kind + message */ break;
   case "ABORTED":  /* informer + relance manuelle possible */ break;
@@ -519,7 +519,7 @@ switch (block.action) {
    - 4 overloads (DELEGATE, DONE, ERROR, ABORTED) avec types `*Fields` distincts.
    - Produit des blocs round-trip-parseable (vérifié P-PR-a).
    - Sérialise null/boolean/number nativement, quote string si caractères spéciaux.
-   - Inclut `version: 1` (literal PROTOCOL_VERSION).
+   - Inclut `version: 2` (literal PROTOCOL_VERSION).
 3. **`parseProtocolBlock`** :
    - Retourne `null` sur format invalide (pas de delimiter, version incompatible, action inconnue).
    - Tolère le bruit avant `@@TURNLOCK@@` (T-PR-26).

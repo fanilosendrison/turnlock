@@ -23,22 +23,20 @@ export interface DelegationManifestJob {
 }
 
 export interface DelegationManifest {
-	readonly manifestVersion: 1;
+	readonly manifestVersion: 2;
 	readonly runId: string;
 	readonly orchestratorName: string;
 	readonly phase: string;
 	readonly resumeAt: string;
 	readonly label: string;
-	readonly kind: "skill" | "agent" | "agent-batch";
+	readonly kind: "prompt" | "batch";
 	readonly emittedAt: string;
 	readonly emittedAtEpochMs: number;
 	readonly timeoutMs: number;
 	readonly deadlineAtEpochMs: number;
 	readonly attempt: number;
 	readonly maxAttempts: number;
-	readonly skill?: string;
-	readonly skillArgs?: Record<string, unknown>;
-	readonly agentType?: string;
+	readonly worker?: string;
 	readonly prompt?: string;
 	readonly jobs?: readonly DelegationManifestJob[];
 	readonly resultPath?: string;

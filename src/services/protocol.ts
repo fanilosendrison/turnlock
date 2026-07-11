@@ -14,7 +14,7 @@ export interface DelegateFields {
 	readonly runId: string;
 	readonly orchestrator: string;
 	readonly manifest: string;
-	readonly kind: "skill" | "agent" | "agent-batch";
+	readonly kind: "prompt" | "batch";
 	readonly resumeCmd: string;
 }
 

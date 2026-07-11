@@ -1,6 +1,6 @@
 
 @@TURNLOCK@@
-version: 1
+version: 2
 run_id: 01HX0000000000000000000001
 orchestrator: test-orch
 action: ERROR
@@ -9,4 +9,3 @@ message: "Validation failed"
 phase: consolidate
 phases_executed: 4
 @@END@@
-

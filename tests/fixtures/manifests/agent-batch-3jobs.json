@@ -1,18 +1,18 @@
 {
-	"manifestVersion": 1,
+	"manifestVersion": 2,
 	"runId": "01HX0000000000000000000004",
 	"orchestratorName": "test-orch",
 	"phase": "a",
 	"resumeAt": "b",
 	"label": "batch",
-	"kind": "agent-batch",
+	"kind": "batch",
 	"emittedAt": "2026-04-19T12:10:00.000Z",
 	"emittedAtEpochMs": 1745063400000,
 	"timeoutMs": 600000,
 	"deadlineAtEpochMs": 1745064000000,
 	"attempt": 0,
 	"maxAttempts": 3,
-	"agentType": "reviewer",
+	"worker": "reviewer",
 	"jobs": [
 		{
 			"id": "j1",

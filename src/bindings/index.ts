@@ -1,6 +1,5 @@
-export { agentBinding } from "./agent";
-export { agentBatchBinding } from "./agent-batch";
-export { skillBinding } from "./skill";
+export { batchBinding } from "./batch";
+export { promptBinding } from "./prompt";
 export type {
 	DelegationBinding,
 	DelegationContext,

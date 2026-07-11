@@ -1,7 +1,6 @@
 import * as path from "node:path";
-import { agentBinding } from "../bindings/agent";
-import { agentBatchBinding } from "../bindings/agent-batch";
-import { skillBinding } from "../bindings/skill";
+import { batchBinding } from "../bindings/batch";
+import { promptBinding } from "../bindings/prompt";
 import type { DelegationBinding, DelegationManifest } from "../bindings/types";
 import type { DelegationRequest } from "../types/delegation";
 
@@ -11,15 +10,13 @@ import type { DelegationRequest } from "../types/delegation";
  */
 
 export function selectBinding(
-	kind: "skill" | "agent" | "agent-batch",
+	kind: "prompt" | "batch",
 ): DelegationBinding<DelegationRequest> {
 	switch (kind) {
-		case "skill":
-			return skillBinding as DelegationBinding<DelegationRequest>;
-		case "agent":
-			return agentBinding as DelegationBinding<DelegationRequest>;
-		case "agent-batch":
-			return agentBatchBinding as DelegationBinding<DelegationRequest>;
+		case "prompt":
+			return promptBinding as DelegationBinding<DelegationRequest>;
+		case "batch":
+			return batchBinding as DelegationBinding<DelegationRequest>;
 	}
 }
 
@@ -41,7 +38,7 @@ export function reconstructManifest(
 		emittedAtEpochMs: updates.emittedAtEpochMs,
 		deadlineAtEpochMs: updates.deadlineAtEpochMs,
 	};
-	if (old.kind === "skill" || old.kind === "agent") {
+	if (old.kind === "prompt") {
 		return {
 			...base,
 			resultPath: path.join(

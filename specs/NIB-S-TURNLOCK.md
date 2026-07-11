@@ -113,7 +113,7 @@ Conséquence : pas de "guerre snapshot vs events rejoués". `state.json` gagne t
 - Exécution d'un orchestrateur structuré en **phases** nommées avec transitions explicites
 - Persistence **atomique** (tmp + rename) de `state.json` à chaque transition stable
 - Chargement du state au démarrage pour reprise à la phase courante
-- **Délégation** vers un skill (`delegateSkill`), un sub-agent (`delegateAgent`), ou un batch parallèle de sub-agents (`delegateAgentBatch`)
+- **Délégation** vers un prompt single (`delegate`) ou un batch parallèle de prompts (`delegateBatch`)
 - Émission d'un **protocole de signal** standardisé sur stdout (bloc `@@TURNLOCK@@ ... @@END@@`)
 - **Validation lazy avec enforcement exact-once** des résultats via `io.consumePendingResult(schema)` / `io.consumePendingBatchResults(schema)` côté phase de reprise
 - **Retry** automatique avec backoff exponentiel sur résultat invalide, timeout de délégation, ou JSON malformé
@@ -124,7 +124,7 @@ Conséquence : pas de "guerre snapshot vs events rejoués". `state.json` gagne t
 - **Lock file** par run (`$RUN_DIR/.lock`) — enforcement mécanique de "un seul process actif par `runId`" via `O_EXCL` + lease idle 30 min pour crash recovery
 - **Cleanup** automatique des anciennes runs (rétention configurable)
 - **Abort** propagé (SIGINT/SIGTERM → exit propre, state sauvé à la dernière transition stable, émission `ABORTED`)
-- **Composition récursive** : un orchestrateur peut déléguer vers un skill qui lui-même est un orchestrateur (skill boundary)
+- **Composition récursive** : un orchestrateur peut déléguer vers un worker/consumer qui lui-même relance un orchestrateur (boundary consumer)
 
 ### 2.2 Hors scope v1 (frontière dure)
 
@@ -158,7 +158,7 @@ Ces invariants s'appliquent à tous les modules. Les NIB-M n'ont pas à les rép
 
 ### I-1 — Séparation décision mécanique / sémantique
 
-Le runtime n'incarne **jamais** de décision sémantique. Toute décision sémantique (quoi reviewer, comment classifier un finding) est déléguée à un skill/agent. Le runtime gère uniquement : flux, état, validation schema, résilience.
+Le runtime n'incarne **jamais** de décision sémantique. Toute décision sémantique (quoi reviewer, comment classifier un finding) est déléguée à un prompt. Le runtime gère uniquement : flux, état, validation schema, résilience.
 
 ### I-2 — Re-entry comme primitive de délégation
 
@@ -224,8 +224,8 @@ Chaque phase ne peut retourner qu'**un seul** `PhaseResult`. Flag interne tracke
 
 Les chemins de résultat sont **versionnés par tentative** pour éviter qu'un sub-agent lent d'une tentative précédente ne pollue la tentative courante :
 
-- `kind: "skill" | "agent"` : `$RUN_DIR/results/<label>-<attempt>.json`
-- `kind: "agent-batch"` : `$RUN_DIR/results/<label>-<attempt>/<jobId>.json`
+- `kind: "prompt"` : `$RUN_DIR/results/<label>-<attempt>.json`
+- `kind: "batch"` : `$RUN_DIR/results/<label>-<attempt>/<jobId>.json`
 
 Les tentatives antérieures conservent leurs fichiers — le runtime ne les lit plus (il ne consulte que `state.pendingDelegation.attempt`). Race "sub-agent orphelin" résolue structurellement.
 
@@ -249,7 +249,7 @@ Les tentatives antérieures conservent leurs fichiers — le runtime ne les lit 
 │ handle-resume.ts — préflight resume + classification    │
 ├─────────────────────────────────────────────────────────┤
 │ Layer 3 — Delegation Bindings                           │
-│ bindings/skill.ts, agent.ts, agent-batch.ts             │
+│ bindings/prompt.ts, batch.ts                      │
 │   → buildManifest + buildProtocolBlock                  │
 ├─────────────────────────────────────────────────────────┤
 │ Layer 4 — Transverse Services                           │
@@ -273,7 +273,7 @@ Les tentatives antérieures conservent leurs fichiers — le runtime ne les lit 
 | L4 | error-classifier | NIB-M-ERROR-CLASSIFIER | `classify` transient/permanent/abort/unknown |
 | L4 | logger | NIB-M-LOGGER | Stderr NDJSON + `events.ndjson` owner-only |
 | L4 | lock | NIB-M-LOCK | Acquire O_EXCL, refresh, release avec ownerToken |
-| L3 | 3 bindings (skill/agent/agent-batch) | NIB-M-BINDINGS | `buildManifest` + `buildProtocolBlock` |
+| L3 | 2 bindings (prompt/batch) | NIB-M-BINDINGS | `buildManifest` + `buildProtocolBlock` |
 | L2 | run-orchestrator (entry) | NIB-M-RUN-ORCHESTRATOR | Entry point + preflight + mode dispatch initial/resume |
 | L2 | dispatch-loop | NIB-M-DISPATCH-LOOP | Boucle §14.1 step 16 + PhaseResult branches + catch retry |
 | L2 | handle-resume | NIB-M-HANDLE-RESUME | Préflight resume + classification + retry pré-dispatch |
@@ -303,9 +303,8 @@ src/
 │   └── lock.ts                       # acquireLock / refreshLock / releaseLock
 ├── bindings/
 │   ├── types.ts                      # DelegationBinding interface commune
-│   ├── skill.ts                      # SkillBinding
-│   ├── agent.ts                      # AgentBinding
-│   └── agent-batch.ts                # AgentBatchBinding
+│   ├── prompt.ts                     # PromptBinding
+│   └── batch.ts                # BatchBinding
 └── engine/
     ├── run-orchestrator.ts           # runOrchestrator entry + mode dispatch
     ├── dispatch-loop.ts              # boucle + PhaseResult branches + catch retry
@@ -319,7 +318,7 @@ Cette structure est une **convention dérivée** du NIB-S + NIB-M. Elle est main
 **Types publics** (exportés, Layer 1) — voir §6 pour la définition complète :
 
 - `OrchestratorConfig<State>`, `Phase<State, Input, Output>`, `PhaseIO<State>`, `PhaseResult<State, Output>`
-- `DelegationRequest` (union), `SkillDelegationRequest`, `AgentDelegationRequest`, `AgentBatchDelegationRequest`
+- `DelegationRequest` (union), `PromptDelegationRequest`, `PromptDelegationRequest`, `BatchDelegationRequest`
 - `RetryPolicy`, `TimeoutPolicy`, `LoggingPolicy`, `OrchestratorLogger`, `OrchestratorEvent` (union discriminée)
 - `OrchestratorError` (abstract) + 11 sous-classes, `OrchestratorErrorKind`
 - `PROTOCOL_VERSION: 1`, `STATE_SCHEMA_VERSION: 1`
@@ -436,14 +435,11 @@ export interface PhaseIO<State extends object> {
     input?: NextInput
   ): PhaseResult<State>;
 
-  /** Délégation à un skill. Le process exit après émission DELEGATE. */
-  delegateSkill(req: SkillDelegationRequest, resumeAt: string, nextState: State): PhaseResult<State>;
+  /** Délégation single à partir d'un prompt inline. Le process exit après émission DELEGATE. */
+  delegate(req: PromptDelegationRequest, resumeAt: string, nextState: State): PhaseResult<State>;
 
-  /** Délégation à un sub-agent unique. */
-  delegateAgent(req: AgentDelegationRequest, resumeAt: string, nextState: State): PhaseResult<State>;
-
-  /** Délégation à un batch parallèle de sub-agents du même type. */
-  delegateAgentBatch(req: AgentBatchDelegationRequest, resumeAt: string, nextState: State): PhaseResult<State>;
+  /** Délégation à un batch parallèle de prompts indépendants. */
+  delegateBatch(req: BatchDelegationRequest, resumeAt: string, nextState: State): PhaseResult<State>;
 
   /** Terminaison réussie. Exit 0 après émission DONE. */
   done<FinalOutput>(output: FinalOutput): PhaseResult<State>;
@@ -470,8 +466,8 @@ export interface PhaseIO<State extends object> {
   readonly signal: AbortSignal;
 
   /**
-   * Consomme le résultat d'une délégation skill ou agent (non-batch).
-   * Throw ProtocolError si pending.kind === "agent-batch".
+   * Consomme le résultat d'une délégation prompt (non-batch).
+   * Throw ProtocolError si pending.kind === "batch".
    * Throw DelegationMissingResultError si fichier absent.
    * Throw DelegationSchemaError si fichier présent mais invalide (JSON malformé ou schéma violé).
    * Enforce exact-once : deux appels dans la même phase → ProtocolError immédiat.
@@ -479,8 +475,8 @@ export interface PhaseIO<State extends object> {
   consumePendingResult<T>(schema: import("zod").ZodSchema<T>): T;
 
   /**
-   * Consomme les résultats d'une délégation agent-batch. Retourne readonly T[] aligné sur jobIds.
-   * Throw ProtocolError si pending.kind !== "agent-batch".
+   * Consomme les résultats d'une délégation batch. Retourne readonly T[] aligné sur jobIds.
+   * Throw ProtocolError si pending.kind !== "batch".
    * Même sémantique d'erreur que consumePendingResult.
    */
   consumePendingBatchResults<T>(schema: import("zod").ZodSchema<T>): readonly T[];
@@ -542,31 +538,21 @@ Aucun autre verbe n'est utilisé dans la suite du corpus. `fail` désigne le ré
 
 ```ts
 export type DelegationRequest =
-  | SkillDelegationRequest
-  | AgentDelegationRequest
-  | AgentBatchDelegationRequest;
+  | PromptDelegationRequest
+  | BatchDelegationRequest;
 
-export interface SkillDelegationRequest {
-  readonly kind: "skill";
-  readonly skill: string;              // ex: "dedup-codebase"
-  readonly args?: Record<string, unknown>;
-  readonly label: string;              // identifie cette délégation dans le RUN_DIR
-  readonly retry?: RetryPolicy;        // override policy globale (partiel OK, champ par champ)
-  readonly timeout?: TimeoutPolicy;
-}
-
-export interface AgentDelegationRequest {
-  readonly kind: "agent";
-  readonly agentType: string;          // ex: "senior-reviewer-file" (label opaque interprété par le parent)
+export interface PromptDelegationRequest {
+  readonly kind: "prompt";
+  readonly worker?: string;            // label opaque interprété par le parent/consumer
   readonly prompt: string;
   readonly label: string;
   readonly retry?: RetryPolicy;
   readonly timeout?: TimeoutPolicy;
 }
 
-export interface AgentBatchDelegationRequest {
-  readonly kind: "agent-batch";
-  readonly agentType: string;
+export interface BatchDelegationRequest {
+  readonly kind: "batch";
+  readonly worker?: string;
   readonly jobs: ReadonlyArray<{
     readonly id: string;               // identifiant unique au sein du batch
     readonly prompt: string;
@@ -581,8 +567,8 @@ export interface AgentBatchDelegationRequest {
 
 - `label` unique au sein d'un run. Enforced via `state.usedLabels` (cf §7.1). Collision → `ProtocolError("duplicate label: " + label)`.
 - `label` : `/^[a-z][a-z0-9-]*$/`.
-- `skill` et `agentType` : strings arbitraires (le runtime ne valide pas leur existence — le parent agent invoquera ou échouera).
-- `AgentBatchDelegationRequest.jobs.length >= 1`. Batch vide → `InvalidConfigError` au binding et à l'engine (défense en profondeur).
+- `worker` : string arbitraire et optionnelle (le runtime ne valide pas son existence — le consumer interprète ou échoue).
+- `BatchDelegationRequest.jobs.length >= 1`. Batch vide → `InvalidConfigError` au binding et à l'engine (défense en profondeur).
 - `jobs[].id` unique au sein du batch. Duplication → `ProtocolError("duplicate job id in batch: " + id)` au niveau engine.
 
 ### 6.6 Errors — taxonomie fermée
@@ -646,7 +632,7 @@ export type OrchestratorEvent =
   | { eventType: "orchestrator_start"; runId: string; orchestratorName: string; initialPhase: string; timestamp: string }
   | { eventType: "phase_start"; runId: string; phase: string; attemptCount: number; timestamp: string }
   | { eventType: "phase_end"; runId: string; phase: string; durationMs: number; resultKind: "transition" | "delegate" | "done" | "fail"; timestamp: string }
-  | { eventType: "delegation_emit"; runId: string; phase: string; label: string; kind: "skill" | "agent" | "agent-batch"; jobCount: number; timestamp: string }
+  | { eventType: "delegation_emit"; runId: string; phase: string; label: string; kind: "prompt" | "batch"; jobCount: number; timestamp: string }
   | { eventType: "delegation_result_read"; runId: string; phase: string; label: string; jobCount: number; filesLoaded: number; timestamp: string }
   | { eventType: "delegation_validated"; runId: string; phase: string; label: string; timestamp: string }
   | { eventType: "delegation_validation_failed"; runId: string; phase: string; label: string; zodErrorSummary: string; timestamp: string }
@@ -713,8 +699,8 @@ export declare function definePhase<State, Input = void, Output = void>(
   fn: Phase<State, Input, Output>
 ): Phase<State, Input, Output>;  // pass-through runtime, utile pour inférence TS
 
-export const PROTOCOL_VERSION = 1 as const;
-export const STATE_SCHEMA_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
+export const STATE_SCHEMA_VERSION = 2 as const;
 ```
 
 ---
@@ -729,7 +715,7 @@ Ces formes vivent entre les re-entries et entre les layers. Non exportées publi
 
 ```ts
 interface StateFile<State> {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly runId: string;                      // ULID
   readonly orchestratorName: string;
 
@@ -758,7 +744,7 @@ interface StateFile<State> {
 
 interface PendingDelegationRecord {
   readonly label: string;
-  readonly kind: "skill" | "agent" | "agent-batch";
+  readonly kind: "prompt" | "batch";
   readonly resumeAt: string;
   readonly manifestPath: string;               // chemin absolu du manifest JSON
 
@@ -783,7 +769,7 @@ interface PendingDelegationRecord {
 
 - Écrit atomiquement (tmp + rename) à chaque transition et à chaque émission de délégation.
 - Lu au démarrage de toute invocation sauf au tout premier run (pas de `state.json` → initial via `config.initialState`).
-- `schemaVersion === 1` obligatoire. Autre valeur → `StateVersionMismatchError`.
+- `schemaVersion === 2` obligatoire. Autre valeur → `StateVersionMismatchError`.
 - `data` opaque au runtime sauf si `config.stateSchema` fourni (validé à chaque read/write).
 - `accumulatedDurationMs` incrémenté uniquement à la fin de chaque phase terminée (transition/delegate/done/fail) par la durée monotonic de cette phase. Jamais de double-comptage.
 - `pendingDelegation` effacé (set à `undefined`) **au traitement du PhaseResult** de la phase de reprise (§14.1 step 16.n), **pas au début** de la phase de reprise. Garantie cross-crash : un crash mid-phase préserve le pending pour retry correct.
@@ -796,13 +782,13 @@ interface PendingDelegationRecord {
 
 ```ts
 interface DelegationManifest {
-  readonly manifestVersion: 1;
+  readonly manifestVersion: 2;
   readonly runId: string;
   readonly orchestratorName: string;
   readonly phase: string;                      // phase qui a émis la délégation
   readonly resumeAt: string;
   readonly label: string;
-  readonly kind: "skill" | "agent" | "agent-batch";
+  readonly kind: "prompt" | "batch";
 
   // Temporal — wall clock uniquement.
   readonly emittedAt: string;                  // ISO 8601
@@ -815,9 +801,7 @@ interface DelegationManifest {
   readonly maxAttempts: number;
 
   // Fields specific to kind.
-  readonly skill?: string;
-  readonly skillArgs?: Record<string, unknown>;
-  readonly agentType?: string;
+  readonly worker?: string;
   readonly prompt?: string;
   readonly jobs?: ReadonlyArray<{
     readonly id: string;
@@ -825,29 +809,29 @@ interface DelegationManifest {
     readonly resultPath: string;               // per-jobId per-attempt
   }>;
 
-  // Pour skill et agent (non-batch), resultPath top-level.
+  // Pour prompt (non-batch), resultPath top-level.
   readonly resultPath?: string;
 }
 ```
 
 **Règles** :
 
-- `kind: "agent-batch"` ⇔ `jobs` présent, `resultPath` top-level absent.
-- `kind: "skill" | "agent"` ⇔ `resultPath` top-level présent, `jobs` absent.
+- `kind: "batch"` ⇔ `jobs` présent, `resultPath` top-level absent.
+- `kind: "prompt"` ⇔ `resultPath` top-level présent, `jobs` absent.
 - **Résultats per-attempt** (I-15) :
-  - `kind: "skill" | "agent"` : `$RUN_DIR/results/<label>-<attempt>.json`
-  - `kind: "agent-batch"` : `$RUN_DIR/results/<label>-<attempt>/<jobId>.json`
+  - `kind: "prompt"` : `$RUN_DIR/results/<label>-<attempt>.json`
+  - `kind: "batch"` : `$RUN_DIR/results/<label>-<attempt>/<jobId>.json`
 - Les tentatives antérieures conservent leurs fichiers. Le runtime ne lit que `attempt` courant via `state.pendingDelegation.attempt`. Nettoyage via rétention RUN_DIR standard.
 
 ### 7.3 Fichier de résultat
 
-Écrit par le skill ou le sub-agent au chemin `resultPath` du manifest. Format : JSON arbitraire.
+Écrit par le consumer/worker au chemin `resultPath` du manifest. Format : JSON arbitraire.
 
 - Le runtime **ne valide** le résultat que contre le schéma zod fourni à `consumePending*(schema)`.
 - Aucun champ obligatoire imposé par le runtime.
 - Fichier absent → `DelegationMissingResultError` (si deadline pas dépassée) ou `DelegationTimeoutError` (si dépassée).
 - Fichier présent mais JSON unparseable → `DelegationSchemaError`. Logger uniquement `path` + `fileSizeBytes`, **jamais** d'extrait de contenu ni de message `JSON.parse`.
-- Pour `agent-batch` : chaque fichier doit être présent et valide. Un seul manquant → même classification que single delegation ; un seul malformed → `DelegationSchemaError` global.
+- Pour `batch` : chaque fichier doit être présent et valide. Un seul manquant → même classification que single delegation ; un seul malformed → `DelegationSchemaError` global.
 
 ### 7.4 Protocole `@@TURNLOCK@@`
 
@@ -857,7 +841,7 @@ interface DelegationManifest {
 
 ```
 @@TURNLOCK@@
-version: 1
+version: 2
 run_id: <ulid> | null
 orchestrator: <name>
 action: <ACTION>
@@ -907,7 +891,7 @@ Voir `NIB-M-LOCK` pour la sémantique complète (acquire O_EXCL, override expir�
 
 ```ts
 interface DelegationBinding<Req extends DelegationRequest> {
-  readonly kind: "skill" | "agent" | "agent-batch";
+  readonly kind: "prompt" | "batch";
   buildManifest(request: Req, context: DelegationContext): DelegationManifest;
   buildProtocolBlock(manifest: DelegationManifest, resumeCmd: string): string;
 }
@@ -1174,7 +1158,7 @@ Le NIB-T (`NIB-T-TURNLOCK v1.0`) est déjà rédigé. Il couvre :
 
 - Les fonctions pures des services L4 (retry-resolver, classify, parseProtocolBlock/writeProtocolBlock, validateResult, readState/writeStateAtomic, resolveRunDir/cleanupOldRuns, generateRunId, clock, abortableSleep)
 - Le lock (§11) — acquire O_EXCL, refresh phase-start, release avec ownerToken, events lock_conflict, SIGKILL crash recovery
-- Les 3 bindings (SkillBinding, AgentBinding, AgentBatchBinding)
+- Les 2 bindings (PromptBinding, PromptBinding, BatchBinding)
 - L'engine via adapters publics (`runOrchestrator`) avec mocks fs + clock + stdio + logger + signal
 - La taxonomie d'erreurs (11 classes)
 - L'observabilité (11 events, corrélation runId, PII absence, events.ndjson owner-only)

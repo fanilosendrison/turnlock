@@ -2,6 +2,7 @@ import type {
 	PendingDelegationRecord,
 	StateFile,
 } from "../../src/services/state-io";
+import { STATE_SCHEMA_VERSION } from "../../src/constants";
 
 const DEFAULT_START = "2026-04-19T12:00:00.000Z";
 const DEFAULT_START_EPOCH = 1_745_062_800_000;
@@ -16,7 +17,7 @@ export function buildInitialState<S extends object>(
 	overrides: Partial<StateFile<S>> & { data?: S } = {},
 ): StateFile<S> {
 	return {
-		schemaVersion: 1,
+		schemaVersion: STATE_SCHEMA_VERSION,
 		runId: "01HX0000000000000000000000",
 		orchestratorName: "test-orch",
 		startedAt: DEFAULT_START,
@@ -44,36 +45,14 @@ export function buildMidRunState<S extends object>(
 	});
 }
 
-export function buildPendingSkill<S extends object>(
+export function buildPendingPrompt<S extends object>(
 	label: string,
 	attempt: number,
 	overrides: Partial<StateFile<S>> & { data?: S } = {},
 ): StateFile<S> {
 	const pd: PendingDelegationRecord = {
 		label,
-		kind: "skill",
-		resumeAt: "b",
-		manifestPath: `/tmp/delegations/${label}-${attempt}.json`,
-		emittedAtEpochMs: DEFAULT_START_EPOCH,
-		deadlineAtEpochMs: DEFAULT_START_EPOCH + 600_000,
-		attempt,
-		effectiveRetryPolicy: defaultPolicy,
-	};
-	return buildMidRunState<S>({
-		pendingDelegation: pd,
-		usedLabels: [label],
-		...overrides,
-	});
-}
-
-export function buildPendingAgent<S extends object>(
-	label: string,
-	attempt: number,
-	overrides: Partial<StateFile<S>> & { data?: S } = {},
-): StateFile<S> {
-	const pd: PendingDelegationRecord = {
-		label,
-		kind: "agent",
+		kind: "prompt",
 		resumeAt: "b",
 		manifestPath: `/tmp/delegations/${label}-${attempt}.json`,
 		emittedAtEpochMs: DEFAULT_START_EPOCH,
@@ -96,7 +75,7 @@ export function buildPendingBatch<S extends object>(
 ): StateFile<S> {
 	const pd: PendingDelegationRecord = {
 		label,
-		kind: "agent-batch",
+		kind: "batch",
 		resumeAt: "b",
 		manifestPath: `/tmp/delegations/${label}-${attempt}.json`,
 		emittedAtEpochMs: DEFAULT_START_EPOCH,

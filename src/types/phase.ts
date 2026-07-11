@@ -1,10 +1,9 @@
 import type { ZodSchema } from "zod";
 import type { Clock } from "./config";
 import type {
-	AgentBatchDelegationRequest,
-	AgentDelegationRequest,
+	BatchDelegationRequest,
 	DelegationRequest,
-	SkillDelegationRequest,
+	PromptDelegationRequest,
 } from "./delegation";
 import type { OrchestratorLogger } from "./events";
 
@@ -25,18 +24,13 @@ export interface PhaseIO<State extends object> {
 		input?: NextInput,
 	): PhaseResult<State>;
 
-	delegateSkill(
-		req: SkillDelegationRequest,
+	delegate(
+		req: PromptDelegationRequest,
 		resumeAt: string,
 		nextState: State,
 	): PhaseResult<State>;
-	delegateAgent(
-		req: AgentDelegationRequest,
-		resumeAt: string,
-		nextState: State,
-	): PhaseResult<State>;
-	delegateAgentBatch(
-		req: AgentBatchDelegationRequest,
+	delegateBatch(
+		req: BatchDelegationRequest,
 		resumeAt: string,
 		nextState: State,
 	): PhaseResult<State>;

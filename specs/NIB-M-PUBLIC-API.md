@@ -28,7 +28,7 @@ Module qui **matérialise la surface publique** du package :
 3. **Constantes** `PROTOCOL_VERSION` et `STATE_SCHEMA_VERSION`.
 4. **Types centraux** (`OrchestratorConfig`, `Phase`, `PhaseIO`, `PhaseResult`, `DelegationRequest` variants, `RetryPolicy`, `TimeoutPolicy`, `LoggingPolicy`, `OrchestratorLogger`, `OrchestratorEvent`) — **définis** ici (pas seulement ré-exportés) pour les types purement déclaratifs qui n'ont pas de module "propriétaire" évident.
 
-**Principe normatif structurant — surface minimale et stable (I-9 NIB-S)** : seul ce qui est listé en §6 NIB-S est exporté. Tout service L4 interne reste interne. Toute violation (ex. export de `resolveRetryDecision` ou `SkillBinding`) = breaking du contrat.
+**Principe normatif structurant — surface minimale et stable (I-9 NIB-S)** : seul ce qui est listé en §6 NIB-S est exporté. Tout service L4 interne reste interne. Toute violation (ex. export de `resolveRetryDecision` ou `PromptBinding`) = breaking du contrat.
 
 **Fichiers cibles** :
 - `src/index.ts` — entry point (ré-exports + `definePhase` + constantes)
@@ -48,8 +48,8 @@ Module qui **matérialise la surface publique** du package :
 ### 2.1 `src/constants.ts`
 
 ```ts
-export const PROTOCOL_VERSION = 1 as const;
-export const STATE_SCHEMA_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
+export const STATE_SCHEMA_VERSION = 2 as const;
 // Defaults réexportés depuis retry-resolver pour un seul point d'accès.
 export {
   DEFAULT_MAX_ATTEMPTS,
@@ -97,7 +97,7 @@ export interface Clock {
 ```ts
 import type { ZodSchema } from "zod";
 import type { Clock } from "./config";
-import type { DelegationRequest, SkillDelegationRequest, AgentDelegationRequest, AgentBatchDelegationRequest } from "./delegation";
+import type { DelegationRequest, PromptDelegationRequest, BatchDelegationRequest } from "./delegation";
 import type { OrchestratorLogger } from "./events";
 
 export type Phase<State, Input = void, Output = void> = (
@@ -113,9 +113,8 @@ export interface PhaseIO<State extends object> {
     input?: NextInput
   ): PhaseResult<State>;
 
-  delegateSkill(req: SkillDelegationRequest, resumeAt: string, nextState: State): PhaseResult<State>;
-  delegateAgent(req: AgentDelegationRequest, resumeAt: string, nextState: State): PhaseResult<State>;
-  delegateAgentBatch(req: AgentBatchDelegationRequest, resumeAt: string, nextState: State): PhaseResult<State>;
+  delegate(req: PromptDelegationRequest, resumeAt: string, nextState: State): PhaseResult<State>;
+  delegateBatch(req: BatchDelegationRequest, resumeAt: string, nextState: State): PhaseResult<State>;
 
   done<FinalOutput>(output: FinalOutput): PhaseResult<State>;
   fail(error: Error): PhaseResult<State>;
@@ -146,31 +145,21 @@ export type PhaseResult<State, Output = void> =
 import type { RetryPolicy, TimeoutPolicy } from "./policies";
 
 export type DelegationRequest =
-  | SkillDelegationRequest
-  | AgentDelegationRequest
-  | AgentBatchDelegationRequest;
+  | PromptDelegationRequest
+  | BatchDelegationRequest;
 
-export interface SkillDelegationRequest {
-  readonly kind: "skill";
-  readonly skill: string;
-  readonly args?: Record<string, unknown>;
-  readonly label: string;
-  readonly retry?: RetryPolicy;
-  readonly timeout?: TimeoutPolicy;
-}
-
-export interface AgentDelegationRequest {
-  readonly kind: "agent";
-  readonly agentType: string;
+export interface PromptDelegationRequest {
+  readonly kind: "prompt";
+  readonly worker?: string;
   readonly prompt: string;
   readonly label: string;
   readonly retry?: RetryPolicy;
   readonly timeout?: TimeoutPolicy;
 }
 
-export interface AgentBatchDelegationRequest {
-  readonly kind: "agent-batch";
-  readonly agentType: string;
+export interface BatchDelegationRequest {
+  readonly kind: "batch";
+  readonly worker?: string;
   readonly jobs: ReadonlyArray<{
     readonly id: string;
     readonly prompt: string;
@@ -216,7 +205,7 @@ export type OrchestratorEvent =
   | { eventType: "orchestrator_start"; runId: string; orchestratorName: string; initialPhase: string; timestamp: string }
   | { eventType: "phase_start"; runId: string; phase: string; attemptCount: number; timestamp: string }
   | { eventType: "phase_end"; runId: string; phase: string; durationMs: number; resultKind: "transition" | "delegate" | "done" | "fail"; timestamp: string }
-  | { eventType: "delegation_emit"; runId: string; phase: string; label: string; kind: "skill" | "agent" | "agent-batch"; jobCount: number; timestamp: string }
+  | { eventType: "delegation_emit"; runId: string; phase: string; label: string; kind: "prompt" | "batch"; jobCount: number; timestamp: string }
   | { eventType: "delegation_result_read"; runId: string; phase: string; label: string; jobCount: number; filesLoaded: number; timestamp: string }
   | { eventType: "delegation_validated"; runId: string; phase: string; label: string; timestamp: string }
   | { eventType: "delegation_validation_failed"; runId: string; phase: string; label: string; zodErrorSummary: string; timestamp: string }
@@ -247,9 +236,9 @@ export type { Phase, PhaseIO, PhaseResult } from "./types/phase";
 // Types — delegation
 export type {
   DelegationRequest,
-  SkillDelegationRequest,
-  AgentDelegationRequest,
-  AgentBatchDelegationRequest,
+  PromptDelegationRequest,
+  PromptDelegationRequest,
+  BatchDelegationRequest,
 } from "./types/delegation";
 
 // Types — policies
@@ -311,13 +300,13 @@ export function definePhase<State, Input = void, Output = void>(
 
 **Classes** : `OrchestratorError` (abstract), 11 sous-classes concrètes.
 
-**Types** (22) : `OrchestratorConfig`, `Phase`, `PhaseIO`, `PhaseResult`, `DelegationRequest`, `SkillDelegationRequest`, `AgentDelegationRequest`, `AgentBatchDelegationRequest`, `RetryPolicy`, `TimeoutPolicy`, `LoggingPolicy`, `OrchestratorLogger`, `OrchestratorEvent`, `OrchestratorErrorKind`, `Clock`.
+**Types** (22) : `OrchestratorConfig`, `Phase`, `PhaseIO`, `PhaseResult`, `DelegationRequest`, `PromptDelegationRequest`, `PromptDelegationRequest`, `BatchDelegationRequest`, `RetryPolicy`, `TimeoutPolicy`, `LoggingPolicy`, `OrchestratorLogger`, `OrchestratorEvent`, `OrchestratorErrorKind`, `Clock`.
 
 ### 3.2 Non-exportés (C-GL-02)
 
 Explicitement interdits dans `src/index.ts` :
 - Services L4 : `clock` singleton, `generateRunId`, `abortableSleep`, `readState`, `writeStateAtomic`, `resolveRunDir`, `cleanupOldRuns`, `writeProtocolBlock`, `parseProtocolBlock`, `validateResult`, `summarizeZodError`, `resolveRetryDecision`, `classify`, `createLogger`, `acquireLock`, `refreshLock`, `releaseLock`.
-- Bindings : `skillBinding`, `agentBinding`, `agentBatchBinding`, `DelegationBinding`, `DelegationManifest`.
+- Bindings : `promptBinding`, `promptBinding`, `batchBinding`, `DelegationBinding`, `DelegationManifest`.
 - Engine internals : `runDispatchLoop`, `runHandleResume`, `DispatchContext`, `LoadedResults`, `LockHandle`, `StateFile`, `PendingDelegationRecord`.
 - Constantes internes : `DEFAULT_MAX_ATTEMPTS`, `DEFAULT_BACKOFF_BASE_MS`, `DEFAULT_MAX_BACKOFF_MS`, `DEFAULT_TIMEOUT_MS`, `DEFAULT_RETENTION_DAYS`, `DEFAULT_IDLE_LEASE_MS`, `MANIFEST_VERSION`.
 
@@ -375,8 +364,8 @@ const phases = {
     return io.transition("work", { count: state.count + 1 });
   }),
   "work": definePhase<MyState>(async (state, io) => {
-    return io.delegateSkill(
-      { kind: "skill", skill: "my-skill", label: "main", args: { foo: "bar" } },
+    return io.delegate(
+      { kind: "prompt", worker: "reviewer", prompt: "Review the current state", label: "main" },
       "done",
       { ...state, count: state.count + 1 }
     );
@@ -438,7 +427,7 @@ import { RunLockedError, OrchestratorError } from "turnlock";
 |---|---|
 | Surface publique | C-GL-01 (exports exacts), C-GL-02 (non-exports), C-GL-03 (pas de ValidationPolicy) |
 | Classes d'erreur | C-GL-04 (tous instanceof OrchestratorError), C-ER-01/02/03 |
-| Constantes | C-GL-05 (PROTOCOL_VERSION === 1), C-GL-06 (STATE_SCHEMA_VERSION === 1) |
+| Constantes | C-GL-05 (PROTOCOL_VERSION === 2), C-GL-06 (STATE_SCHEMA_VERSION === 2) |
 | Dépendances | C-GL-07 (zod + ulid uniquement), C-GL-08 (pas de sous-dep visible) |
 | Typage | C-GL-09 (OrchestratorConfig<State>), C-GL-10 (Phase<State, Input, Output>), C-GL-11 (definePhase pass-through) |
 | Union kind fermée | C-GL-12 (11 valeurs exactes), C-GL-13 (mapping kind ↔ classe) |
@@ -501,7 +490,7 @@ import { RunLockedError, OrchestratorError } from "turnlock";
    - `src/types/events.ts`
 2. **`src/index.ts`** ré-exporte exactement la surface §3.1 (ni plus, ni moins).
 3. **`definePhase`** pass-through no-op.
-4. **`PROTOCOL_VERSION = 1 as const`** et `STATE_SCHEMA_VERSION = 1 as const`.
+4. **`PROTOCOL_VERSION = 2 as const`** et `STATE_SCHEMA_VERSION = 2 as const`.
 5. **Types centraux** définis dans `src/types/*` — pas dupliqués ailleurs.
 6. **Aucun symbole non-public** ré-exporté (C-GL-02).
 7. **`OrchestratorErrorKind`** union de 11 valeurs exactement (C-GL-12).

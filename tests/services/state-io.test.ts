@@ -12,12 +12,13 @@ import {
 	type StateFile,
 	writeStateAtomic,
 } from "../../src/services/state-io";
+import { STATE_SCHEMA_VERSION } from "../../src/constants";
 import { loadFixture } from "../helpers/fixture-loader";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 
 function buildState<S>(data: S): StateFile<S> {
 	return {
-		schemaVersion: 1,
+		schemaVersion: STATE_SCHEMA_VERSION,
 		runId: "01HX0000000000000000000001",
 		orchestratorName: "x",
 		startedAt: "2026-04-19T12:00:00.000Z",
@@ -41,7 +42,7 @@ describe("readState (T-SI-01..07)", () => {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-SI-02 | valid v1 → typed StateFile", () => {
+	test("T-SI-02 | valid v2 → typed StateFile", () => {
 		const dir = makeTempDir();
 		try {
 			writeFileSync(
@@ -50,7 +51,7 @@ describe("readState (T-SI-01..07)", () => {
 			);
 			const state = readState(dir);
 			expect(state).not.toBeNull();
-			expect(state!.schemaVersion).toBe(1);
+			expect(state!.schemaVersion).toBe(STATE_SCHEMA_VERSION);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -64,7 +65,7 @@ describe("readState (T-SI-01..07)", () => {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-SI-04 | schemaVersion 2 → StateVersionMismatchError", () => {
+	test("T-SI-04 | schemaVersion 1 → StateVersionMismatchError", () => {
 		const dir = makeTempDir();
 		try {
 			writeFileSync(

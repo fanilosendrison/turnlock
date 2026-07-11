@@ -1,9 +1,9 @@
-// NIB-T §14 — AgentBatchBinding (T-AB-01..08, P-AB-a/b/c)
+// NIB-T §14 — BatchBinding (T-BT-01..08, P-BT-a/b/c)
 import { describe, expect, test } from "bun:test";
-import { agentBatchBinding } from "../../src/bindings/agent-batch";
+import { batchBinding } from "../../src/bindings/batch";
 import type { DelegationContext } from "../../src/bindings/types";
 import { InvalidConfigError } from "../../src/errors/concrete";
-import type { AgentBatchDelegationRequest } from "../../src/types/delegation";
+import type { BatchDelegationRequest } from "../../src/types/delegation";
 
 const RUN_DIR = "/tmp/.turnlock/runs/orch/01HX";
 
@@ -29,10 +29,10 @@ function makeContext(
 function makeRequest(
 	jobCount: number,
 	label = "batch",
-): AgentBatchDelegationRequest {
+): BatchDelegationRequest {
 	return {
-		kind: "agent-batch",
-		agentType: "reviewer",
+		kind: "batch",
+		worker: "reviewer",
 		jobs: Array.from({ length: jobCount }, (_, i) => ({
 			id: `j${i + 1}`,
 			prompt: `p${i + 1}`,
@@ -41,23 +41,23 @@ function makeRequest(
 	};
 }
 
-describe("AgentBatchBinding.buildManifest (T-AB-01..05)", () => {
-	test("T-AB-01 | 1 job manifest", () => {
-		const m = agentBatchBinding.buildManifest(makeRequest(1), makeContext());
-		expect(m.kind).toBe("agent-batch");
+describe("BatchBinding.buildManifest (T-BT-01..05)", () => {
+	test("T-BT-01 | 1 job manifest", () => {
+		const m = batchBinding.buildManifest(makeRequest(1), makeContext());
+		expect(m.kind).toBe("batch");
 		expect(m.jobs).toHaveLength(1);
 		expect(m.resultPath).toBeUndefined();
 		expect(m.jobs?.[0]?.resultPath).toBe(`${RUN_DIR}/results/batch-0/j1.json`);
 	});
-	test("T-AB-02 | 3 jobs", () => {
-		const m = agentBatchBinding.buildManifest(makeRequest(3), makeContext());
+	test("T-BT-02 | 3 jobs", () => {
+		const m = batchBinding.buildManifest(makeRequest(3), makeContext());
 		expect(m.jobs).toHaveLength(3);
 		for (const job of m.jobs!) {
 			expect(job.resultPath).toContain(`${RUN_DIR}/results/batch-0/`);
 		}
 	});
-	test("T-AB-03 | binding does not enforce unique job IDs", () => {
-		const req: AgentBatchDelegationRequest = {
+	test("T-BT-03 | binding does not enforce unique job IDs", () => {
+		const req: BatchDelegationRequest = {
 			...makeRequest(2),
 			jobs: [
 				{ id: "j1", prompt: "a" },
@@ -65,22 +65,22 @@ describe("AgentBatchBinding.buildManifest (T-AB-01..05)", () => {
 			],
 		};
 		expect(() =>
-			agentBatchBinding.buildManifest(req, makeContext()),
+			batchBinding.buildManifest(req, makeContext()),
 		).not.toThrow();
 	});
-	test("T-AB-04 | 0 jobs → InvalidConfigError", () => {
-		const req: AgentBatchDelegationRequest = {
-			kind: "agent-batch",
-			agentType: "reviewer",
+	test("T-BT-04 | 0 jobs → InvalidConfigError", () => {
+		const req: BatchDelegationRequest = {
+			kind: "batch",
+			worker: "reviewer",
 			jobs: [],
 			label: "batch",
 		};
-		expect(() => agentBatchBinding.buildManifest(req, makeContext())).toThrow(
+		expect(() => batchBinding.buildManifest(req, makeContext())).toThrow(
 			InvalidConfigError,
 		);
 	});
-	test("T-AB-05 | attempt=2 per-attempt dir", () => {
-		const m = agentBatchBinding.buildManifest(
+	test("T-BT-05 | attempt=2 per-attempt dir", () => {
+		const m = batchBinding.buildManifest(
 			makeRequest(3),
 			makeContext({ attempt: 2 }),
 		);
@@ -88,40 +88,40 @@ describe("AgentBatchBinding.buildManifest (T-AB-01..05)", () => {
 	});
 });
 
-describe("AgentBatchBinding.buildProtocolBlock (T-AB-06..08)", () => {
-	test("T-AB-06 | bloc DELEGATE agent-batch", () => {
-		const m = agentBatchBinding.buildManifest(makeRequest(3), makeContext());
-		const b = agentBatchBinding.buildProtocolBlock(
+describe("BatchBinding.buildProtocolBlock (T-BT-06..08)", () => {
+	test("T-BT-06 | bloc DELEGATE batch", () => {
+		const m = batchBinding.buildManifest(makeRequest(3), makeContext());
+		const b = batchBinding.buildProtocolBlock(
 			m,
 			"/tmp/delegations/batch-0.json",
 			"cmd",
 		);
-		expect(b).toContain("kind: agent-batch");
+		expect(b).toContain("kind: batch");
 	});
-	test("T-AB-07 | 5 jobs end-to-end disjoint paths", () => {
-		const m = agentBatchBinding.buildManifest(makeRequest(5), makeContext());
+	test("T-BT-07 | 5 jobs end-to-end disjoint paths", () => {
+		const m = batchBinding.buildManifest(makeRequest(5), makeContext());
 		const paths = new Set(m.jobs!.map((j) => j.resultPath));
 		expect(paths.size).toBe(5);
 	});
-	test("T-AB-08 | 20 jobs build fast & disjoint", () => {
+	test("T-BT-08 | 20 jobs build fast & disjoint", () => {
 		const start = Date.now();
-		const m = agentBatchBinding.buildManifest(makeRequest(20), makeContext());
+		const m = batchBinding.buildManifest(makeRequest(20), makeContext());
 		expect(Date.now() - start).toBeLessThan(200);
 		const paths = new Set(m.jobs!.map((j) => j.resultPath));
 		expect(paths.size).toBe(20);
 	});
 });
 
-describe("AgentBatchBinding properties (P-AB-a..c)", () => {
-	test("P-AB-a | pure", () => {
+describe("BatchBinding properties (P-BT-a..c)", () => {
+	test("P-BT-a | pure", () => {
 		const ctx = makeContext();
 		const req = makeRequest(3);
-		expect(agentBatchBinding.buildManifest(req, ctx)).toEqual(
-			agentBatchBinding.buildManifest(req, ctx),
+		expect(batchBinding.buildManifest(req, ctx)).toEqual(
+			batchBinding.buildManifest(req, ctx),
 		);
 	});
-	test("P-AB-b | each job resultPath shape", () => {
-		const m = agentBatchBinding.buildManifest(
+	test("P-BT-b | each job resultPath shape", () => {
+		const m = batchBinding.buildManifest(
 			makeRequest(3),
 			makeContext({ attempt: 1 }),
 		);
@@ -129,8 +129,8 @@ describe("AgentBatchBinding properties (P-AB-a..c)", () => {
 			expect(job.resultPath).toMatch(/\/results\/batch-1\/j\d+\.json$/);
 		}
 	});
-	test("P-AB-c | two distinct jobs have disjoint paths", () => {
-		const m = agentBatchBinding.buildManifest(makeRequest(5), makeContext());
+	test("P-BT-c | two distinct jobs have disjoint paths", () => {
+		const m = batchBinding.buildManifest(makeRequest(5), makeContext());
 		const paths = m.jobs!.map((j) => j.resultPath);
 		expect(new Set(paths).size).toBe(paths.length);
 	});

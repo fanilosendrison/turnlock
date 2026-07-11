@@ -61,7 +61,7 @@ export async function runDispatchLoop<S extends object>(
 
 interface LoadedResults {
   readonly label: string;                   // label de la pending delegation
-  readonly kind: "skill" | "agent" | "agent-batch";
+  readonly kind: "prompt" | "batch";
   readonly data: unknown | readonly unknown[];  // raw JSON loaded from result file(s)
 }
 ```
@@ -253,19 +253,19 @@ function buildPhaseIO<S extends object>(args: {
       args.setCommitted(r);
       return r;
     },
-    delegateSkill(request, resumeAt, nextState) {
+    delegate(request, resumeAt, nextState) {
       guardCommitted();
       const r: PhaseResult<S> = { kind: "delegate", request, resumeAt, nextState };
       args.setCommitted(r);
       return r;
     },
-    delegateAgent(request, resumeAt, nextState) {
+    delegate(request, resumeAt, nextState) {
       guardCommitted();
       const r: PhaseResult<S> = { kind: "delegate", request, resumeAt, nextState };
       args.setCommitted(r);
       return r;
     },
-    delegateAgentBatch(request, resumeAt, nextState) {
+    delegateBatch(request, resumeAt, nextState) {
       guardCommitted();
       const r: PhaseResult<S> = { kind: "delegate", request, resumeAt, nextState };
       args.setCommitted(r);
@@ -293,7 +293,7 @@ function buildPhaseIO<S extends object>(args: {
 
     consumePendingResult<T>(schema: ZodSchema<T>): T {
       const pd = assertConsumeAvailable();
-      if (pd.kind === "agent-batch") {
+      if (pd.kind === "batch") {
         throw new ProtocolError("use consumePendingBatchResults for batch delegations", {
           runId: ctx.runId, orchestratorName: ctx.config.name, phase: ctx.currentPhase!,
         });
@@ -335,7 +335,7 @@ function buildPhaseIO<S extends object>(args: {
 
     consumePendingBatchResults<T>(schema: ZodSchema<T>): readonly T[] {
       const pd = assertConsumeAvailable();
-      if (pd.kind !== "agent-batch") {
+      if (pd.kind !== "batch") {
         throw new ProtocolError("use consumePendingResult for single delegations", {
           runId: ctx.runId, orchestratorName: ctx.config.name, phase: ctx.currentPhase!,
         });
@@ -381,7 +381,7 @@ function buildPhaseIO<S extends object>(args: {
 
 La règle §6.3 "exactement un appel à consumePending*" s'enforce en deux endroits :
 
-- **Wrong-kind** : check immédiat dans `consumePendingResult` (throw si `pd.kind === "agent-batch"`) et `consumePendingBatchResults` (throw si `pd.kind !== "agent-batch"`).
+- **Wrong-kind** : check immédiat dans `consumePendingResult` (throw si `pd.kind === "batch"`) et `consumePendingBatchResults` (throw si `pd.kind !== "batch"`).
 - **Double-appel** : check immédiat avant `incrementConsumed()`. Si `consumedCount > 0` déjà, throw `ProtocolError("multiple consume calls on same delegation: <label>")`.
 - **Zero-appel** : check **post-phase** au step 16.l (§14.1). Si `consumedCount === 0` et phase de reprise, throw `ProtocolError("unconsumed delegation: <label>")`.
 
@@ -473,9 +473,9 @@ async function handleDelegate<S>(
     });
   }
 
-  // Validation jobs pour agent-batch.
-  if (kind === "agent-batch") {
-    const req = request as AgentBatchDelegationRequest;
+  // Validation jobs pour batch.
+  if (kind === "batch") {
+    const req = request as BatchDelegationRequest;
     if (req.jobs.length === 0) {
       throw new InvalidConfigError(`batch delegation '${label}' has no jobs`);
     }
@@ -523,7 +523,7 @@ async function handleDelegate<S>(
     label, kind, resumeAt, manifestPath,
     emittedAtEpochMs, deadlineAtEpochMs,
     attempt, effectiveRetryPolicy,
-    jobIds: kind === "agent-batch" ? (request as AgentBatchDelegationRequest).jobs.map(j => j.id) : undefined,
+    jobIds: kind === "batch" ? (request as BatchDelegationRequest).jobs.map(j => j.id) : undefined,
   };
 
   // Update state.
@@ -542,7 +542,7 @@ async function handleDelegate<S>(
   // Log delegation_emit.
   ctx.logger.emit({
     eventType: "delegation_emit", runId: ctx.runId, phase: state.currentPhase,
-    label, kind, jobCount: kind === "agent-batch" ? (request as AgentBatchDelegationRequest).jobs.length : 1,
+    label, kind, jobCount: kind === "batch" ? (request as BatchDelegationRequest).jobs.length : 1,
     timestamp: emittedAt,
   });
 
@@ -750,13 +750,13 @@ function reconstructManifest(old: DelegationManifest, updates: {
     emittedAtEpochMs: updates.emittedAtEpochMs,
     deadlineAtEpochMs: updates.deadlineAtEpochMs,
   };
-  if (old.kind === "skill" || old.kind === "agent") {
+  if (old.kind === "prompt") {
     return {
       ...base,
       resultPath: path.join(updates.runDir, "results", `${updates.label}-${updates.attempt}.json`),
     };
   }
-  // agent-batch
+  // batch
   return {
     ...base,
     jobs: old.jobs!.map(j => ({
@@ -854,11 +854,10 @@ Utilisé pour `manifest.json`, `output.json`. Pattern identique à `writeStateAt
 ### 5.3 `selectBinding`
 
 ```ts
-function selectBinding(kind: "skill" | "agent" | "agent-batch"): DelegationBinding<any> {
+function selectBinding(kind: "prompt" | "batch"): DelegationBinding<any> {
   switch (kind) {
-    case "skill": return skillBinding;
-    case "agent": return agentBinding;
-    case "agent-batch": return agentBatchBinding;
+    case "prompt": return promptBinding;
+    case "batch": return batchBinding;
   }
 }
 ```

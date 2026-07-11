@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { STATE_SCHEMA_VERSION } from "../constants";
 import { OrchestratorError } from "../errors/base";
 import {
 	AbortedError,
@@ -228,7 +229,7 @@ async function runInitialMode<S extends object>(
 	}
 
 	const initialState: StateFile<S> = {
-		schemaVersion: 1,
+		schemaVersion: STATE_SCHEMA_VERSION,
 		runId,
 		orchestratorName: config.name,
 		startedAt: nowIso,

@@ -45,7 +45,7 @@ Sont couverts dans ce NIB-T, dans l'ordre des fichiers de test :
 
 1. **Services transversaux purs** (Layer 4) — `resolveRetryDecision`, `classify` (error-classifier), `parseProtocolBlock` / `writeProtocolBlock`, `validateResult` (zod), `readState` / `writeStateAtomic`, `resolveRunDir` / `cleanupOldRuns`, `generateRunId`, `clock` module, `abortableSleep`.
 2. **Lock d'exécution** (§4.13) — acquire O_EXCL, update atomique, release avec vérification ownerToken, lease idle simple, refresh phase-start, events `lock_conflict`.
-3. **Bindings** (Layer 3) — `SkillBinding.buildManifest` / `buildProtocolBlock`, `AgentBinding`, `AgentBatchBinding`.
+3. **Bindings** (Layer 3) — `PromptBinding.buildManifest` / `buildProtocolBlock`, `PromptBinding`, `BatchBinding`.
 4. **Engine** (Layer 2) — `runOrchestrator` flow initial (§14.1), flow resume (§14.2), retry post-schema-error, retry post-timeout, single PhaseResult guard, deep-freeze, consumption exact-once.
 5. **Préflight errors** — config invalide, state manquant/corrompu, mismatch runId/orchestratorName → bloc ERROR preflight.
 6. **Protocole `@@TURNLOCK@@`** — 4 actions (`DELEGATE`, `DONE`, `ERROR`, `ABORTED`), format YAML-subset, mapping `PhaseResult.kind ↔ action`.
@@ -74,7 +74,7 @@ Tout test prescrit dans ce NIB-T doit **échouer avant toute ligne de code de pr
 **Ne sont PAS RED — déplacés en §27.bis GREEN Layer 1 companion** :
 
 - Surface publique / exports (ex-§27.1) : `C-GL-01..04` vérifient qu'un module exporte tel symbole. Trivialement vrai dès que Layer 1 compile.
-- Constantes (ex-§27.2) : `C-GL-05..06` vérifient `PROTOCOL_VERSION === 1` et `STATE_SCHEMA_VERSION === 1`. Checks littéraux, pas des comportements.
+- Constantes (ex-§27.2) : `C-GL-05..06` vérifient `PROTOCOL_VERSION === 2` et `STATE_SCHEMA_VERSION === 2`. Checks littéraux, pas des comportements.
 - Dépendances (ex-§27.3) : `C-GL-07..08` inspectent `package.json`. Pas de runtime.
 - Typage (ex-§27.4) : `C-GL-09..11` vérifient la compilation TS. Pas de runtime.
 - Union fermée d'error kinds (ex-§27.5) : `C-GL-12..13` — type-level.
@@ -114,8 +114,8 @@ tests/
 │   │   ├── skill-attempt-0.json
 │   │   ├── skill-attempt-1.json
 │   │   ├── agent-attempt-0.json
-│   │   ├── agent-batch-3jobs.json
-│   │   └── agent-batch-5jobs-attempt-1.json
+│   │   ├── batch-3jobs.json
+│   │   └── batch-5jobs-attempt-1.json
 │   ├── results/                    # Fichiers résultats écrits par sub-agents simulés
 │   │   ├── ok-simple.json
 │   │   ├── ok-complex.json
@@ -166,9 +166,8 @@ tests/
 ├── lock/                           # §4.13
 │   └── lock.test.ts
 ├── bindings/
-│   ├── skill-binding.test.ts
-│   ├── agent-binding.test.ts
-│   └── agent-batch-binding.test.ts
+│   ├── prompt-binding.test.ts
+│   └── batch-binding.test.ts
 ├── engine/
 │   ├── run-initial-happy-path.test.ts
 │   ├── run-resume-happy-path.test.ts
@@ -221,9 +220,9 @@ tests/
 | `CK` | clock (wall / epoch-ms / mono) |
 | `AS` | abortable-sleep |
 | `LK` | lock (acquire / refresh / release) |
-| `SK` | SkillBinding |
-| `AG` | AgentBinding |
-| `AB` | AgentBatchBinding |
+| `SK` | PromptBinding |
+| `AG` | PromptBinding |
+| `AB` | BatchBinding |
 | `RO` | runOrchestrator flow initial (§14.1) |
 | `RS` | runOrchestrator flow resume (§14.2) |
 | `RT` | retry post-delegation (catch §14.1 step 16.i + §14.2 step 12.e) |
@@ -372,9 +371,9 @@ Signature : `writeProtocolBlock(action: "DELEGATE", fields: DelegateFields): str
 
 | ID | Input | Output attendu (string, lignes séparées par `\n`) |
 | --- | --- | --- |
-| T-PR-01 | `{ runId: "01HX...", orchestrator: "senior-review", manifest: "/abs/path.json", kind: "skill", resumeCmd: "bun run /path/main.ts --run-id 01HX... --resume" }` | `"\n@@TURNLOCK@@\nversion: 1\nrun_id: 01HX...\norchestrator: senior-review\naction: DELEGATE\nmanifest: /abs/path.json\nkind: skill\nresume_cmd: \"bun run /path/main.ts --run-id 01HX... --resume\"\n@@END@@\n\n"` (bloc précédé/suivi d'une ligne vide, `resume_cmd` quoté car contient espaces) |
-| T-PR-02 | idem avec `kind: "agent"` | identique sauf `kind: agent` |
-| T-PR-03 | idem avec `kind: "agent-batch"` | identique sauf `kind: agent-batch` |
+| T-PR-01 | `{ runId: "01HX...", orchestrator: "senior-review", manifest: "/abs/path.json", kind: "prompt", resumeCmd: "bun run /path/main.ts --run-id 01HX... --resume" }` | `"\n@@TURNLOCK@@\nversion: 2\nrun_id: 01HX...\norchestrator: senior-review\naction: DELEGATE\nmanifest: /abs/path.json\nkind: prompt\nresume_cmd: \"bun run /path/main.ts --run-id 01HX... --resume\"\n@@END@@\n\n"` (bloc précédé/suivi d'une ligne vide, `resume_cmd` quoté car contient espaces) |
+| T-PR-02 | idem avec `kind: "prompt"` | identique sauf `kind: prompt` |
+| T-PR-03 | idem avec `kind: "batch"` | identique sauf `kind: batch` |
 
 ### 4.2 writeProtocolBlock — action DONE
 
@@ -406,8 +405,8 @@ Signature : `parseProtocolBlock(stdout: string): ProtocolBlock | null`.
 
 | ID | Input | Output attendu |
 | --- | --- | --- |
-| T-PR-13 | Bloc DELEGATE complet | `{ version: 1, runId, orchestrator, action: "DELEGATE", fields: { manifest, kind, resumeCmd } }` |
-| T-PR-14 | Bloc DONE complet | `{ version: 1, runId, orchestrator, action: "DONE", fields: { output, success: true, phasesExecuted, durationMs } }` |
+| T-PR-13 | Bloc DELEGATE complet | `{ version: 2, runId, orchestrator, action: "DELEGATE", fields: { manifest, kind, resumeCmd } }` |
+| T-PR-14 | Bloc DONE complet | `{ version: 2, runId, orchestrator, action: "DONE", fields: { output, success: true, phasesExecuted, durationMs } }` |
 | T-PR-15 | Bloc ERROR avec `run_id: null` | `runId: null` (preflight) |
 | T-PR-16 | Bloc ERROR avec `phase: null` | `fields.phase === null` |
 | T-PR-17 | Bloc ABORTED | `action: "ABORTED"`, `signal`, `phase` |
@@ -701,67 +700,42 @@ Référence : §4.13 helper, §6.3.
 
 ---
 
-## 12. Tests du SkillBinding (`tests/bindings/skill-binding.test.ts`)
+## 12. Tests du PromptBinding (`tests/bindings/prompt-binding.test.ts`)
 
 Référence : §5.4, §6.5, §7.2, §7.4.1.
 
-Signature : `SkillBinding.buildManifest(request, context): DelegationManifest` + `SkillBinding.buildProtocolBlock(manifest): string`.
+Signature : `PromptBinding.buildManifest(request, context): DelegationManifest` + `PromptBinding.buildProtocolBlock(manifest): string`.
 
 ### 12.1 Acceptance tests — buildManifest
 
-> **Note** : les noms (`senior-review`, `dedup-codebase`, etc.) proviennent du premier consommateur Claude Code. Pour le runtime, ce sont des labels opaques. Voir `docs/consumers/claude-code/` pour le contexte de provenance. Les chemins utilisent le RUN_DIR root par défaut `.turnlock/runs/` (surchargeable, cf NIB-M-RUN-DIR §1).
+> **Note** : `worker` est opaque et optionnel. Le runtime le copie tel quel dans le manifest sans l'interpréter.
 
 Context fixture : `{ runId: "01HX", orchestratorName: "senior-review", phase: "dispatch", resumeAt: "consolidate", attempt: 0, maxAttempts: 3, emittedAt: "2026-04-19T12:00:00.000Z", emittedAtEpochMs: 1745062800000, timeoutMs: 600000, deadlineAtEpochMs: 1745063400000, runDir: "/tmp/.turnlock/runs/senior-review/01HX" }`.
 
 | ID | Request | Champs clés du manifest attendu |
 | --- | --- | --- |
-| T-SK-01 | `{ kind: "skill", skill: "dedup-codebase", label: "cleanup", args: { path: "src/" } }` | `manifestVersion: 1`, `runId`, `orchestratorName`, `phase: "dispatch"`, `resumeAt: "consolidate"`, `label: "cleanup"`, `kind: "skill"`, `skill: "dedup-codebase"`, `skillArgs: { path: "src/" }`, `resultPath: "/tmp/.turnlock/runs/senior-review/01HX/results/cleanup-0.json"`, `emittedAt`, `emittedAtEpochMs`, `timeoutMs: 600000`, `deadlineAtEpochMs`, `attempt: 0`, `maxAttempts: 3` |
-| T-SK-02 | Sans `args` | `skillArgs` absent ou `{}` — **DÉCISION** : **absent** (cohérent JSON) |
-| T-SK-03 | `attempt: 2` | `resultPath` contient `cleanup-2.json` (per-attempt §7.2) |
-| T-SK-04 | `label` contient caractères invalides (`UPPER`) | throw `ProtocolError` ? — **NON** : la validation de label est faite en amont par l'engine (§14.1 step 16.n). Le binding n'a pas cette responsabilité. |
+| T-PB-01 | `{ kind: "prompt", prompt: "Review src/foo.ts", label: "review-foo" }` | `manifestVersion: 2`, `kind: "prompt"`, `prompt`, `label`, `resultPath: <runDir>/results/review-foo-0.json`, `worker` absent, `jobs` absent |
+| T-PB-02 | `{ kind: "prompt", worker: "reviewer", prompt: "p", label: "review" }` | `worker: "reviewer"` présent et préservé |
+| T-PB-03 | `prompt` long (5000 chars) | Préservé intégralement dans le manifest (pas de troncature) |
+| T-PB-04 | `attempt: 2` | `resultPath` contient `<label>-2.json` (per-attempt §7.2) |
+| T-PB-05 | `label` invalide | Le binding ne valide pas le label ; validation en amont par l'engine (§14.1 step 16.n) |
 
 ### 12.2 Acceptance tests — buildProtocolBlock
 
 | ID | Input (manifest) | Output |
 | --- | --- | --- |
-| T-SK-05 | Manifest de T-SK-01 + `resumeCmd: "bun run /path --run-id 01HX --resume"` | Bloc DELEGATE avec `manifest: <manifestPath>`, `kind: skill`, `resume_cmd: "..."` |
-| T-SK-06 | Cohérence : `kind` du bloc == `kind` du manifest | Toujours vrai |
+| T-PB-06 | Manifest prompt + `resumeCmd: "bun run /path --run-id 01HX --resume"` | Bloc DELEGATE avec `manifest: <manifestPath>`, `kind: prompt`, `resume_cmd: "..."` |
+| T-PB-07 | Cohérence : `kind` du bloc == `kind` du manifest | Toujours vrai |
 
 ### 12.3 Propriétés
 
-- **P-SK-a** : `buildManifest` est pure (deux appels avec mêmes args produisent un manifest identique, sauf si `clock` mocké pour varier).
-- **P-SK-b** : `resultPath` toujours de la forme `<runDir>/results/<label>-<attempt>.json`.
-- **P-SK-c** : `manifest.kind === "skill"` toujours pour un `SkillBinding`.
+- **P-PB-a** : `buildManifest` est pure.
+- **P-PB-b** : `resultPath` toujours de la forme `<runDir>/results/<label>-<attempt>.json`.
+- **P-PB-c** : `manifest.kind === "prompt"` toujours pour un `PromptBinding`.
 
 ---
 
-## 13. Tests du AgentBinding (`tests/bindings/agent-binding.test.ts`)
-
-Référence : §5.4, §6.5, §7.2, §7.4.1.
-
-### 13.1 Acceptance tests — buildManifest
-
-| ID | Request | Champs clés attendus |
-| --- | --- | --- |
-| T-AG-01 | `{ kind: "agent", agentType: "senior-reviewer-file", prompt: "Review src/foo.ts", label: "review-foo" }` | `manifestVersion: 1`, `kind: "agent"`, `agentType: "senior-reviewer-file"`, `prompt: "Review src/foo.ts"`, `label: "review-foo"`, `resultPath: <runDir>/results/review-foo-0.json`, `skill` absent, `skillArgs` absent, `jobs` absent |
-| T-AG-02 | `prompt` long (5000 chars) | Préservé intégralement dans le manifest (pas de troncature) |
-| T-AG-03 | `attempt: 1` | `resultPath` contient `review-foo-1.json` |
-
-### 13.2 Acceptance tests — buildProtocolBlock
-
-| ID | Input | Output |
-| --- | --- | --- |
-| T-AG-04 | Manifest T-AG-01 | Bloc DELEGATE avec `kind: agent` |
-| T-AG-05 | Cohérence | `manifest.kind === "agent"` → bloc `kind: agent` |
-
-### 13.3 Propriétés
-
-- **P-AG-a** : `buildManifest` est pure.
-- **P-AG-b** : `resultPath` de la forme `<runDir>/results/<label>-<attempt>.json`.
-
----
-
-## 14. Tests du AgentBatchBinding (`tests/bindings/agent-batch-binding.test.ts`)
+## 14. Tests du BatchBinding (`tests/bindings/batch-binding.test.ts`)
 
 Référence : §5.4, §6.5, §7.2, §7.4.1.
 
@@ -769,7 +743,7 @@ Référence : §5.4, §6.5, §7.2, §7.4.1.
 
 | ID | Request (n jobs) | Structure attendue |
 | --- | --- | --- |
-| T-AB-01 | 1 job `{ id: "j1", prompt: "p1" }` | `kind: "agent-batch"`, `jobs: [{ id: "j1", prompt: "p1", resultPath: "<runDir>/results/<label>-0/j1.json" }]`, `resultPath` top-level absent |
+| T-AB-01 | 1 job `{ id: "j1", prompt: "p1" }` | `kind: "batch"`, `jobs: [{ id: "j1", prompt: "p1", resultPath: "<runDir>/results/<label>-0/j1.json" }]`, `resultPath` top-level absent |
 | T-AB-02 | 3 jobs | `jobs.length === 3`, chacun avec son propre `resultPath` per-jobId |
 | T-AB-03 | Jobs avec IDs identiques | Le binding **n'enforce pas** l'unicité (responsabilité du caller §6.5). Manifest construit quand même. — **DÉCISION** : test accepte la construction, l'unicité est enforcée au niveau engine (T-RO-XX). |
 | T-AB-04 | 0 jobs (`jobs: []`) | throw `InvalidConfigError` — **DÉCISION** : binding throw par défense en profondeur, même si l'engine doit throw aussi. |
@@ -779,7 +753,7 @@ Référence : §5.4, §6.5, §7.2, §7.4.1.
 
 | ID | Input | Output |
 | --- | --- | --- |
-| T-AB-06 | Manifest T-AB-02 | Bloc DELEGATE avec `kind: agent-batch` |
+| T-AB-06 | Manifest T-AB-02 | Bloc DELEGATE avec `kind: batch` |
 
 ### 14.3 Acceptance tests — scaling
 
@@ -823,25 +797,25 @@ Setup commun : `mock-fs` avec RUN_DIR vide, `mock-clock` initialisé, `mock-stdi
 | T-RO-03 | Phase `a` fait `io.transition("b", { count: 1 })` + phase `b` reçoit state avec `count === 1` | Effectivement reçu |
 | T-RO-04 | Phase `a` fait `io.transition("b", {}, "input-data")` ; `b(state, io, input)` reçoit `input === "input-data"` | Vérifié (canal in-process, §6.2) |
 
-### 15.3 Flow avec une délégation skill
+### 15.3 Flow avec une délégation prompt
 
 | ID | Config / Scénario | Vérification |
 | --- | --- | --- |
-| T-RO-05 | Phase `a` fait `io.delegateSkill({ kind: "skill", skill: "foo", label: "bar" }, resumeAt: "b")` | Bloc stdout `DELEGATE` unique avec `kind: skill`, `manifest` pointe sur `delegations/bar-0.json` qui existe, `resume_cmd` = `config.resumeCommand(runId)`. State persisté avec `pendingDelegation: { label: "bar", kind: "skill", resumeAt: "b", attempt: 0, ... }`. Exit code 0. Lock released. |
+| T-RO-05 | Phase `a` fait `io.delegate({ kind: "prompt", prompt: "foo", label: "bar" }, resumeAt: "b")` | Bloc stdout `DELEGATE` unique avec `kind: prompt`, `manifest` pointe sur `delegations/bar-0.json` qui existe, `resume_cmd` = `config.resumeCommand(runId)`. State persisté avec `pendingDelegation: { label: "bar", kind: "prompt", resumeAt: "b", attempt: 0, ... }`. Exit code 0. Lock released. |
 | T-RO-06 | Écriture atomique de state + manifest | Ni `state.json.tmp` ni `delegations/bar-0.json.tmp` ne subsistent |
 | T-RO-07 | Registre `usedLabels` | `state.usedLabels === ["bar"]` post-emit |
 
-### 15.4 Flow avec une délégation agent unique
+### 15.4 Flow avec une délégation prompt avec worker
 
 | ID | Config / Scénario | Vérification |
 | --- | --- | --- |
-| T-RO-08 | Phase `a` fait `io.delegateAgent({ kind: "agent", agentType: "reviewer", prompt: "p", label: "rev" }, resumeAt: "b")` | Bloc `DELEGATE kind: agent`, manifest avec `agentType`, `prompt`, `resultPath: results/rev-0.json` |
+| T-RO-08 | Phase `a` fait `io.delegate({ kind: "prompt", worker: "reviewer", prompt: "p", label: "rev" }, resumeAt: "b")` | Bloc `DELEGATE kind: prompt`, manifest avec `worker`, `prompt`, `resultPath: results/rev-0.json` |
 
-### 15.5 Flow avec une délégation agent-batch
+### 15.5 Flow avec une délégation batch
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-RO-09 | `delegateAgentBatch` avec 3 jobs | Bloc `DELEGATE kind: agent-batch`, manifest avec `jobs: [...]`. Chaque job a son `resultPath` per-jobId dans `results/<label>-0/<jobId>.json`. `state.pendingDelegation.jobIds === ["j1", "j2", "j3"]`. |
+| T-RO-09 | `delegateBatch` avec 3 jobs | Bloc `DELEGATE kind: batch`, manifest avec `jobs: [...]`. Chaque job a son `resultPath` per-jobId dans `results/<label>-0/<jobId>.json`. `state.pendingDelegation.jobIds === ["j1", "j2", "j3"]`. |
 
 ### 15.6 Génération et adoption du runId
 
@@ -911,7 +885,7 @@ Référence : §6.8, §9.2, §9.3.
 | ID | Scénario | Vérification |
 | --- | --- | --- |
 | T-DF-01 | Phase appelle `io.transition(...)` puis `io.done(...)` dans la même phase | Le second appel throw `ProtocolError("PhaseResult already committed")`. L'engine capture → bloc `ERROR error_kind: protocol` |
-| T-DF-02 | Phase appelle `io.delegateSkill(...)` puis `io.fail(...)` | Second appel throw `ProtocolError` |
+| T-DF-02 | Phase appelle `io.delegate(...)` puis `io.fail(...)` | Second appel throw `ProtocolError` |
 | T-DF-03 | Phase appelle `io.done(...)` seul | OK, un seul PhaseResult commit |
 
 ### 16.4 Flow : deep-freeze enforcement
@@ -928,8 +902,8 @@ Référence : §6.8, §9.2, §9.3.
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-RO-24 | Run avec 2 delegateSkill successifs avec labels différents | `state.usedLabels === ["label-1", "label-2"]` (append-only) |
-| T-RO-25 | Run avec 2 delegateSkill successifs avec le même label | 2e appel throw `ProtocolError("duplicate label: X")`. Bloc `ERROR error_kind: protocol`. |
+| T-RO-24 | Run avec 2 delegate successifs avec labels différents | `state.usedLabels === ["label-1", "label-2"]` (append-only) |
+| T-RO-25 | Run avec 2 delegate successifs avec le même label | 2e appel throw `ProtocolError("duplicate label: X")`. Bloc `ERROR error_kind: protocol`. |
 | T-RO-26 | Label re-utilisé entre deux runs différents (runId différents) | OK, chaque run a son propre `usedLabels` |
 | T-RO-27 | Label invalide format (`"BAD_LABEL"`) | throw `ProtocolError` (kebab-case requis §6.5) |
 | T-RO-28 | Label vide `""` | throw `ProtocolError` |
@@ -940,7 +914,7 @@ Référence : §6.8, §9.2, §9.3.
 | --- | --- | --- |
 | T-RO-29 | `config.initial === "x"` mais `phases.x` absent | Preflight `InvalidConfigError` (§6.1) → bloc ERROR preflight |
 | T-RO-30 | `io.transition("unknown", ...)` | throw interne `ProtocolError("unknown phase: unknown")` → bloc ERROR |
-| T-RO-31 | `io.delegateSkill({..., resumeAt: "unknown"})` | throw interne `ProtocolError` |
+| T-RO-31 | `io.delegate({..., resumeAt: "unknown"})` | throw interne `ProtocolError` |
 
 ### 16.7 Flow : state JSON-sérialisable (§4.2)
 
@@ -958,7 +932,7 @@ Référence : §6.2, C11.
 | ID | Scénario | Vérification |
 | --- | --- | --- |
 | T-RO-36 | Phase `a` → `io.transition("b", newState, "my-input")`. Phase `b` reçoit `input === "my-input"` (in-process). | ✅ Passe in-process. |
-| T-RO-37 | Phase `a` → `io.transition("b", newState, "my-input")`. Phase `b` délègue via `delegateSkill`, process exit. Resume : phase `b` (resumeAt) ne reçoit **pas** `input` (input === undefined). | Vérifié : `input` n'est pas persisté dans `state.json` ni dans `pendingDelegation`. Discipline C11. |
+| T-RO-37 | Phase `a` → `io.transition("b", newState, "my-input")`. Phase `b` délègue via `delegate`, process exit. Resume : phase `b` (resumeAt) ne reçoit **pas** `input` (input === undefined). | Vérifié : `input` n'est pas persisté dans `state.json` ni dans `pendingDelegation`. Discipline C11. |
 | T-RO-38 | Phase `a` transition avec input complexe `{ big: "obj" }`. Phase `b` consomme sans délégation. | Transition in-process = OK. |
 
 ### 16.9 Flow : unicité `jobs[].id` dans un batch (engine-level)
@@ -967,8 +941,8 @@ Référence : §6.5.
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-RO-39 | `delegateAgentBatch` avec `jobs: [{id: "j1", ...}, {id: "j1", ...}]` (ID dupliqué) | Engine throw `ProtocolError("duplicate job id in batch: j1")` avant d'écrire le manifest. Bloc ERROR `error_kind: protocol`. Exit 1. |
-| T-RO-40 | `delegateAgentBatch` avec `jobs: [{id: "j1"}, {id: "j2"}, {id: "j3"}]` | OK, manifest écrit. |
+| T-RO-39 | `delegateBatch` avec `jobs: [{id: "j1", ...}, {id: "j1", ...}]` (ID dupliqué) | Engine throw `ProtocolError("duplicate job id in batch: j1")` avant d'écrire le manifest. Bloc ERROR `error_kind: protocol`. Exit 1. |
+| T-RO-40 | `delegateBatch` avec `jobs: [{id: "j1"}, {id: "j2"}, {id: "j3"}]` | OK, manifest écrit. |
 
 ### 16.10 Flow : configuration figée au run-init (§4.8)
 
@@ -991,17 +965,17 @@ Setup : RUN_DIR préexistant avec `state.json` où `pendingDelegation` est défi
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-RS-01 | argv = `--run-id 01HX --resume`. State a `pendingDelegation: { label: "foo", kind: "skill", resumeAt: "b", attempt: 0, deadlineAtEpochMs: nowEpoch + 300000, effectiveRetryPolicy }`. `results/foo-0.json` contient `{ verdict: "clean" }`. Phase `b` appelle `io.consumePendingResult(z.object({ verdict: z.string() }))` et fait `io.done({ ok: true })`. | Ordre events : `[orch_start, phase_start(b), delegation_result_read(label: "foo", jobCount: 1, filesLoaded: 1), delegation_validated(label: "foo"), phase_end(b, done), orch_end(success: true)]`. Bloc stdout `DONE`. `state.pendingDelegation === undefined` dans state final. Lock acquired puis released. |
+| T-RS-01 | argv = `--run-id 01HX --resume`. State a `pendingDelegation: { label: "foo", kind: "prompt", resumeAt: "b", attempt: 0, deadlineAtEpochMs: nowEpoch + 300000, effectiveRetryPolicy }`. `results/foo-0.json` contient `{ verdict: "clean" }`. Phase `b` appelle `io.consumePendingResult(z.object({ verdict: z.string() }))` et fait `io.done({ ok: true })`. | Ordre events : `[orch_start, phase_start(b), delegation_result_read(label: "foo", jobCount: 1, filesLoaded: 1), delegation_validated(label: "foo"), phase_end(b, done), orch_end(success: true)]`. Bloc stdout `DONE`. `state.pendingDelegation === undefined` dans state final. Lock acquired puis released. |
 | T-RS-02 | Resume, phase appelle `consumePendingResult` avec schéma valide | Event `delegation_validated` émis. Phase reçoit data typée. |
 | T-RS-03 | Resume, phase appelle `consumePendingResult` avec schéma qui rejette | Event `delegation_validation_failed` émis. `DelegationSchemaError` thrown dans la phase → catch par engine → si retry possible, retry. Sinon bloc ERROR. |
 
-### 17.2 Resume happy path — délégation agent-batch
+### 17.2 Resume happy path — délégation batch
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-RS-04 | State avec `pendingDelegation: { kind: "agent-batch", jobIds: ["j1","j2","j3"], attempt: 0, ... }`. 3 fichiers résultat présents. Phase appelle `consumePendingBatchResults(schema)`. | Reçoit `readonly T[]` de longueur 3, aligné sur ordre de `jobIds`. `delegation_result_read` avec `jobCount: 3, filesLoaded: 3`. `delegation_validated` unique (pas un par job, §11.3). |
-| T-RS-05 | Wrong-kind : phase appelle `consumePendingResult` alors que `kind: "agent-batch"` | Immediate throw `ProtocolError("use consumePendingBatchResults for batch delegations")`. Bloc ERROR. |
-| T-RS-06 | Inverse : phase appelle `consumePendingBatchResults` alors que `kind: "skill"` | Immediate throw `ProtocolError("use consumePendingResult for single delegations")` |
+| T-RS-04 | State avec `pendingDelegation: { kind: "batch", jobIds: ["j1","j2","j3"], attempt: 0, ... }`. 3 fichiers résultat présents. Phase appelle `consumePendingBatchResults(schema)`. | Reçoit `readonly T[]` de longueur 3, aligné sur ordre de `jobIds`. `delegation_result_read` avec `jobCount: 3, filesLoaded: 3`. `delegation_validated` unique (pas un par job, §11.3). |
+| T-RS-05 | Wrong-kind : phase appelle `consumePendingResult` alors que `kind: "batch"` | Immediate throw `ProtocolError("use consumePendingBatchResults for batch delegations")`. Bloc ERROR. |
+| T-RS-06 | Inverse : phase appelle `consumePendingBatchResults` alors que `kind: "prompt"` | Immediate throw `ProtocolError("use consumePendingResult for single delegations")` |
 
 ### 17.3 Resume — consumption check (§14.1 step 16.l)
 
@@ -1057,7 +1031,7 @@ Référence : §7.1, §14.2 step 14, §14.3, M14.
 | ID | Scénario | Vérification |
 | --- | --- | --- |
 | T-RS-27 | Run avec 3 délégations successives dans un même run (invocation initiale émet DELEGATE 1 → resume consomme et émet DELEGATE 2 → resume consomme et émet DELEGATE 3 → resume consomme et done). | 3 blocs DELEGATE + 1 bloc DONE au total. 4 invocations process. Chaque `resume_cmd` relance correctement. `state.usedLabels` final contient les 3 labels dans l'ordre. `events.ndjson` contient la séquence complète. |
-| T-RS-28 | Séquence mixte : DELEGATE skill → DELEGATE agent → DELEGATE agent-batch → DONE | Chaque kind fonctionne. `state.pendingDelegation.kind` change correctement. Consumption typée fonctionne pour chaque kind. |
+| T-RS-28 | Séquence mixte : DELEGATE skill → DELEGATE agent → DELEGATE batch → DONE | Chaque kind fonctionne. `state.pendingDelegation.kind` change correctement. Consumption typée fonctionne pour chaque kind. |
 
 ### 17.9 Edge cases au resume
 
@@ -1106,8 +1080,8 @@ Référence : M13, §14.1 step 16.i catch.
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-RT-06 | Retry d'une skill delegation avec `skillArgs: { path: "src/" }` | Nouveau manifest a les mêmes `skill`, `skillArgs`, `timeoutMs`. Seuls `attempt`, `emittedAt`, `emittedAtEpochMs`, `deadlineAtEpochMs`, `resultPath` changent. |
-| T-RT-07 | Retry d'une agent-batch avec 3 jobs | Nouveau manifest a les mêmes `jobs[i].prompt`, nouveaux `jobs[i].resultPath` per-attempt dans `results/<label>-1/<jobId>.json` |
+| T-RT-06 | Retry d'une délégation prompt avec `worker: "reviewer"` | Nouveau manifest a les mêmes `worker`, `prompt`, `timeoutMs`. Seuls `attempt`, `emittedAt`, `emittedAtEpochMs`, `deadlineAtEpochMs`, `resultPath` changent. |
+| T-RT-07 | Retry d'une batch avec 3 jobs | Nouveau manifest a les mêmes `jobs[i].prompt`, nouveaux `jobs[i].resultPath` per-attempt dans `results/<label>-1/<jobId>.json` |
 | T-RT-08 | `effectiveRetryPolicy` capturée à l'émission initiale avec override partiel | Persistée dans `pd.effectiveRetryPolicy` post-retry, réutilisée au retry suivant. Pas de "perte de policy cross-process" (M26). |
 
 ### 18.5 Retry preserves usedLabels
@@ -1246,7 +1220,7 @@ Référence : §15.3.
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-CP-01 | A utilise `delegateSkill` avec skill=B. B est un orchestrateur imbriqué qui lui-même délègue (agent-batch). L'agent parent simule la boucle §15.1 récursivement. | A émet DELEGATE(skill=B). Parent invoque B. B émet DELEGATE(agent-batch). Parent invoque N agents. Parent relance B → B émet DONE (écrit à resultPath de A). Parent relance A (via resume_cmd) → A lit le résultat de B via `consumePendingResult` → A continue. |
+| T-CP-01 | A utilise `delegate` avec skill=B. B est un orchestrateur imbriqué qui lui-même délègue (batch). L'agent parent simule la boucle §15.1 récursivement. | A émet DELEGATE(skill=B). Parent invoque B. B émet DELEGATE(batch). Parent invoque N agents. Parent relance B → B émet DONE (écrit à resultPath de A). Parent relance A (via resume_cmd) → A lit le résultat de B via `consumePendingResult` → A continue. |
 | T-CP-02 | runIds distincts pour A et B | Vérifié : chaque orchestrateur a son propre runId indépendant, ses propres events, son propre RUN_DIR |
 | T-CP-03 | Locks distincts | A et B ont leurs `.lock` respectifs dans leurs RUN_DIR respectifs. Pas de contention. |
 
@@ -1476,7 +1450,7 @@ Ces tests sont transversaux — ils mobilisent plusieurs modules ou vérifient d
 
 | ID | Assertion |
 | --- | --- |
-| P-16 | Pour toute phase qui retourne un PhaseResult, un seul des 5 appels possibles (`transition`, `delegateSkill`, `delegateAgent`, `delegateAgentBatch`, `done`, `fail`) a réussi. Le second throw `ProtocolError`. Testé sur 10 scénarios de combinaison. |
+| P-16 | Pour toute phase qui retourne un PhaseResult, un seul des 5 appels possibles (`transition`, `delegate`, `delegate`, `delegateBatch`, `done`, `fail`) a réussi. Le second throw `ProtocolError`. Testé sur 10 scénarios de combinaison. |
 
 ### 26.9 Exactly-once consumption
 
@@ -1516,7 +1490,7 @@ Ces tests sont transversaux — ils mobilisent plusieurs modules ou vérifient d
 
 | ID | Assertion |
 | --- | --- |
-| P-26 | Tout bloc émis a `version: 1`. Vérifié sur 30 émissions variées. |
+| P-26 | Tout bloc émis a `version: 2`. Vérifié sur 30 émissions variées. |
 
 ### 26.15 Aucune mutation du frozen state
 
@@ -1554,8 +1528,8 @@ Les sections §27.7 à §27.14 restent RED strict : ce sont de vraies post-condi
 
 | ID | Assertion |
 | --- | --- |
-| C-GL-01 | Le module `turnlock` exporte : `runOrchestrator`, `definePhase`, `OrchestratorConfig`, `Phase`, `PhaseIO`, `PhaseResult`, `DelegationRequest`, `SkillDelegationRequest`, `AgentDelegationRequest`, `AgentBatchDelegationRequest`, `RetryPolicy`, `TimeoutPolicy`, `LoggingPolicy`, `OrchestratorLogger`, `OrchestratorEvent`, `OrchestratorError`, `OrchestratorErrorKind`, `InvalidConfigError`, `StateCorruptedError`, `StateMissingError`, `StateVersionMismatchError`, `DelegationTimeoutError`, `DelegationSchemaError`, `DelegationMissingResultError`, `PhaseError`, `ProtocolError`, `AbortedError`, `RunLockedError`, `PROTOCOL_VERSION`, `STATE_SCHEMA_VERSION`. |
-| C-GL-02 | Le module **n'exporte pas** : `executeCall`, engine internals, `SkillBinding`, `AgentBinding`, `AgentBatchBinding` (les 3 bindings restent internes), `clock` module, `state-io`, `validator`, `retry-resolver`, `error-classifier`, `logger`, `protocol`, `run-dir`, `run-id`, `abortableSleep` (tous internes). |
+| C-GL-01 | Le module `turnlock` exporte : `runOrchestrator`, `definePhase`, `OrchestratorConfig`, `Phase`, `PhaseIO`, `PhaseResult`, `DelegationRequest`, `PromptDelegationRequest`, `PromptDelegationRequest`, `BatchDelegationRequest`, `RetryPolicy`, `TimeoutPolicy`, `LoggingPolicy`, `OrchestratorLogger`, `OrchestratorEvent`, `OrchestratorError`, `OrchestratorErrorKind`, `InvalidConfigError`, `StateCorruptedError`, `StateMissingError`, `StateVersionMismatchError`, `DelegationTimeoutError`, `DelegationSchemaError`, `DelegationMissingResultError`, `PhaseError`, `ProtocolError`, `AbortedError`, `RunLockedError`, `PROTOCOL_VERSION`, `STATE_SCHEMA_VERSION`. |
+| C-GL-02 | Le module **n'exporte pas** : `executeCall`, engine internals, `PromptBinding`, `PromptBinding`, `BatchBinding` (les 2 bindings restent internes), `clock` module, `state-io`, `validator`, `retry-resolver`, `error-classifier`, `logger`, `protocol`, `run-dir`, `run-id`, `abortableSleep` (tous internes). |
 | C-GL-03 | `ValidationPolicy` n'existe pas dans les exports (retrait M12). |
 | C-GL-04 | Toutes les sous-classes d'erreur sont `instanceof OrchestratorError` (TS + runtime check). |
 
@@ -1563,8 +1537,8 @@ Les sections §27.7 à §27.14 restent RED strict : ce sont de vraies post-condi
 
 | ID | Assertion |
 | --- | --- |
-| C-GL-05 | `PROTOCOL_VERSION === 1` (literal const). |
-| C-GL-06 | `STATE_SCHEMA_VERSION === 1` (literal const). |
+| C-GL-05 | `PROTOCOL_VERSION === 2` (literal const). |
+| C-GL-06 | `STATE_SCHEMA_VERSION === 2` (literal const). |
 
 ### 27.3 [DÉPLACÉ §27.bis] Dépendances minimales
 
@@ -1636,7 +1610,7 @@ Référence : §5.3 (table canonique).
 
 | ID | Assertion |
 | --- | --- |
-| C-SI-01 | `state.schemaVersion === 1` toujours. |
+| C-SI-01 | `state.schemaVersion === 2` toujours. |
 | C-SI-02 | `state.usedLabels` est un tableau (éventuellement vide). Append-only (jamais de splice). |
 | C-SI-03 | `state.accumulatedDurationMs >= 0` toujours. |
 | C-SI-04 | `state.phasesExecuted >= 0` toujours. |
@@ -1647,9 +1621,9 @@ Référence : §5.3 (table canonique).
 | ID | Assertion |
 | --- | --- |
 | C-MF-01 | `manifest.manifestVersion === 1` toujours. |
-| C-MF-02 | `manifest.kind ∈ {"skill","agent","agent-batch"}` toujours. |
-| C-MF-03 | `kind === "agent-batch"` ⇔ `jobs` présent et `resultPath` top-level absent. |
-| C-MF-04 | `kind !== "agent-batch"` ⇔ `resultPath` top-level présent et `jobs` absent. |
+| C-MF-02 | `manifest.kind ∈ {"skill","agent","batch"}` toujours. |
+| C-MF-03 | `kind === "batch"` ⇔ `jobs` présent et `resultPath` top-level absent. |
+| C-MF-04 | `kind !== "batch"` ⇔ `resultPath` top-level présent et `jobs` absent. |
 | C-MF-05 | `manifest.attempt === state.pendingDelegation.attempt` (cohérence cross-artifact). |
 
 ### 27.13 Temporal invariants
@@ -1701,7 +1675,7 @@ Les **property tests P-OB-a/b/c** (§23.3) qui vérifient ces invariants sur des
 
 ### 27.bis.4 Constantes exportées (ex-§27.2)
 
-`C-GL-05..06` — `PROTOCOL_VERSION === 1`, `STATE_SCHEMA_VERSION === 1`.
+`C-GL-05..06` — `PROTOCOL_VERSION === 2`, `STATE_SCHEMA_VERSION === 2`.
 
 ### 27.bis.5 Dépendances minimales (ex-§27.3)
 
@@ -2087,8 +2061,8 @@ Chaque invariant normatif du NX doit avoir au moins un test dans ce NIB-T. Table
 | RunLockedError via protocole | §6.6 | T-LK-02, T-PF-21 |
 | SIGKILL crash recovery | §3.2, §17 | T-LK-17, T-LK-18 |
 | Phase > 30 min via refreshLock | §4.13, §17 | T-LK-19, T-LK-20 |
-| PROTOCOL_VERSION = 1 | §5.2 | C-GL-05, P-26 |
-| STATE_SCHEMA_VERSION = 1 | §5.2 | C-GL-06, C-SI-01 |
+| PROTOCOL_VERSION = 2 | §5.2 | C-GL-05, P-26 |
+| STATE_SCHEMA_VERSION = 2 | §5.2 | C-GL-06, C-SI-01 |
 | Dépendances minimales (zod + ulid) | §5.6 | C-GL-07 |
 | Cleanup rétention runs | §5.5, §6.1 | §7 (T-RD-*) |
 
