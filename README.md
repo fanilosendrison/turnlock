@@ -24,8 +24,8 @@ Without turnlock:
   │  Claude Code │────── launches ────────▶│ script.sh │
   └─────────────┘                          └──────────┘
          ▲                                       │
-         │                                       │  needs agent work
-         │                  ❌                    │  (review, fix, decide)
+         │                                       │  delegates skill launch to turnlock
+         │                  ❌                    │  (ex: /summarize-this-text)
          └───────────────────────────────────────┘
               script can't call Claude Code back
 
@@ -34,11 +34,12 @@ With turnlock:
   │  Claude Code │────── launches ────────▶│ script.ts │
   └─────────────┘                          └──────────┘
          ▲                                       │
-         │               ┌──────────┐            │
+         │                                       │  delegates skill launch to turnlock
+         │               ┌──────────┐            │  (ex: /summarize-this-text)
          └───────────────│ turnlock │◀───────────┘
                          └──────────┘
                            ✅
-                 script calls /<your-skill-name>
+                 turnlock calls /summarize-this-text
 ```
 
 And **leaving the orchestration to the agent is the problem**:
