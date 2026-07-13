@@ -1,6 +1,6 @@
 // NIB-T §8 — run-id (T-ID-01..04, P-ID-a)
 import { describe, expect, test } from "bun:test";
-import { generateRunId } from "../../src/services/run-id";
+import { generateRunId, isValidRunId } from "../../src/services/run-id";
 
 const ULID_REGEX = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
@@ -30,5 +30,15 @@ describe("generateRunId property (P-ID-a)", () => {
 		// Sanity: all unique, all ULID format.
 		expect(new Set(ids).size).toBe(50);
 		for (const id of sorted) expect(ULID_REGEX.test(id)).toBe(true);
+	});
+});
+
+describe("isValidRunId", () => {
+	test("T-ID-05 | accepts only ULID Crockford base32", () => {
+		expect(isValidRunId("01HX0000000000000000000001")).toBe(true);
+		expect(isValidRunId("invalid/id")).toBe(false);
+		expect(isValidRunId("01HX000000000000000000000O")).toBe(false);
+		expect(isValidRunId("01hx0000000000000000000001")).toBe(false);
+		expect(isValidRunId("01HX")).toBe(false);
 	});
 });

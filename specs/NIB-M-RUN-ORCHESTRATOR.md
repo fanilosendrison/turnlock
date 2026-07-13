@@ -24,9 +24,9 @@ validates: ["src/engine/run-orchestrator.ts", "src/types/config.ts", "tests/engi
 **Entry point unique** `runOrchestrator(config): Promise<void>`. Son rôle :
 
 1. **Préflight config** — valider `OrchestratorConfig` + émettre ERROR preflight si invalide.
-2. **Parse argv** — détecter `--resume` + `--run-id`, dispatcher vers le flux initial ou resume.
-3. **Mode initial** (§14.1 steps 1-15 NX) — générer runId, résoudre RUN_DIR, acquire lock, init state, cleanup, appel du dispatch-loop.
-4. **Mode resume** (§14.2 steps 1-10 NX) — préflight resume (read state, validate, lock), puis délégué à `handle-resume` pour la classification des résultats et l'entrée dans le dispatch-loop.
+2. **Parse argv** — détecter `--resume` + `--run-id`, valider tout `--run-id` externe comme ULID, dispatcher vers le flux initial ou resume.
+3. **Mode initial** (§14.1 steps 1-15 NX) — générer ou adopter un runId ULID, résoudre RUN_DIR, acquire lock, init state, cleanup, appel du dispatch-loop.
+4. **Mode resume** (§14.2 steps 1-10 NX) — valider le runId ULID puis préflight resume (read state, validate, lock), puis délégué à `handle-resume` pour la classification des résultats et l'entrée dans le dispatch-loop.
 5. **Handler SIGINT/SIGTERM** — émettre ABORTED + release lock + exit 130/143.
 6. **Top-level `try/catch` fail-closed** (I-4, C13 NX) — toute exception est convertie en bloc ERROR + exit, la Promise résout sans rejeter.
 
@@ -150,7 +150,7 @@ function parseArgv(args: readonly string[]): ParsedArgv {
 - `--resume` booléen.
 - `--run-id <value>` optionnel en mode initial (si absent → généré). Obligatoire en mode resume.
 - `rest` contient les autres args (passés à `PhaseIO.args`).
-- **Pas de validation de format ULID** ici — le runtime accepte `--run-id` tel quel (§15 T-RO-12 : **DÉCISION** : pas de validation format v1).
+- **Validation ULID obligatoire** pour tout `--run-id` externe, via `isValidRunId` (`/^[0-9A-HJKMNP-TV-Z]{26}$/`). Un `--run-id` invalide throw `InvalidConfigError("--run-id must be a ULID")` avant toute résolution de RUN_DIR.
 
 ### 3.4 Mode initial — `runInitialMode`
 
@@ -158,8 +158,11 @@ Implémente §14.1 steps 3-15 + appel au dispatch-loop.
 
 ```ts
 async function runInitialMode<S>(config: OrchestratorConfig<S>, argv: ParsedArgv): Promise<void> {
-  // Step 3 : générer/adopter runId.
+  // Step 3 : générer ou adopter runId.
   const runId = argv.runId ?? generateRunId();
+  if (argv.runId !== undefined) {
+    validateExternalRunId(runId, config.name); // InvalidConfigError si non-ULID.
+  }
 
   // Step 4 : résoudre RUN_DIR.
   const cwd = process.cwd();
@@ -260,6 +263,7 @@ async function runResumeMode<S>(config: OrchestratorConfig<S>, argv: ParsedArgv)
     throw new InvalidConfigError("--resume requires --run-id");
   }
   const runId = argv.runId;
+  validateExternalRunId(runId, config.name); // InvalidConfigError avant RUN_DIR/readState.
 
   // Step 4-5 : résoudre RUN_DIR, vérifier existence.
   const cwd = process.cwd();
@@ -538,6 +542,7 @@ interface DispatchContext<S> {
 | Situation | Events émis | Bloc protocole | Exit code |
 |---|---|---|---|
 | `InvalidConfigError` préflight config | Aucun event (pas encore de logger avec runId) | ERROR `invalid_config` run_id: null | 1 |
+| `--run-id` externe non-ULID | Aucun event, aucun RUN_DIR résolu/créé/lu | ERROR `invalid_config` run_id: null | 1 |
 | `--resume` sans `--run-id` | Aucun event | ERROR `invalid_config` run_id: null | 1 |
 | Mode resume : `state.json` absent | `phase_error` sur stderr seulement (pas de events.ndjson — lock pas acquis) | ERROR `state_missing` run_id présent | 1 |
 | Mode resume : `state.json` corrompu | `phase_error` stderr only | ERROR `state_corrupted` | 1 |
@@ -575,6 +580,7 @@ interface DispatchContext<S> {
 | T-PF-06/T-PF-07 | `resumeCommand` manquant/non-fonction | `invalid_config` |
 | T-PF-08 | `initialState` non-conforme stateSchema | `invalid_config` |
 | T-PF-09 | `--resume` sans `--run-id` | `invalid_config` run_id: null |
+| T-PF-09b | `--resume --run-id invalid/id` | `invalid_config` run_id: null avant RUN_DIR/readState |
 | T-PF-10 | RUN_DIR absent au resume | `state_missing` |
 | T-PF-11 | state.json corrompu | `state_corrupted` |
 | T-PF-12 | version mismatch | `state_version_mismatch` |
@@ -622,14 +628,15 @@ T-SG-01 à T-SG-11 — handler SIGINT/SIGTERM.
 1. **1 fichier** créé : `src/engine/run-orchestrator.ts` avec export `runOrchestrator`.
 2. **`validateConfig`** — 8 règles §6.1 NIB-S enforced (T-PF-01 à T-PF-08).
 3. **`parseArgv`** — extract `--resume` + `--run-id`, passe `rest` à io.
-4. **Mode initial** §14.1 steps 3-15 : generateRunId, resolveRunDir, mkdir, createLogger, acquireLock (exit 2 si RunLocked), enableDiskEmit, orchestrator_start, build initial state, validateResult, writeStateAtomic, installSignalHandlers, cleanupOldRuns, delegate to dispatch-loop.
-5. **Mode resume** §14.2 steps 1-10 : parse argv (--run-id required), resolveRunDir, exists check, readState + validation, runId/orchestratorName match check, createLogger, acquireLock, enableDiskEmit, installSignalHandlers, delegate to handle-resume.
-6. **`handleTopLevelError`** — 3 catégories (InvalidConfig preflight, OrchestratorError enrichi, non-classifié fallback) + exit 1.
-7. **`emitRunLockedError`** — exit 2 avec event stderr only + bloc ERROR.
-8. **`installSignalHandlers`** — SIGINT (exit 130) / SIGTERM (exit 143) avec abort + logs + bloc ABORTED + release lock.
-9. **Promise ne rejette jamais** — tout throw capté.
-10. **Tests NIB-T** : §20 (T-PF), §15.1 (T-RO-01), §17.6 (T-RS-19-23), §21 (T-SG).
-11. **LOC** : 350-500.
+4. **Validation runId externe** — tout `--run-id` doit matcher la regex ULID avant `resolveRunDir`; aucun fallback, slugification ou safe-token générique.
+5. **Mode initial** §14.1 steps 3-15 : generateRunId/adopt ULID, resolveRunDir, mkdir, createLogger, acquireLock (exit 2 si RunLocked), enableDiskEmit, orchestrator_start, build initial state, validateResult, writeStateAtomic, installSignalHandlers, cleanupOldRuns, delegate to dispatch-loop.
+6. **Mode resume** §14.2 steps 1-10 : parse argv (--run-id required), validate ULID, resolveRunDir, exists check, readState + validation, runId/orchestratorName match check, createLogger, acquireLock, enableDiskEmit, installSignalHandlers, delegate to handle-resume.
+7. **`handleTopLevelError`** — 3 catégories (InvalidConfig preflight, OrchestratorError enrichi, non-classifié fallback) + exit 1.
+8. **`emitRunLockedError`** — exit 2 avec event stderr only + bloc ERROR.
+9. **`installSignalHandlers`** — SIGINT (exit 130) / SIGTERM (exit 143) avec abort + logs + bloc ABORTED + release lock.
+10. **Promise ne rejette jamais** — tout throw capté.
+11. **Tests NIB-T** : §20 (T-PF), §15.1 (T-RO-01), §17.6 (T-RS-19-23), §21 (T-SG).
+12. **LOC** : 350-500.
 
 ---
 

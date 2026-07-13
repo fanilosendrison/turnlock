@@ -170,11 +170,11 @@ Toute écriture de fichier d'état (`state.json`, manifests, résultats, lock up
 
 ### I-4 — Fail-closed universel
 
-Toute erreur → exit code ≠ 0 + émission `@@TURNLOCK@@ action: ERROR`. Le runtime ne retourne jamais de résultat dégradé. Les **préflight errors** (config invalide, state manquant/corrompu au resume, mismatch runId/orchestratorName) émettent également un bloc ERROR, avec `run_id: null` si le runId n'a pas encore été généré/adopté. **Aucun throw brut** ne remonte depuis `runOrchestrator()` — tout throw interne est capté par le top-level `try/catch` et converti en bloc ERROR + exit.
+Toute erreur → exit code ≠ 0 + émission `@@TURNLOCK@@ action: ERROR`. Le runtime ne retourne jamais de résultat dégradé. Les **préflight errors** (config invalide, `--run-id` externe non-ULID, state manquant/corrompu au resume, mismatch runId/orchestratorName) émettent également un bloc ERROR, avec `run_id: null` si le runId n'a pas encore été généré/adopté. Un `--run-id` non-ULID n'est jamais adopté. **Aucun throw brut** ne remonte depuis `runOrchestrator()` — tout throw interne est capté par le top-level `try/catch` et converti en bloc ERROR + exit.
 
 ### I-5 — Déterminisme mécanique
 
-`resolveRetryDecision`, `classify`, `parseProtocolBlock`, `writeProtocolBlock`, `validateResult`, `readState`, `generateRunId`, `resolveRunDir`, sanitization, signal composition sont des **fonctions pures** ou composants isolés. Étant données les mêmes entrées, mêmes sorties. Les effets de bord (fs, clock, logger) sont isolés dans des composants dédiés et mockables.
+`resolveRetryDecision`, `classify`, `parseProtocolBlock`, `writeProtocolBlock`, `validateResult`, `readState`, `generateRunId`, `isValidRunId`, `resolveRunDir`, signal composition sont des **fonctions pures** ou composants isolés. Étant données les mêmes entrées, mêmes sorties. Les effets de bord (fs, clock, logger) sont isolés dans des composants dédiés et mockables.
 
 **Formulation canonique** : le runtime est une composition déterministe de décisions pures et d'effets isolés.
 
@@ -1029,7 +1029,7 @@ Chaque nouvelle tentative après timeout recalcule son propre `deadlineAtEpochMs
 runOrchestrator(config) [mode initial, pas de --resume]
   1. Valider config → preflight ERROR si invalide (run_id: null)
   2. Parse argv (--resume absent, --run-id optionnel)
-  3. Générer/adopter runId (ULID)
+  3. Générer runId via `generateRunId()` si absent, ou adopter `--run-id` uniquement s'il matche la regex ULID `/^[0-9A-HJKMNP-TV-Z]{26}$/`
   4. Résoudre RUN_DIR (défaut : `<cwd>/.turnlock/runs/<config.name>/<runId>/`, surchargeable via env `TURNLOCK_RUN_DIR_ROOT` ou champ `OrchestratorConfig.runDirRoot` — voir NIB-M-RUN-DIR §1)
   5. Créer RUN_DIR + sous-dossiers (delegations/, results/)
   6. Installer stderr logger uniquement (pas encore events.ndjson)
@@ -1055,7 +1055,7 @@ Détaillé dans NIB-M-RUN-ORCHESTRATOR.
 runOrchestrator(config) [--resume + --run-id]
   1. Valider config → preflight ERROR si invalide
   2. Parse argv — --run-id obligatoire
-  3. Adopter runId depuis argv
+  3. Adopter runId depuis argv uniquement s'il matche la regex ULID `/^[0-9A-HJKMNP-TV-Z]{26}$/` ; sinon ERROR `invalid_config` avant RUN_DIR
   4. Résoudre RUN_DIR
   5. Vérifier RUN_DIR existe → state_missing sinon
   6. Lire + valider state.json (schemaVersion, stateSchema)

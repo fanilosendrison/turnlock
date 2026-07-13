@@ -15,7 +15,7 @@ validates: ["src/services/abortable-sleep.ts", "src/services/clock.ts", "src/ser
 **Package** : `turnlock`
 **Modules couverts** : `clock`, `run-id`, `abortable-sleep`
 **Source NX** : §5.5 (transverse services), §12 (modèle temporel), §13.4 (abort propagé)
-**NIB-T associé** : §9 (T-CK-01 à T-CK-08 + P-CK-a/b), §8 (T-ID-01 à T-ID-04 + P-ID-a), §10 (T-AS-01 à T-AS-05 + P-AS-a/b)
+**NIB-T associé** : §9 (T-CK-01 à T-CK-08 + P-CK-a/b), §8 (T-ID-01 à T-ID-05 + P-ID-a), §10 (T-AS-01 à T-AS-05 + P-AS-a/b)
 **NIB-S référencé** : §9 (modèle temporel 3 horloges), I-5 (déterminisme mécanique)
 
 ---
@@ -107,14 +107,22 @@ export const clock: Clock = {
 // src/services/run-id.ts
 
 export function generateRunId(): string;
+export function isValidRunId(runId: string): boolean;
 ```
 
 ### 3.2 Implémentation
 
 ```ts
 import { ulid } from "ulid";
+
+const RUN_ID_REGEX = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
 export function generateRunId(): string {
   return ulid();
+}
+
+export function isValidRunId(runId: string): boolean {
+  return RUN_ID_REGEX.test(runId);
 }
 ```
 
@@ -124,6 +132,7 @@ export function generateRunId(): string {
 - Tri lexicographique ≡ tri chronologique (propriété ULID native).
 - **Pas de fallback** : si `ulid` throw (ne devrait jamais arriver), propager l'exception. Le runtime exit en bloc ERROR preflight.
 - **Usage unique** : `generateRunId` est utilisé pour le `runId` et pour le `ownerToken` du lock (cf `NIB-M-LOCK`). Même fonction, deux call sites.
+- **Validation externe obligatoire** : `isValidRunId` est le prédicat unique pour accepter un `--run-id` fourni par un parent process. Le runtime refuse tout non-ULID avant de transformer cette string externe en RUN_DIR durable.
 - Mockabilité : les tests peuvent stub `ulid()` via module mock (bun:test `mock.module` / `spyOn`) pour des IDs déterministes.
 
 ### 3.4 Tests NIB-T (rappel §8)
@@ -134,6 +143,7 @@ export function generateRunId(): string {
 | T-ID-02 | Longueur 26 |
 | T-ID-03 | 100 IDs successifs tous distincts |
 | T-ID-04 | 2 IDs à la même ms lexicographiquement croissants (ou égaux si collision random ultra-rare) |
+| T-ID-05 | `isValidRunId` accepte uniquement la regex ULID `/^[0-9A-HJKMNP-TV-Z]{26}$/` |
 | P-ID-a | 1000 IDs avec mock clock avançant d'1 ms/call : tri lexicographique ≡ tri chronologique |
 
 ### 3.5 Edge cases

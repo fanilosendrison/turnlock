@@ -14,7 +14,7 @@ import { acquireLock, type LockHandle, releaseLock } from "../services/lock";
 import { createLogger, type InternalLogger } from "../services/logger";
 import { writeProtocolBlock } from "../services/protocol";
 import { cleanupOldRuns, resolveRunDir } from "../services/run-dir";
-import { generateRunId } from "../services/run-id";
+import { generateRunId, isValidRunId } from "../services/run-id";
 import {
 	readState,
 	type StateFile,
@@ -94,6 +94,14 @@ function validateConfig<S extends object>(config: OrchestratorConfig<S>): void {
 		throw new InvalidConfigError(
 			"config.resumeCommand is required (must be a function)",
 		);
+	}
+}
+
+function validateExternalRunId(runId: string, orchestratorName: string): void {
+	if (!isValidRunId(runId)) {
+		throw new InvalidConfigError("--run-id must be a ULID", {
+			orchestratorName,
+		});
 	}
 }
 
@@ -181,6 +189,9 @@ async function runInitialMode<S extends object>(
 	argv: ParsedArgv,
 ): Promise<void> {
 	const runId = argv.runId ?? generateRunId();
+	if (argv.runId !== undefined) {
+		validateExternalRunId(runId, config.name);
+	}
 	const cwd = process.cwd();
 	const runDir = resolveRunDir(cwd, config.name, runId, config.runDirRoot);
 
@@ -282,6 +293,7 @@ async function runResumeMode<S extends object>(
 		throw new InvalidConfigError("--resume requires --run-id");
 	}
 	const runId = argv.runId;
+	validateExternalRunId(runId, config.name);
 	const cwd = process.cwd();
 	const runDir = resolveRunDir(cwd, config.name, runId, config.runDirRoot);
 	if (!fs.existsSync(runDir)) {

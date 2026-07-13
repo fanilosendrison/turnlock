@@ -1,9 +1,13 @@
 // NIB-T §15-§16 — runOrchestrator initial (T-RO-01..44, P-RO-a/b/c)
-import { describe, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { definePhase } from "../../src/define-phase";
 import { runOrchestrator } from "../../src/engine/run-orchestrator";
+import { parseProtocolBlock } from "../../src/services/protocol";
 import type { OrchestratorConfig } from "../../src/types/config";
 import type { Phase } from "../../src/types/phase";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 
 interface S {
 	count: number;
@@ -20,6 +24,40 @@ function buildConfig(
 		initialState: { count: 0 },
 		resumeCommand: (runId) => `bun run ./main.ts --run-id ${runId} --resume`,
 	};
+}
+
+const ULID_REGEX = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const FIXED_RUN_ID = "01HX0000000000000000000001";
+
+async function runWithHarness(
+	config: OrchestratorConfig<S>,
+	args: readonly string[],
+	runDirRoot: string,
+): Promise<string> {
+	const originalArgv = process.argv;
+	const originalRunDirRoot = process.env.TURNLOCK_RUN_DIR_ROOT;
+	const originalStdoutWrite = process.stdout.write;
+	let stdout = "";
+
+	process.argv = ["bun", "test", ...args];
+	process.env.TURNLOCK_RUN_DIR_ROOT = runDirRoot;
+	process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+		stdout += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
+		return true;
+	}) as typeof process.stdout.write;
+
+	try {
+		await runOrchestrator(config);
+		return stdout;
+	} finally {
+		process.argv = originalArgv;
+		process.stdout.write = originalStdoutWrite;
+		if (originalRunDirRoot === undefined) {
+			delete process.env.TURNLOCK_RUN_DIR_ROOT;
+		} else {
+			process.env.TURNLOCK_RUN_DIR_ROOT = originalRunDirRoot;
+		}
+	}
 }
 
 describe("runOrchestrator initial happy (T-RO-01..09)", () => {
@@ -148,22 +186,76 @@ describe("runOrchestrator initial happy (T-RO-01..09)", () => {
 
 describe("runOrchestrator runId adoption (T-RO-10..12)", () => {
 	test("T-RO-10 | no --run-id generates ULID", async () => {
+		const root = makeTempDir();
 		const cfg = buildConfig({
 			a: definePhase<S>(async (_s, io) => io.done({})),
 		});
-		await runOrchestrator(cfg);
+		try {
+			const stdout = await runWithHarness(cfg, [], root);
+			const block = parseProtocolBlock(stdout);
+			expect(block).not.toBeNull();
+			expect(block!.action).toBe("DONE");
+			const runId = block!.runId;
+			expect(runId).not.toBeNull();
+			if (runId === null) throw new Error("expected generated runId");
+			expect(ULID_REGEX.test(runId)).toBe(true);
+
+			const runDir = join(root, "test-orch", runId);
+			const state = JSON.parse(
+				readFileSync(join(runDir, "state.json"), "utf-8"),
+			) as { runId: string };
+			expect(state.runId).toBe(runId);
+		} finally {
+			cleanupTempDir(root);
+		}
 	});
 	test("T-RO-11 | --run-id adopted", async () => {
+		const root = makeTempDir();
 		const cfg = buildConfig({
 			a: definePhase<S>(async (_s, io) => io.done({})),
 		});
-		await runOrchestrator(cfg);
+		try {
+			const stdout = await runWithHarness(
+				cfg,
+				["--run-id", FIXED_RUN_ID],
+				root,
+			);
+			const block = parseProtocolBlock(stdout);
+			expect(block).not.toBeNull();
+			expect(block!.action).toBe("DONE");
+			expect(block!.runId).toBe(FIXED_RUN_ID);
+			expect(block!.fields.output).toBe(
+				join(root, "test-orch", FIXED_RUN_ID, "output.json"),
+			);
+
+			const state = JSON.parse(
+				readFileSync(
+					join(root, "test-orch", FIXED_RUN_ID, "state.json"),
+					"utf-8",
+				),
+			) as { runId: string };
+			expect(state.runId).toBe(FIXED_RUN_ID);
+		} finally {
+			cleanupTempDir(root);
+		}
 	});
-	test("T-RO-12 | invalid runId accepted", async () => {
+	test("T-RO-12 | invalid --run-id rejected before RUN_DIR creation", async () => {
+		const root = makeTempDir();
 		const cfg = buildConfig({
 			a: definePhase<S>(async (_s, io) => io.done({})),
 		});
-		await runOrchestrator(cfg);
+		try {
+			const stdout = await runWithHarness(cfg, ["--run-id", "invalid/id"], root);
+			const block = parseProtocolBlock(stdout);
+			expect(block).not.toBeNull();
+			expect(block!.action).toBe("ERROR");
+			expect(block!.runId).toBeNull();
+			expect(block!.fields.errorKind).toBe("invalid_config");
+			expect(block!.fields.message).toBe("--run-id must be a ULID");
+			expect(existsSync(join(root, "test-orch"))).toBe(false);
+		} finally {
+			cleanupTempDir(root);
+		}
 	});
 });
 

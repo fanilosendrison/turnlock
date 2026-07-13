@@ -570,7 +570,11 @@ Setup : créer 5 RUN_DIRs avec dates de dernière modification ISO (7 jours ago,
 
 ## 8. Tests du run-id (`tests/services/run-id.test.ts`)
 
-Signature : `generateRunId(): string`.
+Signatures :
+```ts
+generateRunId(): string
+isValidRunId(runId: string): boolean
+```
 
 Référence : §5.5.
 
@@ -582,6 +586,7 @@ Référence : §5.5.
 | T-ID-02 | Longueur exacte 26 |
 | T-ID-03 | Génération de 100 IDs successifs : tous distincts |
 | T-ID-04 | Génération de 2 IDs à la même ms : lexicographiquement croissants (ou égaux dans le cas ultra-rare de collision random, **DÉCISION** : on tolère ≥) |
+| T-ID-05 | `isValidRunId` accepte uniquement les strings qui matchent `/^[0-9A-HJKMNP-TV-Z]{26}$/` |
 
 ### 8.2 Propriétés
 
@@ -822,8 +827,8 @@ Setup commun : `mock-fs` avec RUN_DIR vide, `mock-clock` initialisé, `mock-stdi
 | ID | Scénario | Vérification |
 | --- | --- | --- |
 | T-RO-10 | Mode initial, pas de `--run-id` dans argv | RunId généré via ULID (§14.1 step 3). Répercuté dans events + RUN_DIR + protocole |
-| T-RO-11 | Mode initial, `--run-id 01HX...` dans argv | RunId adopté, pas généré (testable pour tests déterministes) |
-| T-RO-12 | RunId fourni invalide (non-ULID) | **DÉCISION** : accepté tel quel (pas de validation format en v1, l'utilisateur est responsable). Throw si format réel casse autre chose. |
+| T-RO-11 | Mode initial, `--run-id 01HX...` dans argv | RunId adopté uniquement s'il est un ULID valide, pas généré (testable pour tests déterministes). Même valeur dans protocole, RUN_DIR et `state.json`. |
+| T-RO-12 | Mode initial, `--run-id invalid/id` | Bloc ERROR `invalid_config`, `run_id: null`, aucun RUN_DIR créé. Le runtime refuse l'identifiant avant toute transformation en chemin durable. |
 
 ### 15.7 Observabilité events
 
@@ -1139,6 +1144,7 @@ Référence : §4.4, §14.1 step 1-2, §14.2 step 1-7, §7.4.3.
 | ID | Situation | Bloc ERROR attendu |
 | --- | --- | --- |
 | T-PF-09 | `--resume` sans `--run-id` | `run_id: null`, `error_kind: invalid_config`, message: `"--resume requires --run-id"` |
+| T-PF-09b | `--resume --run-id invalid/id` | `run_id: null`, `error_kind: invalid_config`, message: `"--run-id must be a ULID"`, aucune résolution/lecture du RUN_DIR |
 | T-PF-10 | RUN_DIR absent | `error_kind: state_missing`, `run_id: <runId>` (runId connu depuis argv) |
 | T-PF-11 | `state.json` corrompu | `error_kind: state_corrupted` |
 | T-PF-12 | `state.json` version mismatch | `error_kind: state_version_mismatch` |
@@ -1576,7 +1582,7 @@ Les sections §27.7 à §27.14 restent RED strict : ce sont de vraies post-condi
 | --- | --- |
 | C-FC-01 | Pour toute erreur (preflight ou runtime), un bloc `@@TURNLOCK@@ action: ERROR` est émis sur stdout. Exit code ≠ 0. |
 | C-FC-02 | La Promise `runOrchestrator()` résout sans rejeter. Tout throw interne capturé (§4.4, C13). |
-| C-FC-03 | Preflight errors ont `run_id: null` si le runId n'a pas encore été adopté/généré. Sinon `run_id: <valeur>`. |
+| C-FC-03 | Preflight errors ont `run_id: null` si le runId n'a pas encore été adopté/généré. Un `--run-id` non-ULID n'est jamais adopté. Sinon `run_id: <valeur>`. |
 | C-FC-04 | `orchestrator: <name>` toujours présent dans le bloc ERROR (disponible dès `config.name` qui est parsé en premier). |
 
 ### 27.8 Mapping `PhaseResult.kind ↔ action` unique

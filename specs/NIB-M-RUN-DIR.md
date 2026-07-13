@@ -81,7 +81,7 @@ function resolveRunDir(
 ): string {
   if (cwd === "") throw new InvalidConfigError("cwd cannot be empty");
   // Note : orchestratorName et runId sont validés en amont par runOrchestrator.
-  // Cette fonction ne re-valide pas leur format — elle compose mécaniquement.
+  // runId est déjà un ULID validé ; cette fonction compose mécaniquement.
   return path.join(resolveRunDirRoot(cwd, runDirRoot), orchestratorName, runId);
 }
 ```
@@ -94,7 +94,7 @@ function resolveRunDir(
 - **String vide** (env var ou `runDirRoot` config) → traitée comme non définie (fallback sur le niveau suivant). Évite un collapse silencieux vers `<cwd>/<name>/<runId>` si un caller wire `runDirRoot: ""` par inadvertance.
 - **`runDirRoot` absolu** → utilisé tel quel. **Relatif** → joint à `cwd` via `path.join`.
 - **Cwd vide** → throw `InvalidConfigError("cwd cannot be empty")`. Défensif, même quand `runDirRoot` est absolu (on garde la règle simple : `cwd` est toujours obligatoire). Aucun appel légitime ne passe `""` — c'est un bug caller.
-- **Pas de validation de format** sur `orchestratorName` et `runId` — le caller (engine) a déjà validé en amont (§6.1 NIB-S pour `name`, ULID regex implicite pour `runId`).
+- **Pas de validation de format** sur `orchestratorName` et `runId` — le caller (engine) a déjà validé en amont (§6.1 NIB-S pour `name`, regex ULID obligatoire pour `runId`). `resolveRunDir` peut supposer un `runId` conforme et ne doit pas slugifier, sanitizer ni accepter un safe-token générique.
 - **Pas de `path.resolve`** — on veut conserver `cwd` tel quel, pas le résoudre en chemin absolu. C'est au caller de passer un cwd absolu (typiquement `process.cwd()`).
 
 ### 2.4 Tests NIB-T (§7.1)
