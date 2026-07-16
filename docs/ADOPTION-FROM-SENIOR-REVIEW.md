@@ -9,13 +9,13 @@ Le mot "skill" recouvre trois réalités distinctes selon le contexte. Le docume
 | Terme | Rôle | Exécution |
 |---|---|---|
 | **skill pré-turnlock** | Skill classique : son prompt contient du jugement et, souvent, de la logique d'orchestration (boucles, dispatch en langage naturel). C'est l'état avant adoption de turnlock. | Dans le contexte du caller (typiquement la main session) |
-| **skill-consumer** | Skill post-turnlock servant de **point d'entrée utilisateur ET de pont protocole**. Son prompt instruit Claude sur le protocole `@@TURNLOCK@@` : lancer le binaire, lire les blocs `DELEGATE`, mapper chaque `kind` vers le bon tool Claude (`Agent` pour `agent`/`agent-batch`, `Skill` pour `skill`), écrire les résultats dans le RUN_DIR, relancer `turnlock --resume`, boucler jusqu'à `DONE`. | Dans le contexte du caller |
-| **skill-judgment** | Skill post-turnlock ciblé par `delegateSkill` depuis une FSM. Contient uniquement du jugement, zéro logique de protocole. Existe typiquement pour réutiliser un skill déjà écrit sans le transformer en agent. | Dans le contexte du caller |
+| **skill-consumer** | Skill post-turnlock servant de **point d'entrée utilisateur ET de pont protocole**. Son prompt instruit Claude sur le protocole `@@TURNLOCK@@` : lancer le binaire, lire les blocs `DELEGATE`, mapper `kind: "prompt" \| "batch"` et `worker?` vers le bon outil Claude, écrire les résultats dans le RUN_DIR, relancer `turnlock --resume`, boucler jusqu'à `DONE`. | Dans le contexte du caller |
+| **skill-judgment** | Skill post-turnlock ciblé par `delegate(...)` depuis une FSM. Contient uniquement du jugement, zéro logique de protocole. Existe typiquement pour réutiliser un skill déjà écrit sans le transformer en agent. | Dans le contexte du caller |
 
 **Pourquoi le skill-consumer est obligatoire (argument de self-containment)** : une FSM turnlock doit être livrable comme un artefact autonome — tout ce dont elle a besoin voyage avec elle. Le skill-consumer est la **seule unité d'emballage** qui combine les trois capacités indispensables :
 
 1. **Entry point utilisateur** invocable (slash command `/X`)
-2. **Protocole handler** : prompt qui instruit Claude sur le mapping `@@TURNLOCK@@` DELEGATE → tools Claude (`Agent`, `Skill`), écriture des résultats, relance `--resume`, boucle jusqu'à `DONE`
+2. **Protocole handler** : prompt qui instruit Claude sur le mapping `@@TURNLOCK@@` DELEGATE → tools Claude ou worker choisi, écriture des résultats, relance `--resume`, boucle jusqu'à `DONE`
 3. **Self-contained** : ship dans `.claude/skills/` versionné avec le code de la FSM
 
 Les alternatives échouent toutes au moins une de ces conditions :
@@ -62,7 +62,11 @@ De la même manière, **agent** désigne toujours une unité Claude à contexte 
 
 **Scope de l'évaluation — récursif sur la pile d'orchestration.** "La couche" évaluée n'est pas seulement le skill pré-turnlock d'entrée : c'est **l'ensemble des niveaux d'orchestration** visibles depuis le point d'entrée utilisateur (skill + tout sub-agent qui contient de l'orchestration interne). Pour `/senior-review`, cela inclut le skill (fan-out par fichier) ET `senior-review-file` (enchaînement récolte → 12 axes → consolidation). C0/C0' s'appliquent à l'union des couches — une seule couche qui déclenche C0 suffit à justifier turnlock pour l'ensemble, et §5.3 explique pourquoi : les orchestrations imbriquées fusionnent en une FSM unique, pas une FSM par niveau.
 
-La question *« y a-t-il une étape mécanique ? »* est nécessaire mais **pas suffisante**. Deux axes indépendants justifient turnlock.
+La question *« y a-t-il une étape mécanique ? »* est nécessaire mais **pas suffisante**. Turnlock se justifie quand cette mécanique forme la colonne déterministe du workflow : elle doit porter l'état, décider le flux, valider les sorties, agréger les résultats, ou contrôler les boucles entre plusieurs moments de jugement.
+
+Formulation pratique : **la phase Turnlock avance mécaniquement jusqu'au prochain point stable ; la délégation est le yield explicite vers du jugement agentique**. On ne crée donc pas une phase parce qu'il y a un agent, et on ne crée pas un agent parce qu'il y a une phase. On découpe d'abord le workflow entre mécanique déterministe et jugement non déterministe, puis on place les délégations là où la mécanique ne doit plus décider seule.
+
+Deux axes indépendants justifient turnlock.
 
 ### Axe 1 — Nécessité structurelle (C0)
 
@@ -173,9 +177,10 @@ Chaque étape peut être étiquetée dans **une** des 4 catégories, pas d'hybri
 | Catégorie | Exécution | Cible |
 |---|---|---|
 | Phase TS pure | Dans le process turnlock, zéro Claude | — |
-| `delegateSkill` | Dans le contexte du caller | skill-judgment |
-| `delegateAgent` | Sub-agent frais, 1 spawn | agent feuille |
-| `delegateAgentBatch` | N sub-agents en parallèle | agent feuille |
+| `delegate` (`kind: "prompt"`) | Worker choisi par le consumer, souvent caller ou sub-agent frais | skill-judgment ou agent feuille |
+| `delegateBatch` (`kind: "batch"`) | N jobs indépendants, parallélisables par le consumer | agents feuilles ou workers équivalents |
+
+Une phase Turnlock peut contenir plusieurs étapes mécaniques de même intention avant de retourner un `transition`, un `delegate`, un `delegateBatch`, un `done` ou un `fail`. Inversement, une étape de jugement déléguée doit toujours être suivie par une phase de reprise qui consomme, valide et projette le résultat dans le state.
 
 ### C2 — Autonomie des délégations
 
@@ -203,7 +208,7 @@ Chaque délégation retourne un **JSON validable par Zod**. Imposer un format JS
 
 | Avant | Après |
 |---|---|
-| Prompt du skill pré-turnlock : *« spawn un agent par fichier »* | Phase TS : `jobs = files.map(...)` puis `io.delegateAgentBatch({jobs})` |
+| Prompt du skill pré-turnlock : *« spawn un agent par fichier »* | Phase TS : `jobs = files.map(...)` puis `io.delegateBatch({jobs})` |
 | Prompt de l'agent : *« phase 0 puis phase 1 puis... »* | `transition(nextPhase)` entre phases typées |
 
 ### 5.2 Décomposition mécanique/jugement intra-phase
@@ -214,7 +219,9 @@ Une phase initialement présentée comme monolithique (ex: Récolte de `senior-r
 |---|---|---|
 | Read file, git diff | Mécanique | Phase TS `recolteMechanique` |
 | Parse exports/imports, glob tests | Mécanique | Phase TS `recolteMechanique` |
-| Classifier I/O ops, inputs externes | Jugement | `delegateAgent("recolte-semantic")` (agent feuille) |
+| Classifier I/O ops, inputs externes | Jugement | `delegate({ worker: "recolte-semantic", ... })` (agent feuille côté consumer) |
+
+Le split n'est pas "une phase par délégation". Le split correct est : une phase TS pour stabiliser et persister le segment mécanique, une délégation pour le jugement, puis une phase TS de reprise pour consommer et valider le résultat. Si deux segments TS consécutifs représentent le même point stable et la même intention, ils se fusionnent ; s'ils représentent deux états métier distincts, ils restent deux phases même sans délégation entre eux.
 
 ### 5.3 Dissolution des agents orchestrateurs (en deux temps)
 
@@ -255,7 +262,7 @@ Les protocoles par-invocation (ex : protocoles d'axes noyés dans `senior-review
 |---|---|---|
 | **Phase turnlock (TS)** | Mécanique déterministe, orchestration, state transitions, validation | Code TS typé, testable, persisté atomiquement |
 | **skill-consumer** | Point d'entrée utilisateur + bridge protocole `@@TURNLOCK@@` ↔ tools Claude (Agent, Skill) | Prompt décrivant : lancer turnlock, mapper les blocs DELEGATE, écrire résultats, relancer avec --resume, boucler jusqu'à DONE |
-| **skill-judgment** *(optionnel)* | Jugement invocable via `delegateSkill` depuis une FSM | Prompt de jugement pur, zéro logique de protocole. Typiquement un skill pré-turnlock réutilisé sans refonte. |
+| **skill-judgment** *(optionnel)* | Jugement invocable via `delegate(...)` depuis une FSM | Prompt de jugement pur, zéro logique de protocole. Typiquement un skill pré-turnlock réutilisé sans refonte. |
 | **Agent feuille** | Un jugement atomique, contexte frais, model/effort choisis | Config stable dans `.md`, zéro logique orchestrale |
 
 ### Ce qui disparaît
@@ -279,16 +286,16 @@ Les protocoles par-invocation (ex : protocoles d'axes noyés dans `senior-review
           ├── phase mécanique → TS pur, zéro spawn
           ├── phase de délégation → émet @@TURNLOCK@@ DELEGATE, exit 0
           │      ↓
-          │   skill-consumer lit le bloc, invoque Agent/Skill tool
-          │   selon kind, écrit résultats, relance turnlock --resume
+          │   skill-consumer lit le bloc, route prompt/batch vers le worker
+          │   approprié, écrit résultats, relance turnlock --resume
           │      ↓
-          │   (N sub-agents frais en parallèle pour agent-batch)
+          │   (N jobs indépendants en parallèle pour batch)
           │
           ├── phase mécanique de consolidation → TS pur
           └── done → skill-consumer affiche output à l'utilisateur
 ```
 
-**Profondeur de nesting Claude** = uniquement ce que `delegateAgent` impose. Turnlock n'ajoute aucun niveau. Le skill-consumer s'exécute dans le contexte du caller (zéro niveau ajouté).
+**Profondeur de nesting Claude** = uniquement ce que le choix de worker du consumer impose. Turnlock n'ajoute aucun niveau. Le skill-consumer s'exécute dans le contexte du caller (zéro niveau ajouté).
 
 ---
 
@@ -310,7 +317,7 @@ Verdict :
 
 Si l'adoption est décidée :
 
-- [ ] **C1 — Décomposabilité** : chaque étape étiquetée clairement (TS-pur / delegateSkill→skill-judgment / delegateAgent→agent feuille / delegateAgentBatch→agent feuille), pas d'hybride ?
+- [ ] **C1 — Décomposabilité** : chaque étape étiquetée clairement (TS-pur / `delegate` prompt single / `delegateBatch` jobs parallèles), pas d'hybride ?
 - [ ] **C2 — Autonomie** : state partagé explicitable dans un `State` typé, délégations stateless entre elles ?
 - [ ] **C3 — Agrégation** : fan-in mécanisable (pur TS) ou déléguable à un agent feuille dédié ?
 - [ ] **C4 — Schémas** : chaque délégation retourne un JSON validable par Zod ?
@@ -320,7 +327,7 @@ Si l'adoption est décidée :
 - [ ] Prompts par-invocation extraits en modules TS versionnés (pas noyés dans le `.md` d'agent feuille)
 - [ ] Règles communes stables dans le `.md` de l'agent feuille (évite duplication × N spawns)
 - [ ] Choix de model/effort par agent feuille documenté (lié à C0')
-- [ ] skill-consumer écrit : instructions claires de mapping `DELEGATE.kind` → tool Claude, gestion des résultats, boucle de `--resume`
+- [ ] skill-consumer écrit : instructions claires de mapping `DELEGATE.kind` + `worker?` → worker Claude/consumer, gestion des résultats, boucle de `--resume`
 
 Si toutes cochées → gain net : déterminisme, testabilité, inspectabilité du `state.json`, séparation code/jugement, granularité cost.
 
