@@ -30,6 +30,8 @@ export interface StateFile<State> {
 	readonly orchestratorName: string;
 	readonly startedAt: string;
 	readonly startedAtEpochMs: number;
+	// Historical schema field name: retained until a future STATE_SCHEMA_VERSION bump.
+	// It records the last non-terminal protocol-yield emission timestamp.
 	readonly lastTransitionAt: string;
 	readonly lastTransitionAtEpochMs: number;
 	readonly currentPhase: string;
