@@ -1,20 +1,17 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { STATE_SCHEMA_VERSION } from "../constants";
-import { OrchestratorError } from "../errors/base";
 import {
-	AbortedError,
 	InvalidConfigError,
 	ProtocolError,
 	RunLockedError,
 	StateMissingError,
 } from "../errors/concrete";
 import { clock } from "../services/clock";
-import { acquireLock, type LockHandle, releaseLock } from "../services/lock";
-import { createLogger, type InternalLogger } from "../services/logger";
-import { writeProtocolBlock } from "../services/protocol";
+import { acquireLock, type LockHandle } from "../services/lock";
+import { createLogger } from "../services/logger";
 import { cleanupOldRuns, resolveRunDir } from "../services/run-dir";
-import { generateRunId, isValidRunId } from "../services/run-id";
+import { generateRunId } from "../services/run-id";
 import {
 	readState,
 	type StateFile,
@@ -24,165 +21,15 @@ import { summarizeZodError, validateResult } from "../services/validator";
 import type { OrchestratorConfig } from "../types/config";
 import { type DispatchContext, doExit, isTestExitSignal } from "./context";
 import { runDispatchLoop } from "./dispatch-loop";
+import { emitRunLockedError, handleTopLevelError } from "./error-emitter";
 import { runHandleResume } from "./handle-resume";
-
-interface ParsedArgv {
-	readonly resume: boolean;
-	readonly runId?: string;
-	readonly rest: readonly string[];
-}
-
-function parseArgv(args: readonly string[]): ParsedArgv {
-	let resume = false;
-	let runId: string | undefined;
-	const rest: string[] = [];
-	for (let i = 0; i < args.length; i++) {
-		if (args[i] === "--resume") {
-			resume = true;
-			continue;
-		}
-		if (args[i] === "--run-id") {
-			runId = args[i + 1];
-			i++;
-			continue;
-		}
-		const arg = args[i];
-		if (arg !== undefined) rest.push(arg);
-	}
-	if (runId !== undefined) {
-		return { resume, runId, rest };
-	}
-	return { resume, rest };
-}
-
-function validateConfig<S extends object>(config: OrchestratorConfig<S>): void {
-	const nameRegex = /^[a-z][a-z0-9-]*$/;
-	if (config === null || typeof config !== "object") {
-		throw new InvalidConfigError("config must be an object");
-	}
-	if (typeof config.name !== "string" || !nameRegex.test(config.name)) {
-		throw new InvalidConfigError(
-			`config.name invalid (kebab-case required): ${String(config.name)}`,
-		);
-	}
-	if (typeof config.phases !== "object" || config.phases === null) {
-		throw new InvalidConfigError("config.phases must be an object");
-	}
-	const phaseKeys = Object.keys(config.phases);
-	if (phaseKeys.length === 0) {
-		throw new InvalidConfigError("config.phases cannot be empty");
-	}
-	for (const key of phaseKeys) {
-		if (!nameRegex.test(key)) {
-			throw new InvalidConfigError(
-				`phase name invalid (kebab-case required): ${key}`,
-			);
-		}
-	}
-	if (
-		typeof config.initial !== "string" ||
-		!(config.initial in config.phases)
-	) {
-		throw new InvalidConfigError(
-			`config.initial "${config.initial}" not in phases`,
-		);
-	}
-	if (config.initialState === undefined) {
-		throw new InvalidConfigError("config.initialState is required");
-	}
-	if (typeof config.resumeCommand !== "function") {
-		throw new InvalidConfigError(
-			"config.resumeCommand is required (must be a function)",
-		);
-	}
-}
-
-function validateExternalRunId(runId: string, orchestratorName: string): void {
-	if (!isValidRunId(runId)) {
-		throw new InvalidConfigError("--run-id must be a ULID", {
-			orchestratorName,
-		});
-	}
-}
-
-function emitRunLockedError<S extends object>(
-	err: RunLockedError,
-	config: OrchestratorConfig<S>,
-	runId: string,
-	logger: InternalLogger,
-): void {
-	logger.emit({
-		eventType: "phase_error",
-		runId,
-		phase: "preflight",
-		errorKind: "run_locked",
-		message: err.message.slice(0, 200),
-		timestamp: clock.nowWallIso(),
-	});
-	const block = writeProtocolBlock("ERROR", {
-		runId,
-		orchestrator: config.name,
-		errorKind: "run_locked",
-		message: err.message.slice(0, 200),
-		phase: null,
-		phasesExecuted: 0,
-	});
-	process.stdout.write(block);
-}
-
-function installSignalHandlers<S extends object>(
-	ctx: DispatchContext<S>,
-): void {
-	const makeHandler = (signal: "SIGINT" | "SIGTERM") => () => {
-		const code = signal === "SIGINT" ? 130 : 143;
-		try {
-			ctx.abortController.abort(new AbortedError(`Received ${signal}`));
-		} catch {
-			// silent
-		}
-		try {
-			ctx.logger.emit({
-				eventType: "phase_error",
-				runId: ctx.runId,
-				phase: ctx.currentPhase ?? "unknown",
-				errorKind: "aborted",
-				message: `Received ${signal}`,
-				timestamp: clock.nowWallIso(),
-			});
-			ctx.logger.emit({
-				eventType: "orchestrator_end",
-				runId: ctx.runId,
-				orchestratorName: ctx.config.name,
-				success: false,
-				durationMs: ctx.accumulatedDurationMs,
-				phasesExecuted: ctx.phasesExecuted,
-				timestamp: clock.nowWallIso(),
-			});
-		} catch {
-			// silent
-		}
-		try {
-			const block = writeProtocolBlock("ABORTED", {
-				runId: ctx.runId,
-				orchestrator: ctx.config.name,
-				signal,
-				phase: ctx.currentPhase ?? null,
-			});
-			process.stdout.write(block);
-		} catch {
-			// silent
-		}
-		try {
-			releaseLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
-		} catch {
-			// silent
-		}
-		doExit(code);
-	};
-
-	process.on("SIGINT", makeHandler("SIGINT"));
-	process.on("SIGTERM", makeHandler("SIGTERM"));
-}
+import {
+	type ParsedArgv,
+	parseArgv,
+	validateConfig,
+	validateExternalRunId,
+} from "./preflight";
+import { installSignalHandlers } from "./signal-handlers";
 
 async function runInitialMode<S extends object>(
 	config: OrchestratorConfig<S>,
@@ -356,52 +203,6 @@ async function runResumeMode<S extends object>(
 	installSignalHandlers(ctx);
 
 	await runHandleResume(ctx, state);
-}
-
-function handleTopLevelError<S extends object>(
-	err: unknown,
-	config: OrchestratorConfig<S> | undefined,
-): never {
-	const orchestratorName =
-		config && typeof config.name === "string" ? config.name : "unknown";
-
-	if (err instanceof InvalidConfigError) {
-		const block = writeProtocolBlock("ERROR", {
-			runId: err.runId ?? null,
-			orchestrator: err.orchestratorName ?? orchestratorName,
-			errorKind: "invalid_config",
-			message: err.message.slice(0, 200),
-			phase: null,
-			phasesExecuted: 0,
-		});
-		process.stdout.write(block);
-		doExit(1);
-	}
-
-	if (err instanceof OrchestratorError) {
-		const block = writeProtocolBlock("ERROR", {
-			runId: err.runId ?? null,
-			orchestrator: err.orchestratorName ?? orchestratorName,
-			errorKind: err.kind,
-			message: err.message.slice(0, 200),
-			phase: err.phase ?? null,
-			phasesExecuted: 0,
-		});
-		process.stdout.write(block);
-		doExit(1);
-	}
-
-	const msg = err instanceof Error ? err.message : String(err);
-	const block = writeProtocolBlock("ERROR", {
-		runId: null,
-		orchestrator: orchestratorName,
-		errorKind: "phase_error",
-		message: msg.slice(0, 200),
-		phase: null,
-		phasesExecuted: 0,
-	});
-	process.stdout.write(block);
-	doExit(1);
 }
 
 export async function runOrchestrator<S extends object>(

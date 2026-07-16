@@ -1,26 +1,18 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { DelegationManifest } from "../bindings/types";
-import { MANIFEST_VERSION } from "../constants";
 import {
-	AbortedError,
 	DelegationMissingResultError,
 	DelegationSchemaError,
 	DelegationTimeoutError,
 	ProtocolError,
 } from "../errors/concrete";
-import { abortableSleep } from "../services/abortable-sleep";
 import { clock } from "../services/clock";
-import { releaseLock } from "../services/lock";
 import { resolveRetryDecision } from "../services/retry-resolver";
-import {
-	type PendingDelegationRecord,
-	type StateFile,
-	writeStateAtomic,
-} from "../services/state-io";
-import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
-import { emitFatalError, runDispatchLoop } from "./dispatch-loop";
-import { reconstructManifest, selectBinding } from "./shared";
+import type { PendingDelegationRecord, StateFile } from "../services/state-io";
+import type { DispatchContext } from "./context";
+import { reemitDelegationAttempt } from "./delegation-reemit";
+import { runDispatchLoop } from "./dispatch-loop";
+import { emitFatalError } from "./terminal-handlers";
 
 function buildExpectedResultPaths(
 	runDir: string,
@@ -106,102 +98,6 @@ function safeFileSize(p: string): number {
 	}
 }
 
-async function executeResumeRetry<S extends object>(
-	ctx: DispatchContext<S>,
-	state: StateFile<S>,
-	pd: PendingDelegationRecord,
-	decision: { retry: true; delayMs: number; reason: string },
-): Promise<never> {
-	ctx.logger.emit({
-		eventType: "retry_scheduled",
-		runId: ctx.runId,
-		phase: pd.resumeAt,
-		label: pd.label,
-		attempt: pd.attempt + 1,
-		delayMs: decision.delayMs,
-		reason: decision.reason,
-		timestamp: clock.nowWallIso(),
-	});
-
-	try {
-		await abortableSleep(decision.delayMs, ctx.abortController.signal);
-	} catch (e) {
-		throw new AbortedError("aborted during resume retry sleep", {
-			cause: e,
-			runId: ctx.runId,
-			phase: pd.resumeAt,
-		});
-	}
-
-	const oldManifest = JSON.parse(
-		fs.readFileSync(pd.manifestPath, "utf-8"),
-	) as DelegationManifest;
-	if (oldManifest.manifestVersion !== MANIFEST_VERSION) {
-		throw new ProtocolError(
-			`manifestVersion mismatch: expected ${MANIFEST_VERSION}, got ${String(oldManifest.manifestVersion)}`,
-			{
-				runId: ctx.runId,
-				orchestratorName: ctx.config.name,
-				phase: pd.resumeAt,
-			},
-		);
-	}
-	const newAttempt = pd.attempt + 1;
-	const newEmittedAtEpochMs = clock.nowEpochMs();
-	const newEmittedAt = clock.nowWallIso();
-	const newDeadlineAtEpochMs = newEmittedAtEpochMs + oldManifest.timeoutMs;
-	const newManifestPath = path.join(
-		ctx.runDir,
-		"delegations",
-		`${pd.label}-${newAttempt}.json`,
-	);
-	const newManifest = reconstructManifest(oldManifest, {
-		attempt: newAttempt,
-		emittedAt: newEmittedAt,
-		emittedAtEpochMs: newEmittedAtEpochMs,
-		deadlineAtEpochMs: newDeadlineAtEpochMs,
-		label: pd.label,
-		runDir: ctx.runDir,
-	});
-	writeFileSyncAtomic(newManifestPath, JSON.stringify(newManifest));
-
-	const newState: StateFile<S> = {
-		...state,
-		pendingDelegation: {
-			...pd,
-			attempt: newAttempt,
-			emittedAtEpochMs: newEmittedAtEpochMs,
-			deadlineAtEpochMs: newDeadlineAtEpochMs,
-			manifestPath: newManifestPath,
-		},
-		lastTransitionAt: newEmittedAt,
-		lastTransitionAtEpochMs: newEmittedAtEpochMs,
-	};
-	writeStateAtomic(ctx.runDir, newState, ctx.config.stateSchema);
-
-	ctx.logger.emit({
-		eventType: "delegation_emit",
-		runId: ctx.runId,
-		phase: pd.resumeAt,
-		label: pd.label,
-		kind: pd.kind,
-		jobCount: pd.jobIds?.length ?? 1,
-		timestamp: newEmittedAt,
-	});
-
-	const resumeCmd = ctx.config.resumeCommand(ctx.runId);
-	const binding = selectBinding(pd.kind);
-	const block = binding.buildProtocolBlock(
-		newManifest,
-		newManifestPath,
-		resumeCmd,
-	);
-	process.stdout.write(block);
-
-	releaseLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
-	doExit(0);
-}
-
 async function handleDelegationError<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
@@ -244,7 +140,14 @@ async function handleDelegationError<S extends object>(
 		pd.effectiveRetryPolicy,
 	);
 	if (decision.retry === true) {
-		await executeResumeRetry(ctx, state, pd, decision);
+		await reemitDelegationAttempt(
+			ctx,
+			state,
+			pd,
+			decision,
+			pd.resumeAt,
+			"aborted during resume retry sleep",
+		);
 		return undefined as never;
 	}
 

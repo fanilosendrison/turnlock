@@ -9,17 +9,10 @@ import { resolveRetryDecision } from "../services/retry-resolver";
 import type { StateFile } from "../services/state-io";
 import type { PhaseResult } from "../types/phase";
 import type { DispatchContext, LoadedResults } from "./context";
-import {
-	emitFatalError,
-	executeRetryBranch,
-	handleDelegate,
-	handleDone,
-	handleFail,
-} from "./dispatch-handlers";
+import { handleDelegate } from "./delegate-handler";
+import { reemitDelegationAttempt } from "./delegation-reemit";
 import { buildPhaseIO, type PhaseIOGuards } from "./phase-io";
-
-// Re-export for consumers that import from dispatch-loop (handle-resume, run-orchestrator).
-export { emitFatalError, executeRetryBranch };
+import { emitFatalError, handleDone, handleFail } from "./terminal-handlers";
 
 function deepFreeze<T>(obj: T): T {
 	if (obj === null || typeof obj !== "object") return obj;
@@ -113,7 +106,7 @@ export async function runDispatchLoop<S extends object>(
 				pendingAtEntry.effectiveRetryPolicy,
 			);
 			if (decision.retry === true) {
-				await executeRetryBranch(
+				await reemitDelegationAttempt(
 					ctx,
 					state,
 					pendingAtEntry,

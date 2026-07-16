@@ -1,0 +1,87 @@
+import { InvalidConfigError } from "../errors/concrete";
+import { isValidRunId } from "../services/run-id";
+import type { OrchestratorConfig } from "../types/config";
+
+export interface ParsedArgv {
+	readonly resume: boolean;
+	readonly runId?: string;
+	readonly rest: readonly string[];
+}
+
+export function parseArgv(args: readonly string[]): ParsedArgv {
+	let resume = false;
+	let runId: string | undefined;
+	const rest: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === "--resume") {
+			resume = true;
+			continue;
+		}
+		if (args[i] === "--run-id") {
+			runId = args[i + 1];
+			i++;
+			continue;
+		}
+		const arg = args[i];
+		if (arg !== undefined) rest.push(arg);
+	}
+	if (runId !== undefined) {
+		return { resume, runId, rest };
+	}
+	return { resume, rest };
+}
+
+export function validateConfig<S extends object>(
+	config: OrchestratorConfig<S>,
+): void {
+	const nameRegex = /^[a-z][a-z0-9-]*$/;
+	if (config === null || typeof config !== "object") {
+		throw new InvalidConfigError("config must be an object");
+	}
+	if (typeof config.name !== "string" || !nameRegex.test(config.name)) {
+		throw new InvalidConfigError(
+			`config.name invalid (kebab-case required): ${String(config.name)}`,
+		);
+	}
+	if (typeof config.phases !== "object" || config.phases === null) {
+		throw new InvalidConfigError("config.phases must be an object");
+	}
+	const phaseKeys = Object.keys(config.phases);
+	if (phaseKeys.length === 0) {
+		throw new InvalidConfigError("config.phases cannot be empty");
+	}
+	for (const key of phaseKeys) {
+		if (!nameRegex.test(key)) {
+			throw new InvalidConfigError(
+				`phase name invalid (kebab-case required): ${key}`,
+			);
+		}
+	}
+	if (
+		typeof config.initial !== "string" ||
+		!(config.initial in config.phases)
+	) {
+		throw new InvalidConfigError(
+			`config.initial "${config.initial}" not in phases`,
+		);
+	}
+	if (config.initialState === undefined) {
+		throw new InvalidConfigError("config.initialState is required");
+	}
+	if (typeof config.resumeCommand !== "function") {
+		throw new InvalidConfigError(
+			"config.resumeCommand is required (must be a function)",
+		);
+	}
+}
+
+export function validateExternalRunId(
+	runId: string,
+	orchestratorName: string,
+): void {
+	if (!isValidRunId(runId)) {
+		throw new InvalidConfigError("--run-id must be a ULID", {
+			orchestratorName,
+		});
+	}
+}
