@@ -244,12 +244,11 @@ async function runInitialMode<S>(config: OrchestratorConfig<S>, argv: ParsedArgv
   cleanupOldRuns(cwd, config.name, config.retentionDays ?? 7, runId);
 
   // Entrée dans le dispatch-loop.
-  //    input = undefined au premier démarrage (pas de transition in-process précédente).
   const ctx: DispatchContext<S> = {
     config, runId, runDir, lockPath, handle, logger,
     // abortController construit par installSignalHandlers et exposé via une closure.
   };
-  await runDispatchLoop(ctx, initialState, /* input */ undefined);
+  await runDispatchLoop(ctx, initialState);
   // runDispatchLoop ne retourne jamais : ses branches appellent process.exit.
 }
 ```

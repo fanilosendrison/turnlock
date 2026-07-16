@@ -326,7 +326,7 @@ writeStateAtomic("/tmp/run/01HX", state, schema);
 ## 7. Constraints
 
 - **Sync IO** acceptable pour atomicité et ordre d'écriture déterministe. Cohérent avec le reste du runtime (lock, events.ndjson append sync).
-- **Pas de caching en RAM** : chaque `readState` relit le fichier. L'engine relit `state.currentPhase` à chaque itération (cf NIB-M-DISPATCH-LOOP §14.1 step 16.a du NX).
+- **Pas de caching en RAM** : chaque `readState` relit le fichier. L'engine applique `pendingDelegation.resumeAt` de manière transitoire au resume, puis exécute une seule phase.
 - **Pas de validation du format ULID** sur `runId`. Le caller (engine) l'a validé en amont.
 - **Pas de post-write read-back verification** : on fait confiance à `renameSync` + kernel. Ajouter un read après write serait du paranoïa-code inutile.
 - **Imports figés** :
@@ -382,21 +382,29 @@ if (state === null) {
 }
 ```
 
-### 9.3 Consommation par `dispatch-loop` (branche "transition" §14.1 step 16.n)
+### 9.3 Consommation par `dispatch-loop` (branches `delegate` / `done` / `fail`)
 
 ```ts
-const newState: StateFile<S> = {
+const delegateState: StateFile<S> = {
   ...state,
-  currentPhase: result.nextPhase,
+  currentPhase: state.currentPhase,
   phasesExecuted: state.phasesExecuted + 1,
   lastTransitionAt: clock.nowWallIso(),
   lastTransitionAtEpochMs: clock.nowEpochMs(),
   accumulatedDurationMs,
   data: result.nextState,
+  pendingDelegation,
+};
+
+const terminalState: StateFile<S> = {
+  ...state,
+  phasesExecuted: state.phasesExecuted + 1,
+  accumulatedDurationMs,
   pendingDelegation: undefined,
 };
-writeStateAtomic(runDir, newState, config.stateSchema);
 ```
+
+Delegate writes update `lastTransitionAt` to the delegation emission time. Terminal writes currently preserve the previous `lastTransitionAt` fields for schema compatibility.
 
 ---
 
@@ -428,7 +436,7 @@ writeStateAtomic(runDir, newState, config.stateSchema);
 - **Consommé par** :
   - `NIB-M-RUN-ORCHESTRATOR` (write initial state)
   - `NIB-M-HANDLE-RESUME` (read state au resume)
-  - `NIB-M-DISPATCH-LOOP` (write après chaque transition/delegate/done/fail)
+  - `NIB-M-DISPATCH-LOOP` (write après chaque delegate/done/fail)
 
 ---
 

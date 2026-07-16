@@ -282,7 +282,7 @@ async function runInitialMode<S extends object>(
 		// best-effort
 	}
 
-	await runDispatchLoop(ctx, initialState, undefined);
+	await runDispatchLoop(ctx, initialState);
 }
 
 async function runResumeMode<S extends object>(

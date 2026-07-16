@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { STATE_SCHEMA_VERSION } from "../../src/constants";
 import {
 	StateCorruptedError,
 	StateVersionMismatchError,
@@ -12,7 +13,6 @@ import {
 	type StateFile,
 	writeStateAtomic,
 } from "../../src/services/state-io";
-import { STATE_SCHEMA_VERSION } from "../../src/constants";
 import { loadFixture } from "../helpers/fixture-loader";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 

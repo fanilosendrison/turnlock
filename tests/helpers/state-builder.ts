@@ -1,8 +1,8 @@
+import { STATE_SCHEMA_VERSION } from "../../src/constants";
 import type {
 	PendingDelegationRecord,
 	StateFile,
 } from "../../src/services/state-io";
-import { STATE_SCHEMA_VERSION } from "../../src/constants";
 
 const DEFAULT_START = "2026-04-19T12:00:00.000Z";
 const DEFAULT_START_EPOCH = 1_745_062_800_000;

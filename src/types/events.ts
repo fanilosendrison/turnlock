@@ -24,7 +24,7 @@ export type OrchestratorEvent =
 			runId: string;
 			phase: string;
 			durationMs: number;
-			resultKind: "transition" | "delegate" | "done" | "fail";
+			resultKind: "delegate" | "done" | "fail";
 			timestamp: string;
 	  }
 	| {

@@ -14,7 +14,7 @@ interface S {
 }
 
 function buildConfig(
-	phases: Record<string, Phase<S, any, any>>,
+	phases: Record<string, Phase<S, unknown>>,
 	initial = "a",
 ): OrchestratorConfig<S> {
 	return {
@@ -67,21 +67,9 @@ describe("runOrchestrator initial happy (T-RO-01..09)", () => {
 		});
 		await runOrchestrator(cfg);
 	});
-	test("T-RO-01b | refresh lock each phase-start (5 transitions)", async () => {
+	test("T-RO-01b | refresh lock on phase start", async () => {
 		const cfg = buildConfig({
-			a: definePhase<S>(async (s, io) =>
-				io.transition("b", { count: s.count + 1 }),
-			),
-			b: definePhase<S>(async (s, io) =>
-				io.transition("c", { count: s.count + 1 }),
-			),
-			c: definePhase<S>(async (s, io) =>
-				io.transition("d", { count: s.count + 1 }),
-			),
-			d: definePhase<S>(async (s, io) =>
-				io.transition("e", { count: s.count + 1 }),
-			),
-			e: definePhase<S>(async (_s, io) => io.done({ ok: true })),
+			a: definePhase<S>(async (_s, io) => io.done({ ok: true })),
 		});
 		await runOrchestrator(cfg);
 	});
@@ -91,29 +79,29 @@ describe("runOrchestrator initial happy (T-RO-01..09)", () => {
 		});
 		await runOrchestrator(cfg);
 	});
-	test("T-RO-02 | a → b → c → done", async () => {
+	test("T-RO-02 | one invocation executes one phase then DONE", async () => {
 		const cfg = buildConfig({
-			a: definePhase<S>(async (s, io) =>
-				io.transition("b", { count: s.count + 1 }),
-			),
-			b: definePhase<S>(async (s, io) =>
-				io.transition("c", { count: s.count + 1 }),
-			),
-			c: definePhase<S>(async (_s, io) => io.done({})),
+			a: definePhase<S>(async (_s, io) => io.done({})),
 		});
 		await runOrchestrator(cfg);
 	});
-	test("T-RO-03 | transition passes state", async () => {
+	test("T-RO-03 | delegate snapshots next state", async () => {
 		const cfg = buildConfig({
-			a: definePhase<S>(async (_s, io) => io.transition("b", { count: 1 })),
+			a: definePhase<S>(async (_s, io) =>
+				io.delegate({ kind: "prompt", prompt: "foo", label: "state" }, "b", {
+					count: 1,
+				}),
+			),
 			b: definePhase<S>(async (_s, io) => io.done({})),
 		});
 		await runOrchestrator(cfg);
 	});
-	test("T-RO-04 | transition passes input in-process", async () => {
+	test("T-RO-04 | delegate exits after one phase", async () => {
 		const cfg = buildConfig({
 			a: definePhase<S>(async (_s, io) =>
-				io.transition("b", { count: 0 }, "input-data"),
+				io.delegate({ kind: "prompt", prompt: "foo", label: "yield" }, "b", {
+					count: 0,
+				}),
 			),
 			b: definePhase<S>(async (_s, io) => io.done({})),
 		});
@@ -245,7 +233,11 @@ describe("runOrchestrator runId adoption (T-RO-10..12)", () => {
 			a: definePhase<S>(async (_s, io) => io.done({})),
 		});
 		try {
-			const stdout = await runWithHarness(cfg, ["--run-id", "invalid/id"], root);
+			const stdout = await runWithHarness(
+				cfg,
+				["--run-id", "invalid/id"],
+				root,
+			);
 			const block = parseProtocolBlock(stdout);
 			expect(block).not.toBeNull();
 			expect(block!.action).toBe("ERROR");
@@ -266,9 +258,13 @@ describe("runOrchestrator events order (T-RO-13..15)", () => {
 		});
 		await runOrchestrator(cfg);
 	});
-	test("T-RO-14 | a → b → done events", async () => {
+	test("T-RO-14 | delegate event sequence", async () => {
 		const cfg = buildConfig({
-			a: definePhase<S>(async (_s, io) => io.transition("b", { count: 1 })),
+			a: definePhase<S>(async (_s, io) =>
+				io.delegate({ kind: "prompt", prompt: "f", label: "event" }, "b", {
+					count: 1,
+				}),
+			),
 			b: definePhase<S>(async (_s, io) => io.done({})),
 		});
 		await runOrchestrator(cfg);
@@ -377,6 +373,30 @@ describe("runOrchestrator phase refs (T-RO-29..31)", () => {
 			await runOrchestrator(cfg);
 		});
 	}
+	test("T-RO-31b | malformed PhaseResult kind fails closed", async () => {
+		const root = makeTempDir();
+		const cfg = buildConfig({
+			a: definePhase<S>(async (_s, io) => {
+				const result = io.done({});
+				(result as { kind: string }).kind = "bogus";
+				return result;
+			}),
+		});
+		try {
+			const stdout = await runWithHarness(
+				cfg,
+				["--run-id", FIXED_RUN_ID],
+				root,
+			);
+			const block = parseProtocolBlock(stdout);
+			expect(block).not.toBeNull();
+			expect(block!.action).toBe("ERROR");
+			expect(block!.fields.errorKind).toBe("protocol");
+			expect(block!.fields.message).toContain("unknown PhaseResult kind");
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
 });
 
 describe("runOrchestrator state JSON (T-RO-32..35)", () => {
@@ -390,9 +410,9 @@ describe("runOrchestrator state JSON (T-RO-32..35)", () => {
 	}
 });
 
-describe("runOrchestrator input discipline (T-RO-36..38)", () => {
+describe("runOrchestrator yield discipline (T-RO-36..38)", () => {
 	for (let i = 36; i <= 38; i++) {
-		test(`T-RO-${i} | input in-process only`, async () => {
+		test(`T-RO-${i} | no in-process input channel`, async () => {
 			const cfg = buildConfig({
 				a: definePhase<S>(async (_s, io) => io.done({})),
 			});

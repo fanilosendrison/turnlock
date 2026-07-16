@@ -134,7 +134,7 @@ tests/
 │   │   ├── malformed-missing-end.txt
 │   │   └── malformed-double-block.txt
 │   ├── events/                     # Lignes events.ndjson canoniques
-│   │   ├── happy-path-5phases.ndjson
+│   │   ├── happy-path-single-phase.ndjson
 │   │   ├── retry-schema-then-ok.ndjson
 │   │   ├── retry-timeout-exhausted.ndjson
 │   │   └── aborted-mid-phase.ndjson
@@ -791,16 +791,16 @@ Setup commun : `mock-fs` avec RUN_DIR vide, `mock-clock` initialisé, `mock-stdi
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-RO-01b | Run avec 5 transitions in-process (`a → b → c → d → e → done`). Inspecter le lock file avant/après chaque phase. | Avant chaque phase, `leaseUntilEpochMs` du lock est ré-écrit à `nowEpoch + DEFAULT_IDLE_LEASE_MS` (§14.1 step 16.b). 5 refresh total (un par phase-start). Pas de refresh sur `delegate/done/fail` exit (le lock est release à la place). |
+| T-RO-01b | Run avec 1 phase qui done. Inspecter le lock file au phase-start. | Avant la phase, `leaseUntilEpochMs` du lock est ré-écrit à `nowEpoch + DEFAULT_IDLE_LEASE_MS`. Pas de refresh sur `done/fail/delegate` exit (le lock est release à la place). |
 | T-RO-01c | Run avec 1 phase qui done. Lock refresh une seule fois (au démarrage de la phase unique). | Vérifié via inspection séquentielle. |
 
-### 15.2 Flow avec transitions in-process (pas de délégation)
+### 15.2 Flow yield-only
 
 | ID | Config | Vérification |
 | --- | --- | --- |
-| T-RO-02 | `a → b → c → done`. Chaque phase retourne `io.transition(nextPhase, newState)`. | 3 events `phase_start`/`phase_end` (resultKind: `"transition"`, `"transition"`, `"done"`). Un seul bloc stdout `DONE`. `state.phasesExecuted === 3`. `state.currentPhase === "c"` au moment du done. |
-| T-RO-03 | Phase `a` fait `io.transition("b", { count: 1 })` + phase `b` reçoit state avec `count === 1` | Effectivement reçu |
-| T-RO-04 | Phase `a` fait `io.transition("b", {}, "input-data")` ; `b(state, io, input)` reçoit `input === "input-data"` | Vérifié (canal in-process, §6.2) |
+| T-RO-02 | Une phase retourne `io.done({})`. | Une invocation exécute exactement cette phase, émet `DONE`, release le lock, exit 0. |
+| T-RO-03 | Phase `a` fait `io.delegate(..., "b", { count: 1 })`. | `state.json` contient `data.count === 1`, `pendingDelegation.resumeAt === "b"`, et le process sort après la phase `a`. |
+| T-RO-04 | Phase `a` fait `io.delegate(..., "b", nextState)`. | Aucun second phase body n'est exécuté dans la même invocation. |
 
 ### 15.3 Flow avec une délégation prompt
 
@@ -835,7 +835,7 @@ Setup commun : `mock-fs` avec RUN_DIR vide, `mock-clock` initialisé, `mock-stdi
 | ID | Scénario | Events attendus dans l'ordre |
 | --- | --- | --- |
 | T-RO-13 | `a → done` simple | `[orchestrator_start, phase_start(a, attempt 1), phase_end(a, resultKind: done), orchestrator_end]` |
-| T-RO-14 | `a → b → done` | `[orch_start, phase_start(a), phase_end(a, transition), phase_start(b), phase_end(b, done), orch_end]` |
+| T-RO-14 | `a → delegate → exit` | `[orch_start, phase_start(a), phase_end(a, delegate), delegation_emit]` sans `orchestrator_end` sur cette invocation. |
 | T-RO-15 | `a → delegate → exit` | `[orch_start, phase_start(a), delegation_emit, phase_end(a, delegate), /* orch_end émis au moment de l'exit, cohérent avec §11.3 */]` — **DÉCISION** : `orchestrator_end` **est émis à tout exit réussi d'une invocation, même si le run continue** ? NON — le run dans la sémantique §4.6 est de `orchestrator_start` à `orchestrator_end`. Entre les deux, chaque invocation peut exit sans `orchestrator_end`. **L'invocation initiale avec delegate exit émet : [orch_start, phase_start, delegation_emit, phase_end]**. Pas d'`orchestrator_end` (le run continue cross-process). L'`orchestrator_end` est émis uniquement à l'invocation qui termine (DONE/ERROR/ABORTED). Cohérent avec §4.6 et §19.3. |
 
 ### 15.8 Output final et state initial persisté
@@ -889,7 +889,7 @@ Référence : §6.8, §9.2, §9.3.
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-DF-01 | Phase appelle `io.transition(...)` puis `io.done(...)` dans la même phase | Le second appel throw `ProtocolError("PhaseResult already committed")`. L'engine capture → bloc `ERROR error_kind: protocol` |
+| T-DF-01 | Phase appelle `io.delegate(...)` puis `io.done(...)` dans la même phase | Le second appel throw `ProtocolError("PhaseResult already committed")`. L'engine capture → bloc `ERROR error_kind: protocol` |
 | T-DF-02 | Phase appelle `io.delegate(...)` puis `io.fail(...)` | Second appel throw `ProtocolError` |
 | T-DF-03 | Phase appelle `io.done(...)` seul | OK, un seul PhaseResult commit |
 
@@ -901,7 +901,7 @@ Référence : §6.8, §9.2, §9.3.
 | T-DF-05 | Phase fait `state.nested.b = 2` (nested) | throw `TypeError` (deep freeze récursif) |
 | T-DF-06 | Phase fait `state.list.push(1)` | throw `TypeError` |
 | T-DF-07 | Phase fait `const copy = structuredClone(state); copy.a = 2` | OK, copy est modifiable |
-| T-DF-08 | Phase transition avec `io.transition("b", newState)` où `newState` diffère de `state` | OK, c'est le pattern attendu |
+| T-DF-08 | Phase delegate avec `nextState` différent du state reçu | OK : le state reçu est immutable, le prochain snapshot porte `nextState`. |
 
 ### 16.5 Flow : unicité des labels (usedLabels)
 
@@ -918,27 +918,27 @@ Référence : §6.8, §9.2, §9.3.
 | ID | Scénario | Vérification |
 | --- | --- | --- |
 | T-RO-29 | `config.initial === "x"` mais `phases.x` absent | Preflight `InvalidConfigError` (§6.1) → bloc ERROR preflight |
-| T-RO-30 | `io.transition("unknown", ...)` | throw interne `ProtocolError("unknown phase: unknown")` → bloc ERROR |
+| T-RO-30 | Phase retourne un `PhaseResult.kind` malformé via mutation/cast unsafe | Le runtime fail-closed avec `ProtocolError("unknown PhaseResult kind: ...")` avant `phase_end`. |
 | T-RO-31 | `io.delegate({..., resumeAt: "unknown"})` | throw interne `ProtocolError` |
 
 ### 16.7 Flow : state JSON-sérialisable (§4.2)
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-RO-32 | Phase retourne `io.transition("b", { fn: () => 1 })` (fonction dans state) | Au `writeStateAtomic`, JSON.stringify ignore la fonction → state écrit sans `fn` → `readState` au resume reconstruit `{}` sans `fn`. **DÉCISION NIB-T** : comportement par défaut de `JSON.stringify` (fonctions omises silencieusement). Le runtime n'alerte pas. Invariant documentaire (§4.2), pas enforced. |
+| T-RO-32 | Phase retourne `io.delegate(..., nextState)` avec une fonction dans `nextState` | Au `writeStateAtomic`, JSON.stringify ignore la fonction → state écrit sans `fn` → `readState` au resume reconstruit `{}` sans `fn`. **DÉCISION NIB-T** : comportement par défaut de `JSON.stringify` (fonctions omises silencieusement). Le runtime n'alerte pas. Invariant documentaire (§4.2), pas enforced. |
 | T-RO-33 | Phase retourne state avec `Map` ou `Set` | JSON.stringify produit `{}` pour Map/Set natif → perte silencieuse de data. Même DÉCISION. |
 | T-RO-34 | Phase retourne state avec référence circulaire | `JSON.stringify` throw `TypeError` → capté par top-level handler → bloc ERROR `error_kind: phase_error`. |
 | T-RO-35 | Phase retourne state avec `Date` natif | `JSON.stringify` sérialise en ISO string. Au resume, `state.data.date` est une **string**, pas un `Date`. Discipline auteur (§16.1). Test vérifie la transformation. |
 
-### 16.8 Flow : `input` in-process only (non-persistence à travers délégation)
+### 16.8 Flow : discipline yield-only
 
-Référence : §6.2, C11.
+Référence : §6.2.
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-RO-36 | Phase `a` → `io.transition("b", newState, "my-input")`. Phase `b` reçoit `input === "my-input"` (in-process). | ✅ Passe in-process. |
-| T-RO-37 | Phase `a` → `io.transition("b", newState, "my-input")`. Phase `b` délègue via `delegate`, process exit. Resume : phase `b` (resumeAt) ne reçoit **pas** `input` (input === undefined). | Vérifié : `input` n'est pas persisté dans `state.json` ni dans `pendingDelegation`. Discipline C11. |
-| T-RO-38 | Phase `a` transition avec input complexe `{ big: "obj" }`. Phase `b` consomme sans délégation. | Transition in-process = OK. |
+| T-RO-36 | Une phase TypeScript n'a que `(state, io)` comme paramètres publics. | `Phase<State, Output>` compile sans canal `Input`. |
+| T-RO-37 | Une phase veut transmettre des données à une phase future. | Les données passent par `nextState` dans `delegate` ou `delegateBatch`, jamais par un canal RAM. |
+| T-RO-38 | Une phase ne retourne pas de `PhaseResult` engagé via `io.*`. | `PhaseError("phase returned without emitting a PhaseResult...")`. |
 
 ### 16.9 Flow : unicité `jobs[].id` dans un batch (engine-level)
 
@@ -986,7 +986,7 @@ Setup : RUN_DIR préexistant avec `state.json` où `pendingDelegation` est défi
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-CS-01 | Phase de reprise ne consomme pas (consumedCount = 0) et transitionne | Post-phase check échoue → bloc `ERROR error_kind: protocol`, message: `"unconsumed delegation: <label>"`. Exit 1. |
+| T-CS-01 | Phase de reprise ne consomme pas (consumedCount = 0) et retourne un `PhaseResult` | Post-phase check échoue → bloc `ERROR error_kind: protocol`, message: `"unconsumed delegation: <label>"`. Exit 1. |
 | T-CS-02 | Phase appelle `consumePendingResult` deux fois | Le 2e appel throw `ProtocolError("multiple consume calls on same delegation: <label>")` — throw immédiat en §14.1 step 16.f. Bloc ERROR. |
 | T-CS-03 | Phase consomme correctement 1 fois | Post-phase check passe, flow continue normalement. |
 | T-CS-04 | Phase mixe `consumePendingResult` + `consumePendingBatchResults` (wrong-kind au premier) | T-RS-05 s'applique : throw immédiat |
@@ -1027,7 +1027,7 @@ Référence : §7.1, §14.2 step 14, §14.3, M14.
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-RS-24 | Phase consume puis transition → state persisté au step 16.n avec `pendingDelegation: undefined` | Vérifié en lisant state.json après le write atomique |
+| T-RS-24 | Phase consume puis done/fail/delegate → state persisté avec le pending précédent effacé ou remplacé | Vérifié en lisant state.json après le write atomique |
 | T-RS-25 | Phase consume, puis throw mid-phase | `pendingDelegation` toujours présent dans state (crash mid-phase préserve le pending pour retry) |
 | T-RS-26 | Phase consume, puis done | State persisté avec `pendingDelegation: undefined` |
 
@@ -1188,11 +1188,11 @@ Référence : §13.
 | --- | --- | --- |
 | T-SG-04 | Retry scheduled avec delayMs 5000. SIGINT à 1000ms. | `abortableSleep` reject `AbortedError`. Engine catch → émet ABORTED (pas retry). Lock released. Exit 130. |
 
-### 21.3 State préservé à la dernière transition stable
+### 21.3 State préservé au dernier snapshot stable
 
 | ID | Scénario | Vérification |
 | --- | --- | --- |
-| T-SG-05 | Run avec 2 transitions stables (`a → b → c`) puis SIGINT pendant `c` | `state.json` à la valeur de la fin de `b` (dernière transition stable). L'utilisateur peut relancer avec `--resume`. |
+| T-SG-05 | Run repris après délégation, puis SIGINT pendant la phase de reprise | `state.json` conserve le snapshot antérieur à la phase interrompue. L'utilisateur peut relancer avec `--resume`. |
 
 ### 21.4 Lock release à l'abort
 
@@ -1246,7 +1246,7 @@ Référence : §12 (intégralité), spécialement §12.4 "Tests critiques".
 | ID | Scénario | Vérification |
 | --- | --- | --- |
 | T-TM-01 | Run qui s'étale sur 3 invocations. Invocation 1 : phase `a` (durée mono 100ms) + delegate. Invocation 2 : resume phase `b` (durée mono 200ms) + delegate. Invocation 3 : resume phase `c` (durée mono 150ms) + done. Le mock `performance.now()` est **reset** entre chaque invocation (simule qu'on est dans un nouveau process). | `state.accumulatedDurationMs` final === `100 + 200 + 150 === 450`. Pas de double-comptage. Pas de tentative de reconstitution monotonic cross-process. |
-| T-TM-02 | Run avec 10 transitions intra-process (1 seule invocation, pas de délégation). Chaque phase a une durée monotonic distincte (10ms, 20ms, ..., 100ms). | `state.accumulatedDurationMs === sum = 550`. Stable cross-invocation car accumulation se fait au state write. |
+| T-TM-02 | Run avec une phase longue qui appelle `io.refreshLock()` et termine par `done`. | `state.accumulatedDurationMs` égale la durée monotonic de cette phase. |
 | T-TM-03 | `orchestrator_end.durationMs` au done final cross-reentry | Égal à `state.accumulatedDurationMs` accumulé jusque-là. |
 
 ### 22.bis.2 Deadline cross-reentry (§12.4)
@@ -1275,7 +1275,7 @@ Référence : §12 (intégralité), spécialement §12.4 "Tests critiques".
 
 ### 22.bis.5 Propriétés
 
-- **P-TM-a** : `state.accumulatedDurationMs` est strictement croissant à chaque transition (jamais de régression).
+- **P-TM-a** : `state.accumulatedDurationMs` est strictement croissant à chaque phase terminée (jamais de régression).
 - **P-TM-b** : pour tout event, `timestamp` est une ISO string UTC valide (suffix `Z`).
 - **P-TM-c** : `emittedAtEpochMs` et `deadlineAtEpochMs` sont des entiers ≥ 0.
 - **P-TM-d** : `deadlineAtEpochMs - emittedAtEpochMs === timeoutMs` (invariant deadline = emit + timeout, per-attempt).
@@ -1301,7 +1301,7 @@ Pour chaque type d'event, vérifier que `JSON.stringify(event)` est parseable et
 | --- | --- | --- |
 | T-OB-01 | `orchestrator_start` | `runId`, `orchestratorName`, `initialPhase`, `timestamp` (ISO) |
 | T-OB-02 | `phase_start` | `runId`, `phase`, `attemptCount`, `timestamp` |
-| T-OB-03 | `phase_end` | `runId`, `phase`, `durationMs`, `resultKind` ∈ {"transition","delegate","done","fail"}, `timestamp` |
+| T-OB-03 | `phase_end` | `runId`, `phase`, `durationMs`, `resultKind` ∈ {"delegate","done","fail"}, `timestamp` |
 | T-OB-04 | `delegation_emit` | `runId`, `phase`, `label`, `kind`, `jobCount`, `timestamp` |
 | T-OB-05 | `delegation_result_read` | `runId`, `phase`, `label`, `jobCount`, `filesLoaded`, `timestamp` |
 | T-OB-06 | `delegation_validated` | `runId`, `phase`, `label`, `timestamp` |
@@ -1443,7 +1443,7 @@ Ces tests sont transversaux — ils mobilisent plusieurs modules ou vérifient d
 | ID | Assertion |
 | --- | --- |
 | P-12 | Pour un mock clock qui jumpe en arrière de 10s pendant une phase, `phase_end.durationMs >= 0` toujours (monotonic indépendant). |
-| P-13 | `state.accumulatedDurationMs` toujours ≥ 0 et monotone croissant entre transitions. |
+| P-13 | `state.accumulatedDurationMs` toujours ≥ 0 et monotone croissant entre phases terminées. |
 
 ### 26.7 Per-attempt isolation
 
@@ -1456,7 +1456,7 @@ Ces tests sont transversaux — ils mobilisent plusieurs modules ou vérifient d
 
 | ID | Assertion |
 | --- | --- |
-| P-16 | Pour toute phase qui retourne un PhaseResult, un seul des 5 appels possibles (`transition`, `delegate`, `delegate`, `delegateBatch`, `done`, `fail`) a réussi. Le second throw `ProtocolError`. Testé sur 10 scénarios de combinaison. |
+| P-16 | Pour toute phase qui retourne un PhaseResult, un seul des 4 appels possibles (`delegate`, `delegateBatch`, `done`, `fail`) a réussi. Le second throw `ProtocolError`. Testé sur 10 scénarios de combinaison. |
 
 ### 26.9 Exactly-once consumption
 
@@ -1558,7 +1558,7 @@ Les sections §27.7 à §27.14 restent RED strict : ce sont de vraies post-condi
 | ID | Assertion |
 | --- | --- |
 | C-GL-09 | `OrchestratorConfig<State>` accepte `State extends object = object`. Compile sur `config<MyState>`. |
-| C-GL-10 | `Phase<State, Input, Output>` compile avec Input/Output typés. |
+| C-GL-10 | `Phase<State, Output>` compile avec Output typé, et `PhaseIO` n'expose pas d'ancien canal in-process. |
 | C-GL-11 | `definePhase` est un pass-through (no-op runtime, utile pour inférence). |
 
 ### 27.5 [DÉPLACÉ §27.bis] OrchestratorErrorKind fermé
@@ -1591,7 +1591,7 @@ Référence : §5.3 (table canonique).
 
 | ID | Assertion |
 | --- | --- |
-| C-FC-05 | `PhaseResult.kind === "transition"` → aucun bloc émis (continue boucle in-process) |
+| C-FC-05 | `PhaseResult.kind` malformé → bloc `action: ERROR`, exit 1 |
 | C-FC-06 | `PhaseResult.kind === "delegate"` → bloc `action: DELEGATE`, exit 0 |
 | C-FC-07 | `PhaseResult.kind === "done"` → bloc `action: DONE`, exit 0 |
 | C-FC-08 | `PhaseResult.kind === "fail"` → bloc `action: ERROR`, exit 1 |

@@ -275,7 +275,7 @@ async function enterDispatchLoopWithResults<S extends object>(
 		currentPhase: pd.resumeAt,
 	};
 
-	await runDispatchLoop(ctx, stateForDispatch, undefined, {
+	await runDispatchLoop(ctx, stateForDispatch, {
 		label: pd.label,
 		kind: pd.kind,
 		data: loadedData as unknown | readonly unknown[],

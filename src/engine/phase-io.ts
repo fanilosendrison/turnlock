@@ -36,7 +36,9 @@ export function buildPhaseIO<S extends object>(args: {
 		}
 	}
 
-	function commit(result: PhaseResult<S>): PhaseResult<S> {
+	function commit<Output = void>(
+		result: PhaseResult<S, Output>,
+	): PhaseResult<S, Output> {
 		guards.committed.value = true;
 		guards.committedResult.value = result as PhaseResult<object>;
 		return result;
@@ -54,18 +56,6 @@ export function buildPhaseIO<S extends object>(args: {
 	}
 
 	return {
-		transition<NextInput = void>(
-			nextPhase: string,
-			nextState: S,
-			input?: NextInput,
-		): PhaseResult<S> {
-			guardCommitted();
-			return commit(
-				input === undefined
-					? { kind: "transition", nextPhase, nextState }
-					: { kind: "transition", nextPhase, nextState, input },
-			);
-		},
 		delegate(request, resumeAt, nextState) {
 			guardCommitted();
 			return commit({ kind: "delegate", request, resumeAt, nextState });
@@ -74,9 +64,9 @@ export function buildPhaseIO<S extends object>(args: {
 			guardCommitted();
 			return commit({ kind: "delegate", request, resumeAt, nextState });
 		},
-		done<FinalOutput>(output: FinalOutput): PhaseResult<S> {
+		done<FinalOutput>(output: FinalOutput): PhaseResult<S, FinalOutput> {
 			guardCommitted();
-			return commit({ kind: "done", output } as PhaseResult<S>);
+			return commit({ kind: "done", output });
 		},
 		fail(error: Error): PhaseResult<S> {
 			guardCommitted();

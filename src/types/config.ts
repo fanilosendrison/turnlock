@@ -5,7 +5,7 @@ import type { LoggingPolicy, RetryPolicy, TimeoutPolicy } from "./policies";
 export interface OrchestratorConfig<State extends object = object> {
 	readonly name: string;
 	readonly initial: string;
-	readonly phases: Readonly<Record<string, Phase<State, any, any>>>;
+	readonly phases: Readonly<Record<string, Phase<State, unknown>>>;
 	readonly initialState: State;
 	readonly resumeCommand: (runId: string) => string;
 	readonly stateSchema?: ZodSchema<State>;

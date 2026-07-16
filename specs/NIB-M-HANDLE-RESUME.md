@@ -212,9 +212,9 @@ async function enterDispatchLoopWithResults<S extends object>(
     timestamp: clock.nowWallIso(),
   });
 
-  // Step 14 : transition en mémoire state.currentPhase = pd.resumeAt.
+  // Step 14 : positionner en mémoire state.currentPhase = pd.resumeAt.
   //    PAS encore persister — pendingDelegation reste en place jusqu'à effacement §14.2 step 16.c.
-  //    Le dispatch-loop fera le writeStateAtomic sur le prochain transition/done/fail qui cleane pendingDelegation.
+  //    Le dispatch-loop fera le writeStateAtomic sur le prochain delegate/done/fail qui cleane ou remplace pendingDelegation.
   const stateForDispatch: StateFile<S> = {
     ...state,
     currentPhase: pd.resumeAt,  // mémoire seulement pour l'instant
@@ -228,17 +228,15 @@ async function enterDispatchLoopWithResults<S extends object>(
     data: loadedData!,  // non-null garanti par allParseable === true
   };
 
-  // input = undefined au resume (input non persisté, §6.2 C11).
-  await runDispatchLoop(ctx, stateForDispatch, undefined, loadedResults);
+  await runDispatchLoop(ctx, stateForDispatch, loadedResults);
   return undefined as never;  // runDispatchLoop ne retourne pas
 }
 ```
 
 **Règles** :
 
-- **`state.currentPhase = pd.resumeAt` en mémoire uniquement** — persister serait prématuré (on veut préserver le pending pour retry cross-crash si la phase de reprise échoue mid-exécution). Le dispatch-loop persistera via `writeStateAtomic` dans la branche transition/done/fail.
+- **`state.currentPhase = pd.resumeAt` en mémoire uniquement** — persister serait prématuré (on veut préserver le pending pour retry cross-crash si la phase de reprise échoue mid-exécution). Le dispatch-loop persistera via `writeStateAtomic` dans la branche delegate/done/fail.
 - **`loadedResults` passé en RAM** au dispatch-loop — c'est le payload pour `consumePending*`.
-- **`input === undefined` au resume** (C11) — aucune transition `input` ne survit à une délégation.
 
 ### 3.4 `handleDelegationError` — décision retry ou fatal (§14.2 step 12.d-e)
 
@@ -450,7 +448,7 @@ Les fichiers d'`attempt` antérieurs sont **ignorés** :
 ### 4.3 Effacement de `pendingDelegation`
 
 **Pas ici** — `handle-resume` ne touche pas à `state.pendingDelegation`. L'effacement arrive :
-- Dans le dispatch-loop branche `transition`/`done`/`fail` (§14.1 step 16.n) quand la phase de reprise retourne son PhaseResult.
+- Dans le dispatch-loop branche `delegate`/`done`/`fail` quand la phase de reprise retourne son PhaseResult.
 - Si la phase de reprise crash mid-execution, `pendingDelegation` reste en place → la re-reprise retente correctement.
 
 ### 4.4 Deadline strict `>`

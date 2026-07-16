@@ -64,9 +64,7 @@ describe("BatchBinding.buildManifest (T-BT-01..05)", () => {
 				{ id: "j1", prompt: "b" },
 			],
 		};
-		expect(() =>
-			batchBinding.buildManifest(req, makeContext()),
-		).not.toThrow();
+		expect(() => batchBinding.buildManifest(req, makeContext())).not.toThrow();
 	});
 	test("T-BT-04 | 0 jobs → InvalidConfigError", () => {
 		const req: BatchDelegationRequest = {

@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Phase, PhaseIO } from "../../src/index";
 import * as publicApi from "../../src/index";
 
 const pkg = JSON.parse(
@@ -108,8 +109,17 @@ describe("[GREEN-L1] " + "typage (C-GL-09..11)", () => {
 		// Pure compile-time test — passes if type-check succeeds.
 		expect(true).toBe(true);
 	});
-	test("C-GL-10 | Phase<State,Input,Output> compile", () => {
-		expect(true).toBe(true);
+	test("C-GL-10 | Phase<State,Output> compile", () => {
+		const phase: Phase<{ count: number }, { ok: boolean }> =
+			publicApi.definePhase(async (_state, io) => io.done({ ok: true }));
+		expect(typeof phase).toBe("function");
+	});
+	test("C-GL-10b | PhaseIO has no transition", () => {
+		const assertNoTransition = (io: PhaseIO<{ count: number }>) => {
+			// @ts-expect-error transition was removed from the public PhaseIO API.
+			io["transition"]("next", { count: 1 });
+		};
+		expect(typeof assertNoTransition).toBe("function");
 	});
 	test("C-GL-11 | definePhase pass-through no-op", () => {
 		const fn = async () => ({ kind: "done" as const, output: undefined });

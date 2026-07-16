@@ -189,47 +189,6 @@ export async function emitFatalError<S extends object>(
 	doExit(1);
 }
 
-export async function handleTransition<S extends object>(
-	ctx: DispatchContext<S>,
-	state: StateFile<S>,
-	result: {
-		kind: "transition";
-		nextPhase: string;
-		nextState: S;
-		input?: unknown;
-	},
-	accumulatedDurationMs: number,
-): Promise<StateFile<S>> {
-	if (!(result.nextPhase in ctx.config.phases)) {
-		throw new ProtocolError(`unknown phase: ${result.nextPhase}`, {
-			runId: ctx.runId,
-			orchestratorName: ctx.config.name,
-			phase: state.currentPhase,
-		});
-	}
-
-	const nowIso = clock.nowWallIso();
-	const nowEpoch = clock.nowEpochMs();
-
-	const newState: StateFile<S> = {
-		schemaVersion: STATE_SCHEMA_VERSION,
-		runId: state.runId,
-		orchestratorName: state.orchestratorName,
-		startedAt: state.startedAt,
-		startedAtEpochMs: state.startedAtEpochMs,
-		currentPhase: result.nextPhase,
-		data: result.nextState,
-		phasesExecuted: state.phasesExecuted + 1,
-		lastTransitionAt: nowIso,
-		lastTransitionAtEpochMs: nowEpoch,
-		accumulatedDurationMs,
-		usedLabels: state.usedLabels,
-	};
-
-	writeStateAtomic(ctx.runDir, newState, ctx.config.stateSchema);
-	return newState;
-}
-
 export async function handleDelegate<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,

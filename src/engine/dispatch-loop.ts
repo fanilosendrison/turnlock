@@ -6,7 +6,7 @@ import {
 import { clock } from "../services/clock";
 import { refreshLock } from "../services/lock";
 import { resolveRetryDecision } from "../services/retry-resolver";
-import type { PendingDelegationRecord, StateFile } from "../services/state-io";
+import type { StateFile } from "../services/state-io";
 import type { PhaseResult } from "../types/phase";
 import type { DispatchContext, LoadedResults } from "./context";
 import {
@@ -15,7 +15,6 @@ import {
 	handleDelegate,
 	handleDone,
 	handleFail,
-	handleTransition,
 } from "./dispatch-handlers";
 import { buildPhaseIO, type PhaseIOGuards } from "./phase-io";
 
@@ -39,169 +38,173 @@ function deepFreeze<T>(obj: T): T {
 
 export async function runDispatchLoop<S extends object>(
 	ctx: DispatchContext<S>,
-	initialState: StateFile<S>,
-	initialInput: unknown,
+	state: StateFile<S>,
 	loadedResults?: LoadedResults,
 ): Promise<never> {
-	let state = initialState;
-	let input: unknown = initialInput;
-	let currentLoadedResults = loadedResults;
+	const currentPhase = state.currentPhase;
+	ctx.currentPhase = currentPhase;
 
-	while (true) {
-		const currentPhase = state.currentPhase;
-		ctx.currentPhase = currentPhase;
+	const phaseFn = ctx.config.phases[currentPhase];
+	if (!phaseFn) {
+		throw new ProtocolError(`unknown phase: ${currentPhase}`, {
+			runId: ctx.runId,
+			orchestratorName: ctx.config.name,
+			phase: currentPhase,
+		});
+	}
 
-		const phaseFn = ctx.config.phases[currentPhase];
-		if (!phaseFn) {
-			throw new ProtocolError(`unknown phase: ${currentPhase}`, {
+	refreshLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+
+	const guards: PhaseIOGuards = {
+		committed: { value: false },
+		committedResult: { value: null },
+		consumedCount: { value: 0 },
+	};
+
+	const pendingAtEntry = state.pendingDelegation;
+	const isResumePhase =
+		pendingAtEntry !== undefined &&
+		loadedResults !== undefined &&
+		loadedResults.label === pendingAtEntry.label;
+
+	const frozenData = deepFreeze(
+		structuredClone(state.data as unknown as Record<string, unknown>),
+	) as unknown as S;
+
+	const io = buildPhaseIO<S>({
+		ctx,
+		currentPhase,
+		loadedResults,
+		pendingAtEntry,
+		guards,
+	});
+
+	const attemptCount =
+		pendingAtEntry?.attempt !== undefined ? pendingAtEntry.attempt + 1 : 1;
+	ctx.logger.emit({
+		eventType: "phase_start",
+		runId: ctx.runId,
+		phase: currentPhase,
+		attemptCount,
+		timestamp: clock.nowWallIso(),
+	});
+
+	const phaseStartMono = clock.nowMono();
+
+	let result: PhaseResult<S>;
+	try {
+		const returned = (await phaseFn(frozenData, io)) as PhaseResult<S>;
+		if (!guards.committed.value || guards.committedResult.value === null) {
+			throw new PhaseError(
+				"phase returned without emitting a PhaseResult (must call io.delegate/delegateBatch/done/fail)",
+				{
+					runId: ctx.runId,
+					orchestratorName: ctx.config.name,
+					phase: currentPhase,
+				},
+			);
+		}
+		result = (guards.committedResult.value ?? returned) as PhaseResult<S>;
+	} catch (err) {
+		if (err instanceof DelegationSchemaError && pendingAtEntry !== undefined) {
+			const decision = resolveRetryDecision(
+				err,
+				pendingAtEntry.attempt,
+				pendingAtEntry.effectiveRetryPolicy,
+			);
+			if (decision.retry === true) {
+				await executeRetryBranch(
+					ctx,
+					state,
+					pendingAtEntry,
+					decision,
+					currentPhase,
+				);
+				return undefined as never;
+			}
+		}
+		await emitFatalError(ctx, state, currentPhase, err);
+		return undefined as never;
+	}
+
+	const phaseDurationMs = Math.round(clock.nowMono() - phaseStartMono);
+	const newAccumulatedDurationMs =
+		state.accumulatedDurationMs + phaseDurationMs;
+	ctx.accumulatedDurationMs = newAccumulatedDurationMs;
+	ctx.phasesExecuted = state.phasesExecuted + 1;
+
+	if (isResumePhase && pendingAtEntry !== undefined) {
+		if (guards.consumedCount.value !== 1) {
+			const msg =
+				guards.consumedCount.value === 0
+					? `unconsumed delegation: ${pendingAtEntry.label}`
+					: `multiple consume calls on same delegation: ${pendingAtEntry.label}`;
+			await emitFatalError(
+				ctx,
+				state,
+				currentPhase,
+				new ProtocolError(msg, {
+					runId: ctx.runId,
+					orchestratorName: ctx.config.name,
+					phase: currentPhase,
+				}),
+			);
+			return undefined as never;
+		}
+	}
+
+	const resultKind = (result as { readonly kind?: unknown }).kind;
+	if (
+		resultKind !== "delegate" &&
+		resultKind !== "done" &&
+		resultKind !== "fail"
+	) {
+		await emitFatalError(
+			ctx,
+			state,
+			currentPhase,
+			new ProtocolError(`unknown PhaseResult kind: ${String(resultKind)}`, {
 				runId: ctx.runId,
 				orchestratorName: ctx.config.name,
 				phase: currentPhase,
-			});
-		}
+			}),
+		);
+		return undefined as never;
+	}
 
-		refreshLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+	ctx.logger.emit({
+		eventType: "phase_end",
+		runId: ctx.runId,
+		phase: currentPhase,
+		durationMs: phaseDurationMs,
+		resultKind,
+		timestamp: clock.nowWallIso(),
+	});
 
-		const guards: PhaseIOGuards = {
-			committed: { value: false },
-			committedResult: { value: null },
-			consumedCount: { value: 0 },
-		};
-
-		const pendingAtEntry = state.pendingDelegation;
-		const isResumePhase =
-			pendingAtEntry !== undefined &&
-			currentLoadedResults !== undefined &&
-			currentLoadedResults.label === pendingAtEntry.label;
-
-		const frozenData = deepFreeze(
-			structuredClone(state.data as unknown as Record<string, unknown>),
-		) as unknown as S;
-
-		const io = buildPhaseIO<S>({
-			ctx,
-			currentPhase,
-			loadedResults: currentLoadedResults,
-			pendingAtEntry,
-			guards,
-		});
-
-		const attemptCount =
-			pendingAtEntry?.attempt !== undefined ? pendingAtEntry.attempt + 1 : 1;
-		ctx.logger.emit({
-			eventType: "phase_start",
-			runId: ctx.runId,
-			phase: currentPhase,
-			attemptCount,
-			timestamp: clock.nowWallIso(),
-		});
-
-		const phaseStartMono = clock.nowMono();
-
-		let result: PhaseResult<S>;
-		try {
-			const returned = (await phaseFn(
-				frozenData,
-				io,
-				input as never,
-			)) as PhaseResult<S>;
-			if (!guards.committed.value || guards.committedResult.value === null) {
-				throw new PhaseError(
-					"phase returned without emitting a PhaseResult (must call io.transition/delegate*/done/fail)",
-					{
-						runId: ctx.runId,
-						orchestratorName: ctx.config.name,
-						phase: currentPhase,
-					},
-				);
-			}
-			result = (guards.committedResult.value ?? returned) as PhaseResult<S>;
-		} catch (err) {
-			if (
-				err instanceof DelegationSchemaError &&
-				pendingAtEntry !== undefined
-			) {
-				const decision = resolveRetryDecision(
-					err,
-					pendingAtEntry.attempt,
-					pendingAtEntry.effectiveRetryPolicy,
-				);
-				if (decision.retry === true) {
-					await executeRetryBranch(
-						ctx,
-						state,
-						pendingAtEntry,
-						decision,
-						currentPhase,
-					);
-					return undefined as never;
-				}
-			}
-			await emitFatalError(ctx, state, currentPhase, err);
+	switch (resultKind) {
+		case "delegate":
+			await handleDelegate(
+				ctx,
+				state,
+				result as Extract<PhaseResult<S>, { readonly kind: "delegate" }>,
+				newAccumulatedDurationMs,
+			);
 			return undefined as never;
-		}
-
-		const phaseDurationMs = Math.round(clock.nowMono() - phaseStartMono);
-		const newAccumulatedDurationMs =
-			state.accumulatedDurationMs + phaseDurationMs;
-		ctx.accumulatedDurationMs = newAccumulatedDurationMs;
-
-		if (isResumePhase && pendingAtEntry !== undefined) {
-			if (guards.consumedCount.value !== 1) {
-				const msg =
-					guards.consumedCount.value === 0
-						? `unconsumed delegation: ${pendingAtEntry.label}`
-						: `multiple consume calls on same delegation: ${pendingAtEntry.label}`;
-				await emitFatalError(
-					ctx,
-					state,
-					currentPhase,
-					new ProtocolError(msg, {
-						runId: ctx.runId,
-						orchestratorName: ctx.config.name,
-						phase: currentPhase,
-					}),
-				);
-				return undefined as never;
-			}
-		}
-
-		ctx.logger.emit({
-			eventType: "phase_end",
-			runId: ctx.runId,
-			phase: currentPhase,
-			durationMs: phaseDurationMs,
-			resultKind: result.kind,
-			timestamp: clock.nowWallIso(),
-		});
-
-		switch (result.kind) {
-			case "transition": {
-				const { pendingDelegation: _omitted, ...stateNoPending } =
-					state as StateFile<S> & {
-						pendingDelegation?: PendingDelegationRecord;
-					};
-				void _omitted;
-				state = await handleTransition(
-					ctx,
-					stateNoPending as StateFile<S>,
-					result,
-					newAccumulatedDurationMs,
-				);
-				input = (result as { input?: unknown }).input;
-				currentLoadedResults = undefined;
-				ctx.phasesExecuted = state.phasesExecuted;
-				continue;
-			}
-			case "delegate":
-				await handleDelegate(ctx, state, result, newAccumulatedDurationMs);
-				return undefined as never;
-			case "done":
-				await handleDone(ctx, state, result, newAccumulatedDurationMs);
-				return undefined as never;
-			case "fail":
-				await handleFail(ctx, state, result, newAccumulatedDurationMs);
-				return undefined as never;
-		}
+		case "done":
+			await handleDone(
+				ctx,
+				state,
+				result as Extract<PhaseResult<S>, { readonly kind: "done" }>,
+				newAccumulatedDurationMs,
+			);
+			return undefined as never;
+		case "fail":
+			await handleFail(
+				ctx,
+				state,
+				result as Extract<PhaseResult<S>, { readonly kind: "fail" }>,
+				newAccumulatedDurationMs,
+			);
+			return undefined as never;
 	}
 }

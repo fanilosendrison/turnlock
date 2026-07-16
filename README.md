@@ -70,9 +70,6 @@ runOrchestrator({
   phases: {
     verify: async (state, io) => {
       // Mechanical: tests pass, lint passes, typecheck passes
-      return io.transition("write-commit", state);
-    },
-    "write-commit": async (state, io) => {
       // Delegate to a skill: write the commit message
       return io.delegate(
         { kind: "prompt", worker: "commit-msg", prompt: "Write a conventional commit for the staged diff", label: "msg" },
@@ -93,12 +90,12 @@ runOrchestrator({
 
 **What happens at runtime:**
 
-1. `verify` runs in-process. Checks pass → transition to `write-commit`.
-2. `write-commit` calls `io.delegate(...)`. The runtime snapshots state to disk, prints a `@@TURNLOCK@@` protocol block on stdout, and **exits**.
+1. `verify` runs once. Checks pass, then it calls `io.delegate(...)`.
+2. The runtime snapshots state to disk, prints a `@@TURNLOCK@@` protocol block on stdout, and **exits**.
 3. The parent agent (Claude Code) reads the protocol block, invokes the `commit-msg` skill, waits for completion, then relaunches the binary with `--resume --run-id <id>`.
 4. On resume, `state.json` is loaded. `commit` runs, consumes the skill's result, commits with the agent-written message, and emits `DONE`.
 
-Notice that a phase is not synonymous with an agent call. Phases can transition to other phases in the same process for as long as the work remains mechanical. Only `delegate(...)` / `delegateBatch(...)` suspends the process and asks the host to intervene.
+Notice that a phase is not synonymous with an agent call. A phase can do as much mechanical work as it needs before yielding. Splitting into another phase is reserved for durable boundaries: `delegate(...)`, `delegateBatch(...)`, `done(...)`, or `fail(...)`.
 
 ---
 
@@ -209,9 +206,9 @@ If you don't need crash recovery or auditability, a state-machine library in a l
 
 ## Core properties
 
-**Determinism.** The orchestration logic lives in your TypeScript code, not in the agent's judgment. Given the same state, turnlock always picks the same next transition. State is deep-frozen before each phase — no accidental mutation.
+**Determinism.** The orchestration logic lives in your TypeScript code, not in the agent's judgment. Given the same state, turnlock always picks the same next yield. State is deep-frozen before each phase — no accidental mutation.
 
-**Reliability.** Every stable transition snapshots state to disk atomically (`tmp + rename`). If the process dies — session close, OS reboot, API outage — `--resume` picks up from the last snapshot. Nothing is lost.
+**Reliability.** Every completed phase yield snapshots state to disk atomically (`tmp + rename`). If the process dies — session close, OS reboot, API outage — `--resume` picks up from the last snapshot. Nothing is lost.
 
 **Auditability.** Each run produces a `state.json` snapshot, an append-only `events.ndjson` log, and JSON manifests for every delegation — all correlated by `run_id`. You can reconstruct exactly what happened after the fact.
 

@@ -7,23 +7,12 @@ import type {
 } from "./delegation";
 import type { OrchestratorLogger } from "./events";
 
-export type Phase<
-	State extends object = object,
-	Input = void,
-	Output = void,
-> = (
+export type Phase<State extends object = object, Output = unknown> = (
 	state: State,
 	io: PhaseIO<State>,
-	input?: Input,
 ) => Promise<PhaseResult<State, Output>>;
 
 export interface PhaseIO<State extends object> {
-	transition<NextInput = void>(
-		nextPhase: string,
-		nextState: State,
-		input?: NextInput,
-	): PhaseResult<State>;
-
 	delegate(
 		req: PromptDelegationRequest,
 		resumeAt: string,
@@ -35,7 +24,7 @@ export interface PhaseIO<State extends object> {
 		nextState: State,
 	): PhaseResult<State>;
 
-	done<FinalOutput>(output: FinalOutput): PhaseResult<State>;
+	done<FinalOutput>(output: FinalOutput): PhaseResult<State, FinalOutput>;
 	fail(error: Error): PhaseResult<State>;
 
 	readonly logger: OrchestratorLogger;
@@ -51,13 +40,7 @@ export interface PhaseIO<State extends object> {
 	refreshLock(): void;
 }
 
-export type PhaseResult<State extends object = object, Output = void> =
-	| {
-			readonly kind: "transition";
-			readonly nextPhase: string;
-			readonly nextState: State;
-			readonly input?: unknown;
-	  }
+export type PhaseResult<State extends object = object, Output = unknown> =
 	| {
 			readonly kind: "delegate";
 			readonly request: DelegationRequest;
