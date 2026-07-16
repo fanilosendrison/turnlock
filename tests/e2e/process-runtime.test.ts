@@ -2,7 +2,9 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { DelegationManifest } from "../../src/bindings/types";
 import type { ProtocolAction } from "../../src/services/protocol";
+import type { StateFile } from "../../src/services/state-io";
 import type { OrchestratorEvent } from "../../src/types/events";
 import {
 	buildEntrypointSource,
@@ -37,6 +39,7 @@ const RUN_IDS = {
 	bogus: "01HX0000000000000000000015",
 	resumeWithoutPending: "01HX0000000000000000000016",
 	missingState: "01HX0000000000000000000017",
+	failAfterDelegate: "01HX0000000000000000000020",
 } as const;
 
 function eventTypes(events: readonly OrchestratorEvent[]): string[] {
@@ -65,6 +68,14 @@ function expectNoProtocolOnStderr(stderr: string): void {
 
 function baseResumeCommandSource(): string {
 	return '(runId) => "bun " + import.meta.path + " --run-id " + runId + " --resume"';
+}
+
+function expectLastTransitionMatchesManifest(
+	state: StateFile<object>,
+	manifest: DelegationManifest,
+): void {
+	expect(state.lastTransitionAt).toBe(manifest.emittedAt);
+	expect(state.lastTransitionAtEpochMs).toBe(manifest.emittedAtEpochMs);
 }
 
 describe("process E2E initial terminal and delegation flows", () => {
@@ -178,6 +189,10 @@ await runOrchestrator<State>({
 			const state = readStateFile<{ count: number }>(runDir);
 			expect(state.data).toEqual({ count: 1 });
 			expect(state.usedLabels).toEqual(["review"]);
+			expectLastTransitionMatchesManifest(state, manifest);
+			expect(state.pendingDelegation?.emittedAtEpochMs).toBe(
+				manifest.emittedAtEpochMs,
+			);
 			expect(state.pendingDelegation).toMatchObject({
 				label: "review",
 				kind: "prompt",
@@ -230,10 +245,17 @@ await runOrchestrator<State>({
 				RUN_IDS.promptResume,
 			]);
 			expect(initial.exitCode).toBe(0);
-			expectProtocol(initial.stdout, "DELEGATE", RUN_IDS.promptResume);
+			const initialBlock = expectProtocol(
+				initial.stdout,
+				"DELEGATE",
+				RUN_IDS.promptResume,
+			);
 			const runDir = workspace.runDir(
 				"e2e-prompt-resume",
 				RUN_IDS.promptResume,
+			);
+			const initialManifest = readManifestFile(
+				String(initialBlock.fields.manifest),
 			);
 			writePromptResult(runDir, "answer", 0, { verdict: "clean" });
 
@@ -258,6 +280,7 @@ await runOrchestrator<State>({
 			expect(state.currentPhase).toBe("finish");
 			expect(state.phasesExecuted).toBe(2);
 			expect(state.usedLabels).toEqual(["answer"]);
+			expectLastTransitionMatchesManifest(state, initialManifest);
 			expectLockReleased(runDir);
 			expect(eventTypes(readEvents(runDir))).toEqual([
 				"orchestrator_start",
@@ -503,7 +526,19 @@ await runOrchestrator<State>({
 				RUN_IDS.retry,
 			]);
 			expect(initial.exitCode).toBe(0);
+			const initialBlock = expectProtocol(
+				initial.stdout,
+				"DELEGATE",
+				RUN_IDS.retry,
+			);
+			const initialManifest = readManifestFile(
+				String(initialBlock.fields.manifest),
+			);
 			const runDir = workspace.runDir("e2e-retry", RUN_IDS.retry);
+			expectLastTransitionMatchesManifest(
+				readStateFile<{ count: number }>(runDir),
+				initialManifest,
+			);
 			writeMalformedPromptResult(runDir, "retryable", 0, "{not-json");
 
 			const retry = await workspace.runEntrypoint(entrypoint, [
@@ -524,9 +559,12 @@ await runOrchestrator<State>({
 			expect(retryManifest.resultPath).toBe(
 				join(runDir, "results", "retryable-1.json"),
 			);
-			expect(
-				readStateFile<{ count: number }>(runDir).pendingDelegation,
-			).toMatchObject({ label: "retryable", attempt: 1 });
+			const retryState = readStateFile<{ count: number }>(runDir);
+			expect(retryState.pendingDelegation).toMatchObject({
+				label: "retryable",
+				attempt: 1,
+			});
+			expectLastTransitionMatchesManifest(retryState, retryManifest);
 			expect(eventTypes(readEvents(runDir))).toContain("retry_scheduled");
 
 			writePromptResult(runDir, "retryable", 0, { verdict: "stale" });
@@ -543,6 +581,10 @@ await runOrchestrator<State>({
 			).toEqual({
 				verdict: "fresh",
 			});
+			expectLastTransitionMatchesManifest(
+				readStateFile<{ count: number }>(runDir),
+				retryManifest,
+			);
 		} finally {
 			workspace.cleanup();
 		}
@@ -903,6 +945,71 @@ await runOrchestrator<State>({
 				RUN_IDS.missingState,
 			);
 			expect(error.fields.errorKind).toBe("state_missing");
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	test("fail after delegated resume preserves the last delegation timestamp", async () => {
+		const workspace = createE2EWorkspace();
+		const entrypoint = workspace.writeEntrypoint(
+			"fail-after-delegate.ts",
+			buildEntrypointSource(`
+interface State { count: number }
+
+await runOrchestrator<State>({
+	name: "e2e-fail-after-delegate",
+	initial: "ask",
+	initialState: { count: 0 },
+	resumeCommand: ${baseResumeCommandSource()},
+	phases: {
+		ask: definePhase<State>(async (_state, io) =>
+			io.delegate({ kind: "prompt", prompt: "verdict", label: "answer" }, "finish", { count: 1 }),
+		),
+		finish: definePhase<State>(async (_state, io) => {
+			io.consumePendingResult(z.object({ verdict: z.string() }));
+			return io.fail(new Error("delegated failure"));
+		}),
+	},
+});
+`),
+		);
+		try {
+			const initial = await workspace.runEntrypoint(entrypoint, [
+				"--run-id",
+				RUN_IDS.failAfterDelegate,
+			]);
+			expect(initial.exitCode).toBe(0);
+			const initialBlock = expectProtocol(
+				initial.stdout,
+				"DELEGATE",
+				RUN_IDS.failAfterDelegate,
+			);
+			const runDir = workspace.runDir(
+				"e2e-fail-after-delegate",
+				RUN_IDS.failAfterDelegate,
+			);
+			const manifest = readManifestFile(String(initialBlock.fields.manifest));
+			writePromptResult(runDir, "answer", 0, { verdict: "bad" });
+
+			const failed = await workspace.runEntrypoint(entrypoint, [
+				"--resume",
+				"--run-id",
+				RUN_IDS.failAfterDelegate,
+			]);
+			expect(failed.exitCode).toBe(1);
+			const error = expectProtocol(
+				failed.stdout,
+				"ERROR",
+				RUN_IDS.failAfterDelegate,
+			);
+			expect(error.fields.errorKind).toBe("phase_error");
+			expect(String(error.fields.message)).toContain("delegated failure");
+			const finalState = readStateFile<{ count: number }>(runDir);
+			expect(finalState.currentPhase).toBe("finish");
+			expect("pendingDelegation" in finalState).toBe(false);
+			expectLastTransitionMatchesManifest(finalState, manifest);
+			expectLockReleased(runDir);
 		} finally {
 			workspace.cleanup();
 		}
