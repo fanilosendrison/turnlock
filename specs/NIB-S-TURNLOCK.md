@@ -71,6 +71,8 @@ Un runtime TypeScript qui satisfait les quatre exigences **simultanément**, par
 
 Le mécanisme suicide-and-resume **n'intervient que pour les phases agent-déléguées**. Une chaîne de phases purement mécaniques traverse le runtime sans aucun aller-retour avec le host — c'est ce qui rend rentable d'orchestrer du travail mécanique avec turnlock plutôt que de tout déléguer à l'agent.
 
+**Formulation canonique** : `turnlock` est la colonne mécanique déterministe du workflow. Une phase est une transaction mécanique persistée et reprenable. Une délégation est le point de yield explicite où cette colonne mécanique demande à un host agent-capable d'exécuter un travail sémantique, outillé, ou autrement non déterministe. Le runtime ne suspend pas à chaque frontière de phase ; il suspend uniquement sur un `PhaseResult.kind === "delegate"`.
+
 Mapping mécanisme → exigences :
 
 | Exigence | Comment turnlock la satisfait |
@@ -423,6 +425,7 @@ export type Phase<State, Input = void, Output = void> = (
 - La phase peut faire des IO en lecture externes (repo, git, fs arbitraire).
 - **`input` in-process only** : le second argument et `PhaseResult.transition.input` ne sont **pas persistés** dans `state.json`/`pendingDelegation`/manifest. Toute transition qui franchit une délégation reçoit `input: undefined` au resume. Pour données durables cross-délégation, utiliser `state.data`.
 - **Phase max duration** : phase mécanique sans délégation ne devrait pas dépasser 30 min (`DEFAULT_IDLE_LEASE_MS`). Au-delà → splitter en sous-phases ou appeler `io.refreshLock()` périodiquement.
+- **Frontière phase ≠ frontière délégation** : plusieurs phases mécaniques consécutives peuvent s'enchaîner dans le même process via `transition`. Une phase existe parce qu'elle représente un point mécanique stable, persistable et reprenable, pas parce qu'elle invoque nécessairement un agent. Seuls `delegate` et `delegateBatch` émettent `DELEGATE`, libèrent le lock, et terminent le process.
 
 ### 6.3 PhaseIO
 
