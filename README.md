@@ -1,7 +1,7 @@
 # turnlock
 
-> **turnlock gives your scripts a new superpower: calling Claude Code back.**
-> It lets your scripts pause, delegate work back to Claude Code, Codex, or any coding harness — inside of the main agent session — then resume automatically.
+> **turnlock gives your scripts a deterministic spine with explicit agent yield points.**
+> It lets your scripts run the mechanical workflow in code, pause only when a Claude Code, Codex, or other coding harness must do semantic work, then resume automatically.
 >
 > Write a pipeline where code handles the mechanical steps and the agent handles the rest.
 > No manual handoff, no polling, no restart from scratch — your script controls the flow, the agent only intervenes where it's needed.
@@ -52,6 +52,8 @@ And **leaving the orchestration to the agent is the problem**:
 
 **turnlock solves this by inverting control.** You write a TypeScript pipeline where *you* decide when the agent is invoked. The pipeline is deterministic. Mechanical steps are code. Agent steps are delegated through a clean protocol. If the process crashes mid-pipeline, `--resume` picks up exactly where it stopped.
 
+The useful mental model: turnlock is the mechanical spine of a workflow. A phase is a persisted, resumable transaction in that spine. A delegation is the explicit yield point where the workflow needs semantic judgment, host-agent tools, or another non-deterministic worker.
+
 ---
 
 ## Quick example (30 seconds)
@@ -95,6 +97,8 @@ runOrchestrator({
 2. `write-commit` calls `io.delegate(...)`. The runtime snapshots state to disk, prints a `@@TURNLOCK@@` protocol block on stdout, and **exits**.
 3. The parent agent (Claude Code) reads the protocol block, invokes the `commit-msg` skill, waits for completion, then relaunches the binary with `--resume --run-id <id>`.
 4. On resume, `state.json` is loaded. `commit` runs, consumes the skill's result, commits with the agent-written message, and emits `DONE`.
+
+Notice that a phase is not synonymous with an agent call. Phases can transition to other phases in the same process for as long as the work remains mechanical. Only `delegate(...)` / `delegateBatch(...)` suspends the process and asks the host to intervene.
 
 ---
 
@@ -143,7 +147,7 @@ runOrchestrator({
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**The key insight:** turnlock doesn't run a persistent server. It starts, executes phases until it hits a delegation, snapshots state, and **exits**. The parent agent does the actual work, then relaunches. This means there's nothing running between phases — no memory leaks, no dangling processes, no port conflicts.
+**The key insight:** turnlock doesn't run a persistent server. It starts, executes mechanical phases until it hits a delegation, snapshots state, and **exits**. The parent agent does the delegated work, then relaunches. This means there's nothing running while the workflow is yielded — no memory leaks, no dangling processes, no port conflicts.
 
 ---
 
