@@ -167,43 +167,43 @@ describe("parseProtocolBlock happy (T-PR-13..19)", () => {
 			loadFixture("protocol/delegate-prompt.txt"),
 		);
 		expect(parsed).not.toBeNull();
-		expect(parsed!.action).toBe("DELEGATE");
-		expect(parsed!.fields.kind).toBe("prompt");
+		expect(parsed?.action).toBe("DELEGATE");
+		expect(parsed?.fields.kind).toBe("prompt");
 	});
 	test("T-PR-14 | DONE full", () => {
 		const parsed = parseProtocolBlock(loadFixture("protocol/done-minimal.txt"));
-		expect(parsed!.action).toBe("DONE");
-		expect(parsed!.fields.success).toBe(true);
-		expect(parsed!.fields.phasesExecuted).toBe(3);
-		expect(parsed!.fields.durationMs).toBe(1234);
+		expect(parsed?.action).toBe("DONE");
+		expect(parsed?.fields.success).toBe(true);
+		expect(parsed?.fields.phasesExecuted).toBe(3);
+		expect(parsed?.fields.durationMs).toBe(1234);
 	});
 	test("T-PR-15 | ERROR preflight runId=null", () => {
 		const parsed = parseProtocolBlock(
 			loadFixture("protocol/error-preflight.txt"),
 		);
-		expect(parsed!.runId).toBeNull();
+		expect(parsed?.runId).toBeNull();
 	});
 	test("T-PR-16 | ERROR phase=null", () => {
 		const parsed = parseProtocolBlock(
 			loadFixture("protocol/error-preflight.txt"),
 		);
-		expect(parsed!.fields.phase).toBeNull();
+		expect(parsed?.fields.phase).toBeNull();
 	});
 	test("T-PR-17 | ABORTED", () => {
 		const parsed = parseProtocolBlock(
 			loadFixture("protocol/aborted-sigint.txt"),
 		);
-		expect(parsed!.action).toBe("ABORTED");
-		expect(parsed!.fields.signal).toBe("SIGINT");
+		expect(parsed?.action).toBe("ABORTED");
+		expect(parsed?.fields.signal).toBe("SIGINT");
 	});
 	test("T-PR-18 | success string → boolean", () => {
 		const parsed = parseProtocolBlock(loadFixture("protocol/done-minimal.txt"));
-		expect(parsed!.fields.success).toBe(true);
-		expect(typeof parsed!.fields.success).toBe("boolean");
+		expect(parsed?.fields.success).toBe(true);
+		expect(typeof parsed?.fields.success).toBe("boolean");
 	});
 	test("T-PR-19 | phases_executed → number", () => {
 		const parsed = parseProtocolBlock(loadFixture("protocol/done-minimal.txt"));
-		expect(typeof parsed!.fields.phasesExecuted).toBe("number");
+		expect(typeof parsed?.fields.phasesExecuted).toBe("number");
 	});
 });
 
@@ -237,13 +237,13 @@ describe("parseProtocolBlock multiplicity (T-PR-25..26)", () => {
 			loadFixture("protocol/malformed-double-block.txt"),
 		);
 		expect(parsed).not.toBeNull();
-		expect(parsed!.fields.output).toBe("/tmp/out1.json");
+		expect(parsed?.fields.output).toBe("/tmp/out1.json");
 	});
 	test("T-PR-26 | tolerates noise before block", () => {
 		const noisy = `stray log line\nanother\n${loadFixture("protocol/done-minimal.txt")}`;
 		const parsed = parseProtocolBlock(noisy);
 		expect(parsed).not.toBeNull();
-		expect(parsed!.action).toBe("DONE");
+		expect(parsed?.action).toBe("DONE");
 	});
 });
 
@@ -258,8 +258,8 @@ describe("protocol properties (P-PR-a..d)", () => {
 		});
 		const parsed = parseProtocolBlock(block);
 		expect(parsed).not.toBeNull();
-		expect(parsed!.action).toBe("DELEGATE");
-		expect(parsed!.fields.kind).toBe("prompt");
+		expect(parsed?.action).toBe("DELEGATE");
+		expect(parsed?.fields.kind).toBe("prompt");
 	});
 	test("P-PR-b | pure (same input → same output)", () => {
 		const fields = {

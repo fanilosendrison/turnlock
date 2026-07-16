@@ -90,7 +90,9 @@ describe("events.ndjson format (T-EV-05..08)", () => {
 			const path = join(dir, "events.ndjson");
 			logger.enableDiskEmit(path);
 			logger.emit(sampleEvent());
-			const line = readFileSync(path, "utf-8").split("\n")[0]!;
+			const line = readFileSync(path, "utf-8").split("\n")[0];
+			expect(line).toBeDefined();
+			if (line === undefined) throw new Error("expected first event line");
 			expect(() => JSON.parse(line)).not.toThrow();
 		} finally {
 			cleanupTempDir(dir);

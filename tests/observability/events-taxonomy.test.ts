@@ -146,7 +146,9 @@ describe("[GREEN-L1] events taxonomy (T-OB-01..11)", () => {
 	const events = sampleEvents();
 	for (const [type, fields] of Object.entries(requiredFields)) {
 		test(`T-OB-${type} | ${type} has required fields`, () => {
-			const ev = events[type]!;
+			const ev = events[type as keyof typeof events];
+			expect(ev).toBeDefined();
+			if (ev === undefined) throw new Error(`missing sample event: ${type}`);
 			for (const f of fields) {
 				expect(ev).toHaveProperty(f);
 			}

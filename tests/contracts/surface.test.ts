@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Phase, PhaseIO } from "../../src/index";
+import type { OrchestratorConfig, Phase, PhaseIO } from "../../src/index";
 import * as publicApi from "../../src/index";
 
 const pkg = JSON.parse(
@@ -106,8 +106,19 @@ describe("[GREEN-L1] " + "dépendances (C-GL-07..08)", () => {
 
 describe("[GREEN-L1] " + "typage (C-GL-09..11)", () => {
 	test("C-GL-09 | OrchestratorConfig<State> compile", () => {
-		// Pure compile-time test — passes if type-check succeeds.
-		expect(true).toBe(true);
+		const config: OrchestratorConfig<{ count: number }> = {
+			name: "typed-orch",
+			initial: "start",
+			initialState: { count: 0 },
+			resumeCommand: (runId) => `bun ./main.ts --run-id ${runId} --resume`,
+			phases: {
+				start: publicApi.definePhase<{ count: number }>(async (_state, io) =>
+					io.done({ ok: true }),
+				),
+			},
+		};
+		expect(config.initialState.count).toBe(0);
+		expect(Object.keys(config.phases)).toEqual(["start"]);
 	});
 	test("C-GL-10 | Phase<State,Output> compile", () => {
 		const phase: Phase<{ count: number }, { ok: boolean }> =
@@ -117,7 +128,7 @@ describe("[GREEN-L1] " + "typage (C-GL-09..11)", () => {
 	test("C-GL-10b | PhaseIO has no transition", () => {
 		const assertNoTransition = (io: PhaseIO<{ count: number }>) => {
 			// @ts-expect-error transition was removed from the public PhaseIO API.
-			io["transition"]("next", { count: 1 });
+			io.transition("next", { count: 1 });
 		};
 		expect(typeof assertNoTransition).toBe("function");
 	});
@@ -128,47 +139,39 @@ describe("[GREEN-L1] " + "typage (C-GL-09..11)", () => {
 });
 
 describe("[GREEN-L1] " + "OrchestratorErrorKind fermé (C-GL-12..13)", () => {
-	const expectedKinds = [
-		"invalid_config",
-		"state_corrupted",
-		"state_missing",
-		"state_version_mismatch",
-		"delegation_timeout",
-		"delegation_schema",
-		"delegation_missing_result",
-		"phase_error",
-		"protocol",
-		"aborted",
-		"run_locked",
-	];
-	const mapping: Record<string, new (...a: any[]) => unknown> = {
-		invalid_config: publicApi.InvalidConfigError,
-		state_corrupted: publicApi.StateCorruptedError,
-		state_missing: publicApi.StateMissingError,
-		state_version_mismatch: publicApi.StateVersionMismatchError,
-		delegation_timeout: publicApi.DelegationTimeoutError,
-		delegation_schema: publicApi.DelegationSchemaError,
-		delegation_missing_result: publicApi.DelegationMissingResultError,
-		phase_error: publicApi.PhaseError,
-		protocol: publicApi.ProtocolError,
-		aborted: publicApi.AbortedError,
-		run_locked: publicApi.RunLockedError,
-	};
+	const errorCases = [
+		["invalid_config", () => new publicApi.InvalidConfigError("x")],
+		["state_corrupted", () => new publicApi.StateCorruptedError("x")],
+		["state_missing", () => new publicApi.StateMissingError("x")],
+		[
+			"state_version_mismatch",
+			() => new publicApi.StateVersionMismatchError("x"),
+		],
+		["delegation_timeout", () => new publicApi.DelegationTimeoutError("x")],
+		["delegation_schema", () => new publicApi.DelegationSchemaError("x")],
+		[
+			"delegation_missing_result",
+			() => new publicApi.DelegationMissingResultError("x"),
+		],
+		["phase_error", () => new publicApi.PhaseError("x")],
+		["protocol", () => new publicApi.ProtocolError("x")],
+		["aborted", () => new publicApi.AbortedError("x")],
+		[
+			"run_locked",
+			() =>
+				new publicApi.RunLockedError("x", {
+					ownerPid: 1,
+					acquiredAtEpochMs: 0,
+					leaseUntilEpochMs: 1,
+				}),
+		],
+	] as const;
 	test("C-GL-12 | 11 kind values", () => {
-		expect(expectedKinds).toHaveLength(11);
+		expect(errorCases).toHaveLength(11);
 	});
 	test("C-GL-13 | each kind ↔ class mapping", () => {
-		for (const kind of expectedKinds) {
-			const Ctor = mapping[kind]!;
-			const instance =
-				kind === "run_locked"
-					? new (Ctor as any)("x", {
-							ownerPid: 1,
-							acquiredAtEpochMs: 0,
-							leaseUntilEpochMs: 1,
-						})
-					: new (Ctor as any)("x");
-			expect((instance as { kind: string }).kind).toBe(kind);
+		for (const [kind, buildError] of errorCases) {
+			expect(buildError().kind).toBe(kind);
 		}
 	});
 });

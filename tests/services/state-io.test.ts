@@ -51,7 +51,7 @@ describe("readState (T-SI-01..07)", () => {
 			);
 			const state = readState(dir);
 			expect(state).not.toBeNull();
-			expect(state!.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			expect(state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -94,7 +94,7 @@ describe("readState (T-SI-01..07)", () => {
 			const schema = z.object({ count: z.number() });
 			const read = readState(dir, schema);
 			expect(read).not.toBeNull();
-			expect(read!.data.count).toBe(5);
+			expect(read?.data.count).toBe(5);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -152,13 +152,17 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-SI-11 | crash simulé preserve previous state", () => {
+	test("T-SI-11 | tmp file left by interrupted write preserves previous state", () => {
 		const dir = makeTempDir();
 		try {
 			writeStateAtomic(dir, buildState({ a: 1 }));
-			const original = readFileSync(join(dir, "state.json"), "utf-8");
-			// Simulate : no actual crash injection here in RED — assertion placeholder.
-			expect(original).toContain('"a":1');
+			writeFileSync(
+				join(dir, "state.json.tmp"),
+				JSON.stringify(buildState({ a: 2 })),
+			);
+			const read = readState<{ a: number }>(dir);
+			expect(read).not.toBeNull();
+			expect(read?.data).toEqual({ a: 1 });
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -187,7 +191,7 @@ describe("state-io properties (P-SI-a/b/c)", () => {
 			cleanupTempDir(dir);
 		}
 	});
-	test("P-SI-b | no partial reads during concurrent reads (stub)", () => {
+	test("P-SI-b | repeated reads observe only complete state files", () => {
 		const dir = makeTempDir();
 		try {
 			writeStateAtomic(dir, buildState({ n: 0 }));

@@ -54,7 +54,7 @@ export const eventAsserts = {
 	},
 	endEventFinal(events: OrchestratorEvent[]): void {
 		expect(events.length).toBeGreaterThan(0);
-		expect(events[events.length - 1]!.eventType).toBe("orchestrator_end");
+		expect(events.at(-1)?.eventType).toBe("orchestrator_end");
 	},
 	noPIIIn(
 		events: OrchestratorEvent[],
