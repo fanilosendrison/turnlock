@@ -190,7 +190,7 @@ interface DelegationManifest {
 | 9 | `src/bindings/index.ts` | Exporter `promptBinding`, `batchBinding`. Supprimer anciens exports. |
 | 10 | `src/engine/shared.ts` | `selectBinding()` → switch sur `"prompt"`, `"batch"`. `reconstructManifest()` → `kind === "batch"`. |
 | 11 | `src/engine/phase-io.ts` | Remplacer 3 méthodes par 2. Gardes : `kind === "batch"`. |
-| 12 | `src/engine/dispatch-handlers.ts` | `handleDelegate()` : `kind === "batch"`, `worker`. |
+| 12 | `src/engine/delegate-handler.ts` | `handleDelegate()` : `kind === "batch"`, `worker`. |
 | 13 | `src/engine/handle-resume.ts` | `classifyResultFiles()`, `buildExpectedResultPaths()` : `kind === "batch"`. Retry : quand l'ancien manifest est relu pour reconstruire une tentative, valider `manifestVersion === 2` avant `reconstructManifest()`. |
 | 14 | `src/engine/context.ts` | `LoadedResults.kind` : `"prompt" \| "batch"` |
 | 15 | `src/engine/run-orchestrator.ts` | Remplacer les écritures `schemaVersion: 1` par `STATE_SCHEMA_VERSION` (`2`) lors de la création du state initial. Le rejet `schemaVersion !== 2` reste centralisé dans `readState()`. |
@@ -295,7 +295,7 @@ L'ordre est dicté par les dépendances internes. Blocs atomiques :
 4. **Constants** : `PROTOCOL_VERSION: 2`, `MANIFEST_VERSION: 2`, `STATE_SCHEMA_VERSION: 2`
 5. **Types** : `types/delegation.ts`, `types/phase.ts`, `types/events.ts`
 6. **Bindings** : supprimer `skill.ts` + `agent.ts`, créer `prompt.ts`, renommer `agent-batch.ts` → `batch.ts`, `types.ts`, `index.ts`
-7. **Engine** : `shared.ts`, `phase-io.ts`, `dispatch-handlers.ts`, `handle-resume.ts`, `context.ts`, `run-orchestrator.ts`
+7. **Engine** : `shared.ts`, `phase-io.ts`, `delegate-handler.ts`, `delegation-reemit.ts`, `terminal-handlers.ts`, `handle-resume.ts`, `context.ts`, `run-orchestrator.ts`
 8. **Services** : `state-io.ts` (validation `schemaVersion !== 2`), `protocol.ts` (validation `version !== 2`)
 9. **Public API** : `index.ts`
 

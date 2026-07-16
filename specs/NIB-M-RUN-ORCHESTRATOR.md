@@ -7,7 +7,7 @@ module: run-orchestrator
 status: approved
 consumers: [claude-code]
 superseded_by: []
-validates: ["src/engine/run-orchestrator.ts", "src/types/config.ts", "tests/engine/run-initial-happy-path.test.ts", "tests/engine/run-preflight-errors.test.ts", "tests/engine/run-signals.test.ts", "tests/contracts/fail-closed.test.ts"]
+validates: ["src/engine/run-orchestrator.ts", "src/engine/preflight.ts", "src/engine/error-emitter.ts", "src/engine/signal-handlers.ts", "src/types/config.ts", "tests/engine/run-initial-happy-path.test.ts", "tests/engine/run-preflight-errors.test.ts", "tests/engine/run-signals.test.ts", "tests/contracts/fail-closed.test.ts"]
 ---
 
 # NIB-M-RUN-ORCHESTRATOR — Entry point `runOrchestrator` + préflight + mode dispatch
@@ -32,9 +32,14 @@ validates: ["src/engine/run-orchestrator.ts", "src/types/config.ts", "tests/engi
 
 **Principe normatif structurant — fail-closed universel (I-4)** : la Promise retournée par `runOrchestrator()` **ne rejette jamais** à l'appelant. Tout throw interne est capté par le top-level handler, converti en bloc ERROR (avec `run_id: null` si pas encore généré) + `process.exit(1)` (ou 2 pour RunLocked).
 
-**Fichier cible** : `src/engine/run-orchestrator.ts`
+**Fichiers cibles** :
 
-**LOC cible** : ~350-500.
+- `src/engine/run-orchestrator.ts`
+- `src/engine/preflight.ts`
+- `src/engine/error-emitter.ts`
+- `src/engine/signal-handlers.ts`
+
+**LOC cible** : chaque fichier sous 400 lignes, avec `run-orchestrator.ts` autour de 200 lignes.
 
 ---
 
@@ -81,6 +86,8 @@ export async function runOrchestrator<S extends object>(config: OrchestratorConf
 
 ### 3.2 Fonction `validateConfig` (préflight §14.1 step 1)
 
+Définie dans `src/engine/preflight.ts`.
+
 ```ts
 function validateConfig<S>(config: OrchestratorConfig<S>): void {
   // §6.1 règles :
@@ -120,6 +127,8 @@ function validateConfig<S>(config: OrchestratorConfig<S>): void {
 ```
 
 ### 3.3 Fonction `parseArgv`
+
+Définie dans `src/engine/preflight.ts` avec `validateExternalRunId`.
 
 ```ts
 interface ParsedArgv {
@@ -330,6 +339,8 @@ async function runResumeMode<S>(config: OrchestratorConfig<S>, argv: ParsedArgv)
 
 ### 3.6 `emitRunLockedError` (preflight exit 2)
 
+Définie dans `src/engine/error-emitter.ts`.
+
 ```ts
 function emitRunLockedError<S>(
   err: RunLockedError,
@@ -359,6 +370,8 @@ function emitRunLockedError<S>(
 ```
 
 ### 3.7 `handleTopLevelError` — catch universel (C13)
+
+Définie dans `src/engine/error-emitter.ts`.
 
 ```ts
 function handleTopLevelError<S>(err: unknown, config: OrchestratorConfig<S>): never {
@@ -409,6 +422,8 @@ function handleTopLevelError<S>(err: unknown, config: OrchestratorConfig<S>): ne
 ```
 
 ### 3.8 `installSignalHandlers` (SIGINT/SIGTERM, §13.2)
+
+Définie dans `src/engine/signal-handlers.ts`.
 
 ```ts
 function installSignalHandlers<S>(
@@ -624,7 +639,7 @@ T-SG-01 à T-SG-11 — handler SIGINT/SIGTERM.
 
 ## 7. Definition of Done (DoD)
 
-1. **1 fichier** créé : `src/engine/run-orchestrator.ts` avec export `runOrchestrator`.
+1. **Fichiers engine** : `src/engine/run-orchestrator.ts` exporte `runOrchestrator`; `preflight.ts`, `error-emitter.ts` et `signal-handlers.ts` portent les helpers extraits.
 2. **`validateConfig`** — 8 règles §6.1 NIB-S enforced (T-PF-01 à T-PF-08).
 3. **`parseArgv`** — extract `--resume` + `--run-id`, passe `rest` à io.
 4. **Validation runId externe** — tout `--run-id` doit matcher la regex ULID avant `resolveRunDir`; aucun fallback, slugification ou safe-token générique.
@@ -635,7 +650,7 @@ T-SG-01 à T-SG-11 — handler SIGINT/SIGTERM.
 9. **`installSignalHandlers`** — SIGINT (exit 130) / SIGTERM (exit 143) avec abort + logs + bloc ABORTED + release lock.
 10. **Promise ne rejette jamais** — tout throw capté.
 11. **Tests NIB-T** : §20 (T-PF), §15.1 (T-RO-01), §17.6 (T-RS-19-23), §21 (T-SG).
-12. **LOC** : 350-500.
+12. **LOC** : chaque fichier reste sous 400 lignes.
 
 ---
 

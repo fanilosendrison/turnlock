@@ -7,7 +7,7 @@ module: dispatch-loop
 status: approved
 consumers: [claude-code]
 superseded_by: []
-validates: ["src/engine/dispatch-loop.ts", "src/engine/dispatch-handlers.ts", "src/engine/phase-io.ts", "src/engine/context.ts", "src/engine/shared.ts", "src/types/phase.ts", "tests/engine/run-composition.test.ts", "tests/engine/run-deep-freeze.test.ts", "tests/engine/run-per-attempt-isolation.test.ts", "tests/integration/ping-pong.test.ts"]
+validates: ["src/engine/dispatch-loop.ts", "src/engine/delegate-handler.ts", "src/engine/delegation-reemit.ts", "src/engine/terminal-handlers.ts", "src/engine/phase-io.ts", "src/engine/context.ts", "src/engine/shared.ts", "src/types/phase.ts", "tests/engine/run-composition.test.ts", "tests/engine/run-deep-freeze.test.ts", "tests/engine/run-per-attempt-isolation.test.ts", "tests/integration/ping-pong.test.ts"]
 ---
 
 # NIB-M-DISPATCH-LOOP — One-Phase Dispatch
@@ -25,7 +25,9 @@ Covered files:
 
 - `src/engine/dispatch-loop.ts`
 - `src/engine/phase-io.ts`
-- `src/engine/dispatch-handlers.ts`
+- `src/engine/delegate-handler.ts`
+- `src/engine/delegation-reemit.ts`
+- `src/engine/terminal-handlers.ts`
 - `src/engine/context.ts`
 - `src/engine/shared.ts`
 - `src/types/phase.ts`
@@ -181,7 +183,7 @@ If this is a resumed phase, the previous `pendingDelegation` is replaced by the 
 
 ## 10. Retry Branch
 
-When result validation fails inside a resumed phase, `executeRetryBranch` may re-emit the same delegation with a bumped attempt:
+When result validation fails inside a resumed phase, `reemitDelegationAttempt` may re-emit the same delegation with a bumped attempt. This helper lives in `src/engine/delegation-reemit.ts` and is shared with `handle-resume`.
 
 1. Emit `retry_scheduled`.
 2. Sleep according to the resolved retry decision.

@@ -7,7 +7,7 @@ module: handle-resume
 status: approved
 consumers: [claude-code]
 superseded_by: []
-validates: ["src/engine/handle-resume.ts", "tests/engine/run-resume-happy-path.test.ts"]
+validates: ["src/engine/handle-resume.ts", "src/engine/delegation-reemit.ts", "src/engine/terminal-handlers.ts", "tests/engine/run-resume-happy-path.test.ts"]
 ---
 
 # NIB-M-HANDLE-RESUME — Logique spécifique du resume (§14.2 steps 11-15)
@@ -270,7 +270,14 @@ async function handleDelegationError<S extends object>(
   const decision = resolveRetryDecision(err, pd.attempt, pd.effectiveRetryPolicy);
   if (decision.retry === true) {
     // Branche retry §14.2 step 12.e.
-    await executeResumeRetry(ctx, state, pd, decision);
+    await reemitDelegationAttempt(
+      ctx,
+      state,
+      pd,
+      decision,
+      pd.resumeAt,
+      "aborted during resume retry sleep",
+    );
     return undefined as never;
   }
 
@@ -298,86 +305,22 @@ function safeFileSize(p: string): number {
 }
 ```
 
-### 3.5 `executeResumeRetry` — §14.2 step 12.e
+### 3.5 Retry re-emission — §14.2 step 12.e
 
-Même logique que `executeRetryBranch` de `NIB-M-DISPATCH-LOOP` §4.5 — reconstruction manifest, per-attempt paths, update pendingDelegation (preserving effectiveRetryPolicy), émission DELEGATE, release lock, exit 0.
+`handle-resume` delegates retry re-emission to `reemitDelegationAttempt` in `src/engine/delegation-reemit.ts`. This is the same helper used by `NIB-M-DISPATCH-LOOP` for validation failures inside resumed phases.
 
 ```ts
-async function executeResumeRetry<S extends object>(
-  ctx: DispatchContext<S>,
-  state: StateFile<S>,
-  pd: PendingDelegationRecord,
-  decision: { retry: true; delayMs: number; reason: string },
-): Promise<never> {
-  // Log retry_scheduled.
-  ctx.logger.emit({
-    eventType: "retry_scheduled",
-    runId: ctx.runId, phase: pd.resumeAt,   // resumeAt comme phase logique
-    label: pd.label, attempt: pd.attempt + 1,
-    delayMs: decision.delayMs, reason: decision.reason,
-    timestamp: clock.nowWallIso(),
-  });
-
-  try {
-    await abortableSleep(decision.delayMs, ctx.abortController.signal);
-  } catch (e) {
-    throw new AbortedError("aborted during resume retry sleep", {
-      cause: e, runId: ctx.runId, phase: pd.resumeAt,
-    });
-  }
-
-  // Reconstruction du nouveau manifest (M13, identique dispatch-loop §4.5).
-  const oldManifestRaw = fs.readFileSync(pd.manifestPath, "utf-8");
-  const oldManifest = JSON.parse(oldManifestRaw) as DelegationManifest;
-
-  const newAttempt = pd.attempt + 1;
-  const newEmittedAtEpochMs = clock.nowEpochMs();
-  const newEmittedAt = clock.nowWallIso();
-  const newDeadlineAtEpochMs = newEmittedAtEpochMs + oldManifest.timeoutMs;
-  const newManifestPath = path.join(ctx.runDir, "delegations", `${pd.label}-${newAttempt}.json`);
-
-  const newManifest = reconstructManifest(oldManifest, {
-    attempt: newAttempt, emittedAt: newEmittedAt, emittedAtEpochMs: newEmittedAtEpochMs,
-    deadlineAtEpochMs: newDeadlineAtEpochMs, label: pd.label, runDir: ctx.runDir,
-  });
-  writeFileSyncAtomic(newManifestPath, JSON.stringify(newManifest));
-
-  // Update state.pendingDelegation (effectiveRetryPolicy inchangé, M26).
-  const newState: StateFile<S> = {
-    ...state,
-    pendingDelegation: {
-      ...pd,
-      attempt: newAttempt,
-      emittedAtEpochMs: newEmittedAtEpochMs,
-      deadlineAtEpochMs: newDeadlineAtEpochMs,
-      manifestPath: newManifestPath,
-    },
-    lastTransitionAt: newEmittedAt,
-    lastTransitionAtEpochMs: newEmittedAtEpochMs,
-  };
-  writeStateAtomic(ctx.runDir, newState, ctx.config.stateSchema);
-
-  // Log delegation_emit.
-  ctx.logger.emit({
-    eventType: "delegation_emit",
-    runId: ctx.runId, phase: pd.resumeAt,
-    label: pd.label, kind: pd.kind,
-    jobCount: pd.jobIds?.length ?? 1,
-    timestamp: newEmittedAt,
-  });
-
-  // Émettre bloc DELEGATE.
-  const resumeCmd = ctx.config.resumeCommand(ctx.runId);
-  const binding = selectBinding(pd.kind);
-  const block = (binding as any).buildProtocolBlock(newManifest, newManifestPath, resumeCmd);
-  process.stdout.write(block);
-
-  releaseLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
-  process.exit(0);
-}
+await reemitDelegationAttempt(
+  ctx,
+  state,
+  pd,
+  decision,
+  pd.resumeAt,
+  "aborted during resume retry sleep",
+);
 ```
 
-**Note** : `reconstructManifest` est le même helper que dans `NIB-M-DISPATCH-LOOP` §4.5. Peut être extracted dans `src/engine/_shared.ts` si factorisation souhaitée, ou dupliqué (300 LOC vs 10 LOC de dedup — trade-off acceptable v1).
+The helper emits `retry_scheduled`, sleeps according to the resolved retry decision, validates the previous manifest version, reconstructs a new attempt-specific manifest, updates `state.pendingDelegation`, emits `delegation_emit`, writes a `DELEGATE` protocol block, releases the lock, and exits 0.
 
 ### 3.6 `emitFatalError` au resume
 
