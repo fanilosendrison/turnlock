@@ -16,22 +16,22 @@ In Claude Code (or Codex, or Cursor), you can invoke a script from a skill:
 User types /lint-fix  →  skill launches lint-fix.sh  →  script runs
 ```
 
-But what about the reverse? **A script cannot invoke a skill or spawn an agent.** Once you're in a Bash script, you've left the agent session behind.
+But what about the reverse? **A script cannot invoke a skill or delegate back to the host agent.** While AI SDKs allow a script to spawn *isolated, amnesic sub-agents*, you cannot ask the **main session agent** (which holds the conversation history, user preferences, and full project context) to do semantic work for you. Once you're in a script, you're a blocked subprocess — the parent agent is waiting for you to finish.
 
 ```
 Without turnlock:
   ┌─────────────┐                          ┌──────────┐
-  │  Claude Code │────── launches ────────▶│ script.sh │
+  │  Host Agent  │────── launches ────────▶│ script.sh │
   └─────────────┘                          └──────────┘
          ▲                                       │
-         │                                       │  delegates skill launch to turnlock
+         │                                       │  needs host agent's project context
          │                  ❌                    │  (ex: /summarize-this-text)
          └───────────────────────────────────────┘
-              script can't call Claude Code back
+              script can't call the Host Agent back
 
 With turnlock:
   ┌─────────────┐                          ┌──────────┐
-  │  Claude Code │────── launches ────────▶│ script.ts │
+  │  Host Agent  │────── launches ────────▶│ script.ts │
   └─────────────┘                          └──────────┘
          ▲                                       │
          │                                       │  delegates skill launch to turnlock
