@@ -14,7 +14,7 @@ validates: ["src/**/*.ts", "tests/contracts/**/*.test.ts", "tests/properties/**/
 **Package** : `turnlock`
 **Statut** : v1.0 — éclatement NIB actif. Premier consommateur cible : Claude Code (voir `docs/consumers/claude-code/`).
 **Source NX** : `docs/NX-TURNLOCK.md` v0.8 (2026-04-19)
-**NIB-T associé** : `specs/NIB-T-TURNLOCK.md` v1.0
+**NIB-T associé** : `specs/briefs/NIB-T-TURNLOCK.md` v1.0
 
 ---
 

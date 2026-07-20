@@ -19,4 +19,4 @@ Rien de ce qui est listé ci-dessus n'existe encore sous forme de code — cette
 
 ## Hors scope de ce dossier
 
-Tout ce qui concerne le runtime lui-même (API `runOrchestrator`, `PhaseIO`, `PhaseResult`, protocole stdout, état durable, invariants I-1 à I-13) vit dans `specs/` et `docs/NX-TURNLOCK.md`. Ce dossier ne re-spécifie pas le runtime — il décrit comment l'intégration Claude Code s'y branche.
+Tout ce qui concerne le runtime lui-même (API `runOrchestrator`, `PhaseIO`, `PhaseResult`, protocole stdout, état durable, invariants I-1 à I-13) vit dans `specs/briefs/` et `docs/NX-TURNLOCK.md`. Ce dossier ne re-spécifie pas le runtime — il décrit comment l'intégration Claude Code s'y branche.

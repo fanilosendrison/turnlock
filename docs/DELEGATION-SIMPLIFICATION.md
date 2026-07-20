@@ -248,17 +248,17 @@ interface DelegationManifest {
 |---|---------|------------|
 | 51 | `docs/SEPARATION.md` | Remplacer L2-6 par une nouvelle entrée référençant ce document |
 | 52 | `docs/DELEGATION-SIMPLIFICATION.md` | Ce document (déjà créé, à maintenir comme référence) |
-| 53 | `specs/NIB-S-TURNLOCK.md` | Remplacer toutes les occurrences (types, kinds, méthodes) |
-| 54 | `specs/NIB-M-PUBLIC-API.md` | Idem |
-| 55 | `specs/NIB-M-BINDINGS.md` | Idem |
-| 56 | `specs/NIB-M-DISPATCH-LOOP.md` | Idem |
-| 57 | `specs/NIB-M-ERROR-CLASSIFIER.md` | Idem |
-| 58 | `specs/NIB-M-ERRORS.md` | Idem |
-| 59 | `specs/NIB-M-HANDLE-RESUME.md` | Idem |
-| 60 | `specs/NIB-M-PROTOCOL.md` | Idem |
-| 61 | `specs/NIB-M-RUN-ORCHESTRATOR.md` | Idem |
-| 62 | `specs/NIB-M-STATE-IO.md` | Idem |
-| 63 | `specs/NIB-T-TURNLOCK.md` | Idem |
+| 53 | `specs/briefs/NIB-S-TURNLOCK.md` | Remplacer toutes les occurrences (types, kinds, méthodes) |
+| 54 | `specs/briefs/NIB-M-PUBLIC-API.md` | Idem |
+| 55 | `specs/briefs/NIB-M-BINDINGS.md` | Idem |
+| 56 | `specs/briefs/NIB-M-DISPATCH-LOOP.md` | Idem |
+| 57 | `specs/briefs/NIB-M-ERROR-CLASSIFIER.md` | Idem |
+| 58 | `specs/briefs/NIB-M-ERRORS.md` | Idem |
+| 59 | `specs/briefs/NIB-M-HANDLE-RESUME.md` | Idem |
+| 60 | `specs/briefs/NIB-M-PROTOCOL.md` | Idem |
+| 61 | `specs/briefs/NIB-M-RUN-ORCHESTRATOR.md` | Idem |
+| 62 | `specs/briefs/NIB-M-STATE-IO.md` | Idem |
+| 63 | `specs/briefs/NIB-T-TURNLOCK.md` | Idem |
 | 64 | `docs/NX-TURNLOCK.md` | Idem |
 | 65 | `docs/consumers/README.md` | Idem |
 | 66 | `docs/consumers/claude-code/README.md` | Idem |

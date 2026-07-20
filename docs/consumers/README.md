@@ -4,7 +4,7 @@ Ce dossier contient la documentation des **consommateurs** du runtime, séparée
 
 ## Pourquoi cette séparation
 
-Le runtime (code dans `src/`, specs dans `specs/NIB-*`) orchestre une FSM TypeScript dont les phases sont **soit mécaniques (in-process)**, **soit déléguées** (cf. README.md racine + NIB-S §1.2). Seules les phases déléguées requièrent un host/consumer capable d'exécuter le travail demandé — pour les phases mécaniques, le runtime n'a besoin de personne. Le runtime est **host-agnostique au niveau protocole** : il émet deux shapes neutres (`kind: "prompt" | "batch"`) via `@@TURNLOCK@@` sur stdout, mais il n'interprète **jamais** comment ces prompts sont exécutés concrètement.
+Le runtime (code dans `src/`, specs dans `specs/briefs/NIB-*`) orchestre une FSM TypeScript dont les phases sont **soit mécaniques (in-process)**, **soit déléguées** (cf. README.md racine + NIB-S §1.2). Seules les phases déléguées requièrent un host/consumer capable d'exécuter le travail demandé — pour les phases mécaniques, le runtime n'a besoin de personne. Le runtime est **host-agnostique au niveau protocole** : il émet deux shapes neutres (`kind: "prompt" | "batch"`) via `@@TURNLOCK@@` sur stdout, mais il n'interprète **jamais** comment ces prompts sont exécutés concrètement.
 
 Un **consommateur** est l'intégration entre le runtime et un **host agent-capable** précis (Claude Code, Codex, Cursor, opencode, Aider, …). Il fournit :
 

@@ -59,10 +59,10 @@ Changements qui touchent le **contrat du runtime** et/ou les **specs autoritativ
 - [x] `src/types/config.ts` : ajout `runDirRoot?: string` à `OrchestratorConfig`.
 - [x] `src/services/run-dir.ts` réécrit : helper interne `resolveRunDirRoot(cwd, configRoot?)` qui applique la précédence env > config > défaut. Signatures `resolveRunDir` et `cleanupOldRuns` étendues avec `runDirRoot?: string` optionnel.
 - [x] `src/engine/run-orchestrator.ts` : threading de `config.runDirRoot` aux 3 call sites (initial `resolveRunDir`, `cleanupOldRuns`, resume `resolveRunDir`).
-- [x] `specs/NIB-M-RUN-DIR.md` mis à jour : §1 précédence, §2 signature + règles + tests T-RD-09..12, §3 signature, §5 snippets consommation, §6 DoD.
-- [x] `specs/NIB-S-TURNLOCK.md` §10.1 step 4 reformulé avec la précédence.
-- [x] `specs/NIB-T-TURNLOCK.md` §7.1 : tableau T-RD-01 output refresh (`.turnlock/runs/`) + ajout T-RD-09..12 pour override. §12.1 : fixture `runDir` refresh. Notes de provenance refresh.
-- [x] `specs/NIB-M-PROTOCOL.md` §5 : exemples `manifest:` refresh vers `/tmp/.turnlock/runs/...` + note intro reformulée.
+- [x] `specs/briefs/NIB-M-RUN-DIR.md` mis à jour : §1 précédence, §2 signature + règles + tests T-RD-09..12, §3 signature, §5 snippets consommation, §6 DoD.
+- [x] `specs/briefs/NIB-S-TURNLOCK.md` §10.1 step 4 reformulé avec la précédence.
+- [x] `specs/briefs/NIB-T-TURNLOCK.md` §7.1 : tableau T-RD-01 output refresh (`.turnlock/runs/`) + ajout T-RD-09..12 pour override. §12.1 : fixture `runDir` refresh. Notes de provenance refresh.
+- [x] `specs/briefs/NIB-M-PROTOCOL.md` §5 : exemples `manifest:` refresh vers `/tmp/.turnlock/runs/...` + note intro reformulée.
 - [x] `docs/NX-TURNLOCK.md` : 7 mentions refresh (§4.3, §5, §6, §12.1, §14.1, §14.2, §25).
 - [x] `tests/services/run-dir.test.ts` : migré vers nouveau défaut + 5 nouveaux tests (T-RD-09..12, T-RD-13 cleanup honors custom root). Env var nettoyée avant/après chaque test.
 - [x] `tests/bindings/{skill,agent,batch}-binding.test.ts` : constante `RUN_DIR` refresh vers `/tmp/.turnlock/runs/...`.
