@@ -264,7 +264,7 @@ bun run build     # emit ./dist from src/
 | [`docs/NX-TURNLOCK.md`](docs/NX-TURNLOCK.md) | Full architectural concept: invariants, layer model, contract, protocol |
 | [`docs/SEPARATION.md`](docs/SEPARATION.md) | Runtime / consumer architecture separation |
 | [`docs/consumers/claude-code/`](docs/consumers/claude-code/) | Claude Code integration (reference consumer) |
-| [`specs/`](specs/) | Normative Interface Briefs (NIBs) — the spec-driven source of truth |
+| [`specs/`](specs/) | Immutable historical briefs documenting the original implementation intent; the current code is authoritative |
 
 ---
 
