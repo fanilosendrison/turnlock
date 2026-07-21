@@ -6,7 +6,7 @@ workspace: "turnlock"
 date: "2026-07-21"
 step_id: 0
 id: "CDD-O-TURNLOCK-DELEGATION-ATTEMPT-EXECUTION"
-version: "0.1.0"
+version: "0.1.1"
 scope: "delegation-attempt-execution"
 status: "draft"
 consumers:
@@ -54,13 +54,13 @@ execution projection of one Turnlock delegation attempt.
 
 This orchestrator delegates detailed design to two child CDDs:
 
-- `CDD-I-TURNLOCK-RUNNER-WORKSET-CONTRACT` defines the harness-neutral Runner
-  interface;
+- [CDD-I-TURNLOCK-RUNNER-WORKSET-CONTRACT](cdd-i-turnlock-runner-workset-contract.md)
+  defines the harness-neutral Runner interface;
 - `CDD-S-PI-SUBAGENTS-EXECUTION` defines the first Pi execution strategy.
 
 The extraction sequence is documented in
 [Turnlock Delegation Attempt Specification Restructuring
-Plan](../delegation-attempt-specification-restructuring-plan.md).
+Plan](../../docs/delegation-attempt-specification-restructuring-plan.md).
 
 ## 3. System Objective
 
