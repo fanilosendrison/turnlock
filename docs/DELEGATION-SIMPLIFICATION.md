@@ -10,7 +10,7 @@
 - `MANIFEST_VERSION: 1 → 2` — le champ `kind` dans le manifest JSON change de valeurs ; `skill`, `skillArgs`, `agentType` supprimés
 - `STATE_SCHEMA_VERSION: 1 → 2` — `pendingDelegation.kind` change de valeurs ; les runs v1 sont rejetés par `readState()` (I-2 fail-closed)
 
-**Décision antérieure annulée** : ce plan invalide [L2-6 de docs/SEPARATION.md](docs/SEPARATION.md#l2-6--vocabulaire-des-bindings-skill--agent--agent-batch----close-2026-04-23-par-décision-option-a) (CLOS 2026-04-23). Le frame a changé : le vocabulaire "agent-host primitives" était pertinent quand turnlock ciblait exclusivement le main agent de la session. Aujourd'hui le seul consumer existant contourne le harness (appels API directs), et le protocole n'a pas à présupposer le mode d'exécution. `docs/SEPARATION.md` sera mis à jour pour remplacer L2-6 par une nouvelle décision référençant ce document.
+**Décision antérieure annulée** : ce plan invalide [L2-6 de docs/SEPARATION.md](SEPARATION.md#l2-6--vocabulaire-des-bindings-skill--agent--agent-batch----close-2026-04-23-par-décision-option-a) (CLOS 2026-04-23). Le frame a changé : le vocabulaire "agent-host primitives" était pertinent quand turnlock ciblait exclusivement le main agent de la session. Aujourd'hui le seul consumer existant contourne le harness (appels API directs), et le protocole n'a pas à présupposer le mode d'exécution. `docs/SEPARATION.md` sera mis à jour pour remplacer L2-6 par une nouvelle décision référençant ce document.
 
 ---
 
