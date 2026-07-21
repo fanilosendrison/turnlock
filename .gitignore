@@ -92,4 +92,5 @@ docs/formalizing-fsm-builder/
 .turnlock/
 .claude/run/
 AGENTS.md
-/docs\n/specs
+/docs
+/specs
