@@ -21,17 +21,17 @@ But what about the reverse? **A script cannot invoke a skill or delegate back to
 ```
 Without turnlock:
   ┌─────────────┐                          ┌──────────┐
-  │  Host Agent  │────── launches ────────▶│ script.sh │
+  │  Host Agent │────── launches ────────▶ │ script.sh│
   └─────────────┘                          └──────────┘
          ▲                                       │
          │                                       │  needs host agent's project context
-         │                  ❌                    │  (ex: /summarize-this-text)
+         │                  ❌                   │  (ex: /summarize-this-text)
          └───────────────────────────────────────┘
               script can't call the Host Agent back
 
 With turnlock:
   ┌─────────────┐                          ┌──────────┐
-  │  Host Agent  │────── launches ────────▶│ script.ts │
+  │  Host Agent │────── launches ────────▶ │ script.ts│
   └─────────────┘                          └──────────┘
          ▲                                       │
          │                                       │  delegates skill launch to turnlock
