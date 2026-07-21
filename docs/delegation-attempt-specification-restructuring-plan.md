@@ -6,7 +6,7 @@ workspace: "turnlock"
 date: "2026-07-21"
 step_id: 0
 id: "PLAN-TURNLOCK-DELEGATION-ATTEMPT-SPECIFICATION-RESTRUCTURING"
-version: "0.1.0"
+version: "0.2.0"
 scope: "delegation-attempt-specification-restructuring"
 status: "active"
 ---
@@ -87,7 +87,7 @@ baselined.
 ### 4.1 CDD-O: delegation attempt execution
 
 Path:
-[CDD-O Turnlock Delegation Attempt Execution](design/cdd-o-turnlock-delegation-attempt-execution.md)
+[CDD-O Turnlock Delegation Attempt Execution](../specs/working/cdd-o-turnlock-delegation-attempt-execution.md)
 
 Role:
 
@@ -102,8 +102,8 @@ It excludes exact Zod schemas, exact filesystem algorithms, and Pi RPC calls.
 
 ### 4.2 CDD-I: Runner workset contract
 
-Planned path:
-`docs/design/cdd-i-turnlock-runner-workset-contract.md`
+Path:
+[CDD-I Turnlock Runner Workset Contract](../specs/working/cdd-i-turnlock-runner-workset-contract.md)
 
 Role:
 
@@ -119,7 +119,7 @@ It excludes Pi-specific agents, models, lifecycle states, and RPC operations.
 ### 4.3 CDD-S: Pi subagents execution
 
 Planned path:
-`docs/design/cdd-s-pi-subagents-execution.md`
+`specs/working/cdd-s-pi-subagents-execution.md`
 
 Role:
 
@@ -256,35 +256,43 @@ No document may assign the same mutable state transition to two layers.
 13. Replace construction documents with maintained public consumer
     documentation derived from code and tests.
 
-## 10. Current Authorized Increment
+## 10. Authorized Increments
 
-This increment creates only:
+### 10.1 Completed increment
+
+The first increment created:
 
 - this restructuring plan;
 - the CDD-O for delegation attempt execution.
 
+### 10.2 Current increment
+
+The current increment creates:
+
+- the CDD-I for the harness-neutral Runner workset contract;
+- corrected links after moving working CDDs under `specs/working/`.
+
 It does not:
 
-- modify either current draft;
+- modify either legacy consumer draft;
 - modify approved NIBs;
 - select a canonical JSON package;
-- create the CDD-I or CDD-S;
+- create the CDD-S;
 - implement runtime or Runner code.
 
 ## 11. Acceptance Criteria
 
-This increment is complete when:
+The current increment is complete when:
 
-- both new files carry valid OKF metadata;
-- the CDD-O follows the required CDD anatomy;
-- the CDD-O contains no rejected `pendingWorkset`, `kind: "workset"`, or
-  `--resume-workset` contract;
-- the core remains host-neutral;
-- the Runner-level workset boundary is explicit;
-- the Pi strategy is referenced but not mechanically specified;
-- every frozen invariant has a unique conceptual owner;
+- the CDD-I carries valid OKF metadata;
+- the CDD-I follows the interface CDD anatomy;
+- the CDD-I defines the generic Runner contract without Pi-specific mechanics;
+- `WorksetRecord`, ownership, intake, submissions, outcomes, join, and resume
+  each have one conceptual owner;
+- durable handoff and at-least-once delivery semantics are explicit;
+- the CDD-O and plan links resolve from `specs/working/`;
 - Markdown formatting and repository links validate;
-- no existing specification or source file is modified.
+- no legacy consumer draft, approved NIB, or source file is modified.
 
 ## 12. Risks and Controls
 
