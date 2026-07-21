@@ -6,7 +6,7 @@ domain: "turnlock-data-integrity"
 severity: "strict"
 name: "Turnlock Canonical JSON and Digest Standard"
 id: "STD-TURNLOCK-CANONICAL-JSON-AND-DIGEST"
-version: "0.1.0"
+version: "0.3.0"
 ---
 
 # Turnlock Canonical JSON and Digest Standard
@@ -118,15 +118,28 @@ The initial domain registry is:
 
 - `turnlock:delegation-manifest`;
 - `turnlock:job-payload`;
+- `turnlock:executor-group-spec`;
 - `turnlock:executor-spec`;
 - `turnlock:workspace-policy`;
 - `turnlock:workspace-manifest`;
+- `turnlock:delegation-resource-policy`;
+- `turnlock:delegation-environment-profile`;
+- `turnlock:workset`;
+- `turnlock:strategy-state`;
+- `turnlock:core-transition`;
+- `turnlock:cleanup-reference-set`;
 - `turnlock:host-ticket`;
 - `turnlock:submission`;
+- `turnlock:terminal-cause`;
 - `turnlock:outcome`;
+- `turnlock:outcome-set`;
+- `turnlock:attempt-terminal`;
 - `turnlock:attempt-rejection`;
 - `turnlock:semantic-event`;
-- `turnlock:resume-command`.
+- `turnlock:delivery-gap-disposition`;
+- `turnlock:resume-operation`;
+- `turnlock:process-observation`;
+- `turnlock:operator-abort`.
 
 A consuming NIB may add a domain only when it defines the complete digest
 subject and its schema version. Changing a domain, subject membership, or
@@ -154,23 +167,28 @@ because their embedded `value` members are equal.
 
 ## 7. Implementation dependency
 
-Select a maintained implementation of strict JSON parsing and RFC 8785 through
-an ADR. Pin and constrain that implementation through a Dependency Contract.
+Consume [DC-JSONC-PARSER](../dependencies/dc-jsonc-parser.md) for
+`jsonc-parser` 3.3.1 token-aware strict parsing and
+[DC-CANONICALIZE](../dependencies/dc-canonicalize.md) for `canonicalize` 3.0.0
+RFC 8785 byte production. Use native fatal `TextDecoder` for strict UTF-8 and
+native `node:crypto` for SHA-256.
 
-Require the Dependency Contract to cover:
+Require the dependency contract and its conformance suite to cover:
 
-- exact package and source identity;
-- strict UTF-8 behavior;
-- duplicate member detection;
-- Unicode and numeric behavior;
+- exact package, integrity, and source identity;
+- strict UTF-8 and BOM behavior;
+- duplicate-member detection before object materialization;
+- Unicode and numeric-domain validation;
 - RFC 8785 conformance;
 - error behavior and resource limits;
 - supported runtime versions;
-- upstream RFC test vectors;
+- official RFC test vectors;
 - maintenance and vulnerability response.
 
-Do not replace the selected implementation with project-local canonicalization
-logic unless a later ADR explicitly authorizes that change.
+The runtime-dependency ADR must approve the two new exact dependencies before
+construction changes `package.json`. Do not replace them with project-local
+parsing or canonicalization logic unless a later ADR explicitly authorizes that
+change.
 
 ## 8. Security and resource limits
 
@@ -210,6 +228,15 @@ Require tests for:
 The following conception documents consume this standard without redefining
 it:
 
-- [CDD-O Turnlock Delegation Attempt Execution](../working/cdd-o-turnlock-delegation-attempt-execution.md);
-- [CDD-I Turnlock Runner Workset Contract](../working/cdd-i-turnlock-runner-workset-contract.md);
-- [CDD-S Pi Subagents Execution](../working/cdd-s-pi-subagents-execution.md).
+- [CDD-O Turnlock Delegation Attempt Execution](../working/delegation-attempt/cdd-o-turnlock-delegation-attempt-execution.md);
+- [CDD-O Turnlock Runner Execution](../working/delegation-attempt/runner/cdd-o-turnlock-runner-execution.md);
+- [CDD-N Attempt Admission and Handoff](../working/delegation-attempt/runner/cdd-n-turnlock-attempt-admission-and-handoff.md);
+- [CDD-N Workset Preparation](../working/delegation-attempt/runner/cdd-n-turnlock-workset-preparation.md);
+- [CDD-N Host Intake](../working/delegation-attempt/runner/cdd-n-turnlock-host-intake.md);
+- [CDD-N Outcome and Terminal Coordination](../working/delegation-attempt/runner/cdd-n-turnlock-outcome-and-terminal-coordination.md);
+- [CDD-N Terminal Resume](../working/delegation-attempt/runner/cdd-n-turnlock-terminal-resume.md);
+- [CDD-N Quarantine Disposition](../working/delegation-attempt/runner/cdd-n-turnlock-quarantine-disposition.md);
+- [CDD-N Delivery Bridge](../working/delegation-attempt/runner/cdd-n-turnlock-delivery-bridge.md);
+- [CDD-N Workset Cleanup](../working/delegation-attempt/runner/cdd-n-turnlock-workset-cleanup.md);
+- [CDD-I Turnlock External Execution Strategy](../working/delegation-attempt/runner/cdd-i-turnlock-external-execution-strategy.md);
+- [CDD-S Pi Subagents Execution](../working/delegation-attempt/strategies/pi-subagents/cdd-s-pi-subagents-execution.md).
