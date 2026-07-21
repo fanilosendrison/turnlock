@@ -6,7 +6,7 @@ workspace: "turnlock"
 date: "2026-07-21"
 step_id: 0
 id: "PLAN-TURNLOCK-DELEGATION-ATTEMPT-SPECIFICATION-RESTRUCTURING"
-version: "0.2.0"
+version: "0.4.0"
 scope: "delegation-attempt-specification-restructuring"
 status: "active"
 ---
@@ -15,318 +15,313 @@ status: "active"
 
 ## 1. Objective
 
-Restructure the current mixed-delegation and runner drafts into a bounded,
-coherent design corpus before producing normative implementation briefs.
+Restructure the delegation-attempt conception corpus into a valid CDD DAG,
+close the authority and recovery gaps found by active audit, and prevent NIB or
+runtime construction before external dependencies are mechanically proven.
 
-The restructuring preserves the frozen architecture:
+The target architecture remains:
 
 ```text
 Turnlock core
-  -> commits a neutral delegation attempt
+  -> commits one neutral delegation attempt and resume outbox contract
 
-Turnlock Runner
-  -> owns durable execution coordination
+Turnlock Runner orchestration
+  -> owns durable workset coordination and terminal selection
 
-Harness adapter
-  -> translates the committed execution intent
-
-Workers
+Host intake and external execution strategy
   -> publish unprivileged submissions
 
-Current owner
-  -> adopts, commits, joins, and resumes
-```
+Current Runner owner
+  -> adopts, commits, joins, and starts fixed core resume
 
-The restructuring does not implement runtime behavior. It separates conception,
-dependency contracts, normative construction briefs, and eventual public
-consumer documentation.
+Turnlock core
+  -> validates, classifies, retries, or resumes the FSM
+```
 
 ## 2. Source Material
 
-The extraction uses the following drafts as non-authoritative source material:
+The restructuring preserves valid requirements from:
 
-- [Turnlock Runners](consumers/TURNLOCK-RUNNERS.md)
-- [Mixed Parallel Delegations](consumers/TURNLOCK-MIXED-PARALLEL-DELEGATIONS.md)
+- [Turnlock Runners](consumers/TURNLOCK-RUNNERS.md);
+- [Mixed Parallel Delegations](consumers/TURNLOCK-MIXED-PARALLEL-DELEGATIONS.md);
+- [Pi Subagents Normative Draft](consumers/TURNLOCK-PI-SUBAGENTS-NORMATIVE-SPEC.md);
+- the active hostile-audit findings resolved on 2026-07-21.
 
-The frozen decisions from the architecture review supersede contradictory
-content in those drafts.
+The consumer drafts remain non-authoritative and unchanged until the replacement
+corpus is baselined.
 
-## 3. Disposition of the Current Drafts
+## 3. Resolved Design Decisions
 
-### 3.1 Mixed parallel delegations
+The correction increment selects:
 
-`TURNLOCK-MIXED-PARALLEL-DELEGATIONS.md` is not incrementally corrected.
-It still contains rejected contracts, including:
+1. a Runner CDD-O with child CDD-Ns instead of a broad operational CDD-I;
+2. a narrow external-execution CDD-I implemented by harness strategies;
+3. a maintained pi-subagents fork API rather than a Turnlock broker around an
+   uncorrelatable dependency;
+4. typed Turnlock-run-relative targets instead of absolute path strings;
+5. a fixed structured core resume API with a core-owned durable outbox;
+6. immutable strategy-state candidates selected only by `WorksetRecord`;
+7. discriminated outcome provenance instead of universal fictional execution
+   evidence;
+8. a permanent Runner coordination standard;
+9. core-owned operator abandonment for quarantine, with read-only Runner
+   inspection;
+10. permanent environment and resource-policy standards;
+11. a breaking manifest-v2 drain gate instead of in-place suspended-attempt
+    conversion.
 
-- a core-level `pendingWorkset`;
-- a public `kind: "workset"`;
-- harness-specific executors in the core manifest;
-- worker-owned final result writes;
-- `--resume-workset`;
-- runner-owned retryability decisions;
-- multiple host jobs;
-- child scheduling owned by Turnlock.
+These decisions are candidates for permanent ADR extraction after the corrected
+corpus passes hostile review. The rationale remains in session and audit history
+until then.
 
-It remains unchanged while its valid conceptual material is extracted. After
-the replacement corpus is baselined, it becomes a short superseded record or
-is removed, with Git history preserving the full draft.
+## 4. Target Corpus
 
-### 3.2 Turnlock Runners
+```text
+specs/
+├── dependencies/
+│   ├── dc-pi-subagents.md
+│   ├── dc-jsonc-parser.md
+│   └── dc-canonicalize.md
+├── standards/
+│   ├── std-turnlock-artifact-reference-and-integrity.md
+│   ├── std-turnlock-canonical-json-and-digest.md
+│   ├── std-turnlock-delegation-execution-environment.md
+│   ├── std-turnlock-delegation-resource-policy.md
+│   ├── std-turnlock-runner-coordination.md
+│   └── std-turnlock-workspace-input-commitment.md
+└── working/
+    └── delegation-attempt/
+        ├── cdd-o-turnlock-delegation-attempt-execution.md
+        ├── runner/
+        │   ├── cdd-o-turnlock-runner-execution.md
+        │   ├── cdd-n-turnlock-attempt-admission-and-handoff.md
+        │   ├── cdd-n-turnlock-workset-preparation.md
+        │   ├── cdd-n-turnlock-host-intake.md
+        │   ├── cdd-n-turnlock-outcome-and-terminal-coordination.md
+        │   ├── cdd-n-turnlock-terminal-resume.md
+        │   ├── cdd-n-turnlock-quarantine-disposition.md
+        │   ├── cdd-n-turnlock-delivery-bridge.md
+        │   ├── cdd-n-turnlock-workset-cleanup.md
+        │   └── cdd-i-turnlock-external-execution-strategy.md
+        └── strategies/
+            └── pi-subagents/
+                └── cdd-s-pi-subagents-execution.md
+```
 
-`TURNLOCK-RUNNERS.md` contains reusable mechanisms for protocol parsing,
-handoff evidence, spool claiming, delivery deduplication, and recovery.
-Its current yield vocabulary, bridge topology, and retry contracts are not the
-new authority.
+### 4.1 Umbrella delegation CDD-O
 
-Its reusable concepts are revalidated and extracted into the generic Runner
-CDD. The existing document is superseded only after the replacement corpus is
-baselined.
+[CDD-O Turnlock Delegation Attempt Execution](../specs/working/delegation-attempt/cdd-o-turnlock-delegation-attempt-execution.md)
+owns end-to-end topology, core authority, identity hierarchy, terminal envelopes,
+failure classification, retry, operator abort, and manifest migration.
 
-## 4. Target Conception Corpus
+### 4.2 Runner CDD-O and nodes
 
-### 4.1 CDD-O: delegation attempt execution
+[CDD-O Turnlock Runner Execution](../specs/working/delegation-attempt/runner/cdd-o-turnlock-runner-execution.md)
+owns `WorksetRecord`, the Runner DAG, owner fencing, strategy-state selection,
+and terminal-route coordination.
 
-Path:
-[CDD-O Turnlock Delegation Attempt Execution](../specs/working/cdd-o-turnlock-delegation-attempt-execution.md)
+Child CDD-Ns own strict admission, preparation, host intake, outcomes, terminal
+resume, quarantine disposition, delivery, and cleanup pipelines. Each node has
+one bounded input/output role and does not hide further delegation.
 
-Role:
+### 4.3 External execution interface and Pi strategy
 
-- define the end-to-end execution graph;
-- define authority boundaries;
-- define identity scopes;
-- define the all-terminal barrier;
-- define submission, adoption, outcome, retry, and resume semantics;
-- define global failure and recovery invariants.
+[CDD-I Turnlock External Execution Strategy](../specs/working/delegation-attempt/runner/cdd-i-turnlock-external-execution-strategy.md)
+owns only worker preflight, commitments, state candidates, launch observation,
+submission proposals, stop, and reconciliation.
 
-It excludes exact Zod schemas, exact filesystem algorithms, and Pi RPC calls.
+[CDD-S Pi Subagents Execution](../specs/working/delegation-attempt/strategies/pi-subagents/cdd-s-pi-subagents-execution.md)
+implements that worker subset. It does not implement admission, Runner ownership,
+outcome adoption, terminal selection, resume, or delivery.
 
-### 4.2 CDD-I: Runner workset contract
+## 5. Permanent Standards
 
-Path:
-[CDD-I Turnlock Runner Workset Contract](../specs/working/cdd-i-turnlock-runner-workset-contract.md)
+### Artifact references
 
-Role:
+[Artifact Reference and Integrity](../specs/standards/std-turnlock-artifact-reference-and-integrity.md)
+now distinguishes Runner-relative, Turnlock-run-relative, and content-addressed
+references. Core output allocations use typed write-once targets and become
+content commitments only after publication.
 
-- define the harness-neutral Runner interface;
-- define `WorksetRecord` semantics;
-- define owner lease and transaction mutex semantics;
-- define intake, fencing, submissions, immutable commits, and recovery;
-- define generic artifact, digest, workspace, and resume contracts;
-- retain only revalidated spool and handoff behavior.
+### Canonical data
 
-It excludes Pi-specific agents, models, lifecycle states, and RPC operations.
+[Canonical JSON and Digest](../specs/standards/std-turnlock-canonical-json-and-digest.md)
+owns strict JSON-domain, RFC 8785, SHA-256, and domain separation. Its exact
+implementation pair is pinned by
+[DC jsonc-parser](../specs/dependencies/dc-jsonc-parser.md) and
+[DC canonicalize](../specs/dependencies/dc-canonicalize.md).
 
-### 4.3 CDD-S: Pi subagents execution
+### Coordination
 
-Planned path:
-`specs/working/cdd-s-pi-subagents-execution.md`
+[Runner Coordination](../specs/standards/std-turnlock-runner-coordination.md)
+owns process-instance identity, PID reuse, owner lease, mutex, clock anomaly,
+takeover, delivery sequence, and claim recovery.
 
-Role:
+### Environment and resources
 
-- define the Pi strategy implementing the Runner interface;
-- delegate child scheduling to pi-subagents;
-- define the single-group topology;
-- define resolved intent, runtime bindings, launches, and observations;
-- define Pi artifact reconciliation and worker submission publication;
-- define `fresh` context and cooperative read-only workspace behavior.
+[Delegation Execution Environment](../specs/standards/std-turnlock-delegation-execution-environment.md)
+defines the exact certified platform, runtime, filesystem, process, network, and
+provider profile.
 
-It excludes core state transitions and generic Runner rules already owned by
-CDD-O and CDD-I.
+[Delegation Resource Policy](../specs/standards/std-turnlock-delegation-resource-policy.md)
+defines complete defaults, allowed bounds, timing relations, size limits,
+deadline reserves, and retention endpoints.
 
-## 5. Permanent Decisions to Extract as ADRs
+### Workspace
 
-The conception cycle produces ADRs for decisions whose rationale must outlive
-the construction documents:
+[Workspace Input Commitment](../specs/standards/std-turnlock-workspace-input-commitment.md)
+remains authoritative for Git input membership, drift checks, and cooperative
+read-only overlap.
 
-1. Worksets remain Runner-level while the core retains
-   `pendingDelegation`.
-2. The core retains neutral `prompt | batch` protocol shapes and per-job neutral
-   targets.
-3. pi-subagents owns child scheduling and lifecycle for the Pi strategy.
-4. Version 1 permits one Pi group and at most one host job per attempt.
-5. RFC 8785 canonical JSON is used before SHA-256 digesting.
-6. The selected RFC 8785 and strict I-JSON implementation is an approved
-   runtime dependency.
+## 6. Dependency Gates
 
-Package selection belongs to the dependency ADR, not to the CDD-O.
+### 6.1 pi-subagents
 
-## 6. Dependency Contracts
+[DC pi-subagents](../specs/dependencies/dc-pi-subagents.md) pins the actually
+inspected fork version and commit and records an incompatible verdict. This
+closes the prior unverified assumption without pretending that the required API
+already exists.
 
-After the CDD corpus is baselined, create bounded Dependency Contracts for:
+The fork must ship a versioned public integration API providing:
 
-- the exact pinned pi-subagents release and commit;
-- its public RPC operations and reply shapes;
-- its lifecycle artifacts and forward-compatibility rules;
-- the selected strict I-JSON and RFC 8785 implementation.
+- caller-committed launch key and request digest;
+- idempotent equal launch and divergent conflict;
+- durable acknowledgement before success reply;
+- restart-safe inspect and stop by caller key;
+- strict non-destructive per-job results;
+- explicit digest-scoped retention acknowledgement.
 
-Runtime startup performs a bounded protocol handshake. Full dependency contract
-verification remains a CI responsibility.
+After implementation and conformance tests exist, a new Dependency Contract
+supersedes the negative contract. The Pi CDD-S cannot baseline before that
+superseding contract reports compatibility.
 
-## 7. Normative Construction Lot
+### 6.2 Strict JSON and RFC 8785
 
-The baselined CDD corpus is translated into a new NIB lot. The lot owns exact
-schemas, algorithms, errors, constants, and test vectors.
+The selected dependency pair is `jsonc-parser` 3.3.1 and `canonicalize` 3.0.0,
+with native fatal UTF-8 and SHA-256. A runtime-dependency ADR remains mandatory
+before construction changes `package.json`.
 
-### 7.1 Core scope
+## 7. Core Construction Consequences
 
-The core construction briefs cover:
+The future core NIB lot must cover:
 
-- neutral per-job targets;
-- manifest version 3;
-- `delegationId` and `attemptId`;
-- manifest and payload digests;
-- `PendingDelegationRecord` evolution;
-- strict `JobOutcomeEnvelope` validation;
-- fatal outcome protocol violations;
-- execution failure aggregation;
-- retry resolution;
-- successful payload unwrapping before lazy business validation.
+- protocol version 3, manifest version 3, and neutral per-job targets;
+- stable delegation and attempt identities;
+- typed Turnlock-run-relative target allocation;
+- manifest, policy, environment, workspace, and resume-operation commitments;
+- outcome provenance and attempt-terminal envelopes;
+- no-failure success reduction before retry resolution;
+- core resume outbox publication before `state.json` advancement;
+- fixed `resume-delegation-attempt` and
+  `inspect-or-reemit-current-result` operations;
+- authenticated state-digest-fenced operator abort;
+- manifest-v2 admission closure, inventory, drain, and refusal gates.
 
-### 7.2 Runner scope
+Existing historical NIBs remain unchanged.
 
-The Runner construction briefs cover:
+## 8. Runner Construction Consequences
 
-- owner lease;
+The future Runner NIB lot must cover:
+
+- deterministic attempt namespace;
+- admitted and prepared workset states;
+- owner lease and process-instance fencing;
 - recoverable transaction mutex;
-- `WorksetRecord` transitions;
-- host tickets and submissions;
-- worker submissions;
-- intake closure;
-- final outcome commit;
-- all-terminal join;
-- stale owner and stale attempt rejection;
-- attempt selection followed by execution of the core-provided `resumeCmd`.
-
-### 7.3 Pi strategy scope
-
-The Pi construction briefs cover:
-
-- RPC handshake and preflight;
-- one static parallel group;
-- profile input commitment;
-- launch-specific runtime bindings;
-- exactly one eligible launch;
-- job-level execution observations;
-- Pi raw output normalization;
-- deadline stop and bounded reconciliation;
-- tolerant parsing of version-compatible Pi artifacts.
-
-### 7.4 Tests
-
-The TDD brief covers observable behavior, including:
-
-- invalid topology rejected before dispatch;
-- crash windows before and after spawn acknowledgement;
-- stale fencing tokens;
-- late and divergent submissions;
-- launch supersession;
-- workspace drift;
-- malformed or foreign outcomes;
-- multiple execution failures and deterministic aggregation;
-- duplicate resume attempts;
-- deadline closure with running or paused Pi jobs.
-
-## 8. Authority Boundaries
-
-The corpus preserves one authority per concern:
-
-- `state.json`: Turnlock workflow progression;
-- `WorksetRecord`: Runner execution coordination;
-- Pi lifecycle artifacts: child technical lifecycle;
-- submission artifacts: unprivileged result proposals;
-- final outcome files: committed Runner-to-core handoff;
-- code and tests: source of truth after construction completes.
-
-No document may assign the same mutable state transition to two layers.
+- complete workset preparation before side effects;
+- immutable strategy-state candidate selection;
+- host ticket and submission publication;
+- source-specific outcome provenance;
+- terminal cause, partial outcomes, join, rejection, and quarantine;
+- typed core-target publication;
+- structured direct process invocation and bounded capture;
+- outbox inspection before stale-request archival;
+- delivery sequence and claim recovery;
+- signed core operator-abort proof consumption;
+- deterministic reference-set derivation;
+- dependency retention acknowledgement;
+- reference-aware retention and cleanup.
 
 ## 9. Work Sequence
 
-1. Extract and review CDD-O.
-2. Extract and review CDD-I.
-3. Extract and review CDD-S.
-4. Run a cross-document hostile review of the three-document conception lot.
-5. Resolve all decisional findings and baseline the CDDs.
-6. Extract the ADRs.
-7. Select and document dependencies.
-8. Produce Dependency Contracts.
-9. Produce the NIB-S, NIB-M, and NIB-T extension lot.
-10. Run claim verification and a fresh blind-spot sweep.
-11. Supersede the two current drafts.
-12. Implement through the RED then GREEN construction sequence.
-13. Replace construction documents with maintained public consumer
-    documentation derived from code and tests.
+1. Keep all corrected CDDs and new standards at `draft` or pre-baseline version.
+2. Run link, metadata, Markdown, and corpus-claim validation.
+3. Evolve the pi-subagents fork through its own RED/GREEN construction process.
+4. Publish and pin the compatible fork release.
+5. Replace the negative pi-subagents contract with a compatible superseding
+   Dependency Contract.
+6. Extract the runtime-dependency and architecture ADRs.
+7. Run a fresh hostile review across CDDs, standards, Dependency Contracts, and
+   current core code.
+8. Resolve every remaining finding.
+9. Baseline the conception corpus.
+10. Generate new NIB-S, NIB-M, and NIB-T construction documents.
+11. Implement tests RED, then production code GREEN.
+12. Drain protocol-v2 and manifest-v2 pending attempts under the migration
+    gate.
+13. Activate protocol and manifest version 3 only after the zero-pending proof.
+14. Supersede the old consumer drafts and transition construction documents.
 
-## 10. Authorized Increments
+## 10. Acceptance Criteria
 
-### 10.1 Completed increment
+This restructuring increment is complete when:
 
-The first increment created:
+- every CDD has the exact typology-specific 11-header structure;
+- all links resolve after domain hierarchy migration;
+- the Runner interface contains no admission, coordination, resume, or delivery
+  pipeline;
+- every durable I/O boundary belongs to the Runner CDD-O or one CDD-N;
+- no portable cross-boundary path remains an untyped string;
+- no resume contract contains an arbitrary command string;
+- strategy state has one authoritative selector;
+- every outcome route has representable provenance;
+- lease, mutex, process, clock, claim, and sequence behavior has a permanent
+  oracle;
+- quarantine has inspection, alert, core disposition, retention, and cleanup
+  endpoints;
+- all behavior-affecting limits and environment assumptions are closed;
+- protocol-v2 and manifest-v2 pending state has a mechanical refusal and drain
+  path;
+- the all-success vector bypasses the retry resolver;
+- the current incompatible pi-subagents dependency is never presented as
+  dispatch-capable;
+- no existing historical NIB or runtime source file is modified.
 
-- this restructuring plan;
-- the CDD-O for delegation attempt execution.
+Baseline remains separately blocked until the compatible pi-subagents release,
+its superseding contract, required ADRs, and a zero-finding hostile review exist.
 
-### 10.2 Current increment
+## 11. Risks and Controls
 
-The current increment creates:
+### Dependency remains unavailable
 
-- the CDD-I for the harness-neutral Runner workset contract;
-- corrected links after moving working CDDs under `specs/working/`.
+Risk: the Pi strategy cannot dispatch immediately after document correction.
 
-It does not:
+Control: fail preflight before side effects. Dependency unavailability is safer
+than an unprovable uncertain-spawn recovery path.
 
-- modify either legacy consumer draft;
-- modify approved NIBs;
-- select a canonical JSON package;
-- create the CDD-S;
-- implement runtime or Runner code.
+### Corpus fragmentation
 
-## 11. Acceptance Criteria
+Risk: child documents drift or duplicate authority.
 
-The current increment is complete when:
+Control: the umbrella CDD-O owns end-to-end laws, the Runner CDD-O owns workset
+state, and each node references rather than redefines parent contracts.
 
-- the CDD-I carries valid OKF metadata;
-- the CDD-I follows the interface CDD anatomy;
-- the CDD-I defines the generic Runner contract without Pi-specific mechanics;
-- `WorksetRecord`, ownership, intake, submissions, outcomes, join, and resume
-  each have one conceptual owner;
-- durable handoff and at-least-once delivery semantics are explicit;
-- the CDD-O and plan links resolve from `specs/working/`;
-- Markdown formatting and repository links validate;
-- no legacy consumer draft, approved NIB, or source file is modified.
+### Standards become implementation documents
 
-## 12. Risks and Controls
+Risk: permanent laws contain package or low-level module choices.
 
-### 12.1 Stale draft leakage
+Control: standards own cross-boundary behavior; Dependency Contracts pin
+packages; future NIBs own exact module signatures and algorithms.
 
-Risk: obsolete examples are copied into the new corpus.
+### Breaking migration races
 
-Control: frozen decisions override draft text, and the extraction is reviewed
-against an explicit rejected-contract checklist.
+Risk: an old controller creates a new v2 attempt during upgrade inventory.
 
-### 12.2 Cross-layer duplication
+Control: close v2 admission and hold the upgrade lock before inventory, drain,
+recheck, and v3 activation.
 
-Risk: both core and Runner claim ownership of join or execution state.
+### False completion
 
-Control: CDD-O defines scoped authorities and the later CDD-I cannot redefine
-core behavior.
+Risk: document correction is mistaken for dependency or runtime implementation.
 
-### 12.3 Pi coupling in generic contracts
-
-Risk: agent names, models, RPC events, or Pi status fields leak into the core or
-generic Runner interface.
-
-Control: all Pi mechanics are delegated to CDD-S and its Dependency Contract.
-
-### 12.4 False reproducibility claims
-
-Risk: runtime observations or launch bindings enter the pre-dispatch spec hash.
-
-Control: committed intent, runtime bindings, and execution observations remain
-separate artifacts.
-
-### 12.5 Specification drift during construction
-
-Risk: implementation starts before the design corpus is coherent.
-
-Control: no NIB or implementation work begins until the three CDDs pass the
-hostile review and are baselined.
+Control: all CDDs remain draft, the current pi-subagents contract remains
+incompatible, and construction cannot begin before the explicit gates pass.
