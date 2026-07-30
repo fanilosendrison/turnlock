@@ -50,10 +50,7 @@ export async function handleExternalRequest<S extends object>(
 			throw new ProtocolError(`unknown phase: ${resumeAt}`, errorContext);
 		}
 		if (state.usedLabels.includes(request.label)) {
-			throw new ProtocolError(
-				"duplicate external request label",
-				errorContext,
-			);
+			throw new ProtocolError("duplicate external request label", errorContext);
 		}
 
 		const emittedAtEpochMs = clock.nowEpochMs();
@@ -75,22 +72,21 @@ export async function handleExternalRequest<S extends object>(
 		const manifestBytes = Buffer.from(JSON.stringify(manifest), "utf-8");
 		const manifestDigest = contentDigest(manifestBytes);
 
-		const publication:
-			| PreparedPublication
-			| FailedPublicationPreparation = (() => {
-			try {
-				return {
-					ok: true,
-					block: externalRequestBinding.buildProtocolBlock(
-						manifest,
-						manifestPath,
-						ctx.config.resumeCommand(ctx.runId),
-					),
-				};
-			} catch (error) {
-				return { ok: false, error };
-			}
-		})();
+		const publication: PreparedPublication | FailedPublicationPreparation =
+			(() => {
+				try {
+					return {
+						ok: true,
+						block: externalRequestBinding.buildProtocolBlock(
+							manifest,
+							manifestPath,
+							ctx.config.resumeCommand(ctx.runId),
+						),
+					};
+				} catch (error) {
+					return { ok: false, error };
+				}
+			})();
 
 		writeFileSyncAtomic(manifestPath, manifestBytes);
 
@@ -135,12 +131,7 @@ export async function handleExternalRequest<S extends object>(
 		doExit(0);
 	} catch (error) {
 		if (isTestExitSignal(error)) throw error;
-		await emitFatalError(
-			ctx,
-			durableState ?? state,
-			state.currentPhase,
-			error,
-		);
+		await emitFatalError(ctx, durableState ?? state, state.currentPhase, error);
 		return undefined as never;
 	}
 }

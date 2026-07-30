@@ -182,7 +182,10 @@ function validatePendingExternalRequest(
 	const acceptedFieldCount = acceptedFields.filter(
 		(value) => value !== undefined,
 	).length;
-	if (acceptedFieldCount !== 0 && acceptedFieldCount !== acceptedFields.length) {
+	if (
+		acceptedFieldCount !== 0 &&
+		acceptedFieldCount !== acceptedFields.length
+	) {
 		throw new StateCorruptedError(
 			"pendingExternalRequest accepted resolution fields are incomplete",
 		);

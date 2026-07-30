@@ -95,7 +95,9 @@ await runOrchestrator<State>({
 				requestId: `${RUN_IDS.crashAfterConsume}/external-work`,
 				resultPath: join(runDir, "external-results", "external-work.json"),
 				acceptedResolutionPath,
-				acceptedResolutionDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+				acceptedResolutionDigest: expect.stringMatching(
+					/^sha256:[0-9a-f]{64}$/,
+				),
 				acceptedAt: expect.any(String),
 			});
 			expect(readFileSync(acceptedResolutionPath, "utf-8")).toBe(
@@ -178,11 +180,7 @@ await runOrchestrator<State>({
 				{ env: { RESUME_COMMAND_BOOM: "1" } },
 			);
 			expect(failed.exitCode).toBe(1);
-			expectProtocol(
-				failed.stdout,
-				"ERROR",
-				RUN_IDS.resumeCommandFailure,
-			);
+			expectProtocol(failed.stdout, "ERROR", RUN_IDS.resumeCommandFailure);
 
 			const runDir = workspace.runDir(
 				"e2e-external-resume-command-failure",
@@ -198,9 +196,7 @@ await runOrchestrator<State>({
 				manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
 			});
 			expect(
-				existsSync(
-					join(runDir, "external-requests", "external-work.json"),
-				),
+				existsSync(join(runDir, "external-requests", "external-work.json")),
 			).toBe(true);
 
 			const resumed = await workspace.runEntrypoint(entrypoint, [
