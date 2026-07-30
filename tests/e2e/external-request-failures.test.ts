@@ -29,6 +29,9 @@ const RUN_IDS = {
 	pathEscape: "01HX0000000000000000000042",
 	symlink: "01HX0000000000000000000043",
 	manifestMismatch: "01HX0000000000000000000045",
+	manifestPayloadTamper: "01HX0000000000000000000046",
+	manifestMetadataTamper: "01HX0000000000000000000047",
+	manifestRequestTypeTamper: "01HX0000000000000000000048",
 } as const;
 
 function baseResumeCommandSource(): string {
@@ -221,6 +224,73 @@ function resultHasSensitiveData(
 }
 
 describe("external request manifest identity", () => {
+	async function expectManifestTamperRejected(
+		runId: string,
+		orchestratorName: string,
+		mutate: (manifest: Record<string, unknown>) => Record<string, unknown>,
+	): Promise<void> {
+		const workspace = createE2EWorkspace();
+		const entrypoint = workspace.writeEntrypoint(
+			`${orchestratorName}.ts`,
+			failureSource(orchestratorName),
+		);
+		try {
+			const initial = await workspace.runEntrypoint(entrypoint, [
+				"--run-id",
+				runId,
+			]);
+			const request = expectProtocol(
+				initial.stdout,
+				"REQUEST_EXTERNAL",
+				runId,
+			);
+			const runDir = workspace.runDir(orchestratorName, runId);
+			const manifestPath = request.fields.manifest as string;
+			const manifest = JSON.parse(
+				readFileSync(manifestPath, "utf-8"),
+			) as Record<string, unknown>;
+			writeFileSync(manifestPath, JSON.stringify(mutate(manifest)));
+
+			const resumed = await workspace.runEntrypoint(entrypoint, [
+				"--resume",
+				"--run-id",
+				runId,
+			]);
+			expect(resumed.exitCode).toBe(1);
+			const error = expectProtocol(resumed.stdout, "ERROR", runId);
+			expect(error.fields.errorKind).toBe("state_corrupted");
+			const types = eventTypes(readEvents(runDir));
+			expect(types).not.toContain("external_request_reemit");
+			expect(types).not.toContain("external_resolution_read");
+		} finally {
+			workspace.cleanup();
+		}
+	}
+
+	test("changing manifest payload under the same requestId fails closed", async () => {
+		await expectManifestTamperRejected(
+			RUN_IDS.manifestPayloadTamper,
+			"e2e-external-manifest-payload-tamper",
+			(manifest) => ({ ...manifest, payload: { changed: true } }),
+		);
+	});
+
+	test("changing manifest metadata under the same requestId fails closed", async () => {
+		await expectManifestTamperRejected(
+			RUN_IDS.manifestMetadataTamper,
+			"e2e-external-manifest-metadata-tamper",
+			(manifest) => ({ ...manifest, metadata: { changed: true } }),
+		);
+	});
+
+	test("changing manifest requestType under the same requestId fails closed", async () => {
+		await expectManifestTamperRejected(
+			RUN_IDS.manifestRequestTypeTamper,
+			"e2e-external-manifest-request-type-tamper",
+			(manifest) => ({ ...manifest, requestType: "example.changed" }),
+		);
+	});
+
 	test("a manifest identity mismatch fails closed even when a resolution exists", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
