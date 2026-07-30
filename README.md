@@ -95,7 +95,7 @@ runOrchestrator({
 3. The parent agent (Claude Code) reads the protocol block, invokes the `commit-msg` skill, waits for completion, then relaunches the binary with `--resume --run-id <id>`.
 4. On resume, `state.json` is loaded. `commit` runs, consumes the skill's result, commits with the agent-written message, and emits `DONE`.
 
-Notice that a phase is not synonymous with an agent call. A phase can do as much mechanical work as it needs before yielding. Splitting into another phase is reserved for durable boundaries: `delegate(...)`, `delegateBatch(...)`, `done(...)`, or `fail(...)`.
+Notice that a phase is not synonymous with an agent call. A phase can do as much mechanical work as it needs before yielding. Splitting into another phase is reserved for durable boundaries: `delegate(...)`, `delegateBatch(...)`, `requestExternal(...)`, `done(...)`, or `fail(...)`.
 
 ---
 
@@ -215,6 +215,67 @@ If you don't need crash recovery or auditability, a state-machine library in a l
 **Host-agnostic.** Delegation requests travel over stdout in a neutral protocol (`@@TURNLOCK@@ ... @@END@@`). Any host that can read them, execute the request, and relaunch the binary is a valid consumer. Claude Code is the reference integration; Codex, Cursor, and custom scripts are all valid.
 
 ---
+
+## External effects and robustness levels
+
+Turnlock does not make phases transactional. Consumers choose the robustness level that matches each external effect. Existing delegation remains the level for agent work with Turnlock's delegation retry policy; External Requests use a separate, non-retrying path.
+
+### Direct effect
+
+A phase may perform an effect directly:
+
+```typescript
+async function phase(state, io) {
+  await externalEffect();
+  return io.done(state);
+}
+```
+
+**Guarantee:** Turnlock provides no guarantee for this effect. The phase may be replayed from its last durable boundary, so a directly executed effect may run again after a crash.
+
+### External Request
+
+A phase may instead suspend durably until a consumer supplies an opaque JSON resolution:
+
+```typescript
+const phases = {
+  push: async (state, io) =>
+    io.requestExternal(
+      {
+        label: "push-repo-a",
+        requestType: "git.push",
+        payload: {
+          repository: "/repo-a",
+          remote: "origin",
+          branch: "main",
+          targetSha: "abc123",
+        },
+      },
+      "after-push",
+      state,
+    ),
+
+  "after-push": async (state, io) => {
+    const resolution = io.consumePendingExternalResolution(
+      z.object({
+        outcome: z.enum(["PUSHED", "REJECTED", "UNKNOWN"]),
+        remoteSha: z.string().optional(),
+      }),
+    );
+    return io.done({ state, resolution });
+  },
+};
+```
+
+**Guarantee:** the request manifest, suspended state, resolution path, and workflow resume are durable. Turnlock treats both the request and its resolution as opaque JSON and leaves resolution validation to the phase's Zod schema.
+
+**Limit:** Turnlock does not perform, retry, reconcile, compensate, or interpret the external effect. If no resolution is written, the workflow remains suspended without an implicit success, failure, business timeout, or effect retry. A later resume re-emits the same request identity and paths; this is at-least-once message delivery, not an instruction to retry the effect.
+
+The consumer should ideally write the resolution through a temporary file, flush it when required by its durability model, and atomically rename it to the manifest's `resultPath` before running `resume_cmd`. Turnlock does not write external resolutions.
+
+Turnlock 0.10.0 emits protocol version 3 and state schema version 3. It migrates state schema v2 snapshots to v3 during resume while preserving pending delegations. Older Turnlock releases cannot read a state v3 snapshot, and consumers must recognize `REQUEST_EXTERNAL` before handling this new yield type.
+
+> `requestExternal()` is optional. It should be used only when a consumer wants to suspend the workflow durably while waiting for an external resolution.
 
 ## What turnlock is NOT
 
