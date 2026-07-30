@@ -55,8 +55,11 @@ export function isTestExitSignal(err: unknown): err is TestExitSignal {
 	);
 }
 
-export function writeFileSyncAtomic(targetPath: string, content: string): void {
+export function writeFileSyncAtomic(
+	targetPath: string,
+	content: string | Uint8Array,
+): void {
 	const tmpPath = `${targetPath}.tmp`;
-	fs.writeFileSync(tmpPath, content, { encoding: "utf-8" });
+	fs.writeFileSync(tmpPath, content);
 	fs.renameSync(tmpPath, targetPath);
 }
