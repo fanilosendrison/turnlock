@@ -47,6 +47,9 @@ async function runInitialMode<S extends object>(
 	fs.mkdirSync(path.join(runDir, "results"), { recursive: true });
 	fs.mkdirSync(path.join(runDir, "external-requests"), { recursive: true });
 	fs.mkdirSync(path.join(runDir, "external-results"), { recursive: true });
+	fs.mkdirSync(path.join(runDir, "accepted-external-resolutions"), {
+		recursive: true,
+	});
 
 	const logger = createLogger(config.logging);
 	const lockPath = path.join(runDir, ".lock");
@@ -189,6 +192,9 @@ async function runResumeMode<S extends object>(
 		}
 		fs.mkdirSync(path.join(runDir, "external-requests"), { recursive: true });
 		fs.mkdirSync(path.join(runDir, "external-results"), { recursive: true });
+		fs.mkdirSync(path.join(runDir, "accepted-external-resolutions"), {
+			recursive: true,
+		});
 		if (snapshot.migratedFromVersion !== null) {
 			writeStateAtomic(runDir, state, config.stateSchema);
 		}

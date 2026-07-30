@@ -5,9 +5,6 @@ import {
 	DelegationMissingResultError,
 	DelegationSchemaError,
 	DelegationTimeoutError,
-	ExternalResolutionMalformedError,
-	ExternalResolutionMissingError,
-	ExternalResolutionSchemaError,
 	InvalidConfigError,
 	PhaseError,
 	ProtocolError,
@@ -113,33 +110,6 @@ describe("retry-resolver fatal errors (T-RR-01..09)", () => {
 			});
 		});
 	}
-});
-
-describe("external resolution errors never receive retry decisions", () => {
-	test("all external resolution error kinds are fatal", () => {
-		expect(
-			resolveRetryDecision(new ExternalResolutionMissingError("x"), 0, POLICY),
-		).toEqual({
-			retry: false,
-			reason: "fatal_external_resolution_missing",
-		});
-		expect(
-			resolveRetryDecision(new ExternalResolutionSchemaError("x"), 0, POLICY),
-		).toEqual({
-			retry: false,
-			reason: "fatal_external_resolution_schema",
-		});
-		expect(
-			resolveRetryDecision(
-				new ExternalResolutionMalformedError("x"),
-				0,
-				POLICY,
-			),
-		).toEqual({
-			retry: false,
-			reason: "fatal_external_resolution_malformed",
-		});
-	});
 });
 
 describe("retry-resolver retriables with budget (T-RR-10..13)", () => {
