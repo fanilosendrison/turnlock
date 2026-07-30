@@ -29,12 +29,6 @@ export async function emitFatalError<S extends object>(
 		phase: currentPhase,
 	});
 
-	try {
-		writeStateAtomic(ctx.runDir, state, ctx.config.stateSchema);
-	} catch {
-		// silent
-	}
-
 	const nowIso = clock.nowWallIso();
 	ctx.logger.emit({
 		eventType: "phase_error",
