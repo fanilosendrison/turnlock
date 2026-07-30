@@ -10,6 +10,7 @@ import {
 	StateCorruptedError,
 	StateVersionMismatchError,
 } from "../errors/concrete";
+import { isContentDigest } from "./content-digest";
 import { summarizeZodError } from "./validator";
 
 const LEGACY_STATE_SCHEMA_VERSION = 2 as const;
@@ -36,9 +37,13 @@ export interface PendingExternalRequestRecord {
 	readonly requestType: string;
 	readonly resumeAt: string;
 	readonly manifestPath: string;
+	readonly manifestDigest: string;
 	readonly resultPath: string;
 	readonly emittedAt: string;
 	readonly emittedAtEpochMs: number;
+	readonly acceptedResolutionPath?: string;
+	readonly acceptedResolutionDigest?: string;
+	readonly acceptedAt?: string;
 }
 
 export interface StateFile<State> {
@@ -76,6 +81,15 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isNonNegativeNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	try {
+		return new Date(value).toISOString() === value;
+	} catch {
+		return false;
+	}
 }
 
 function requireRecord(value: unknown, field: string): Record<string, unknown> {
@@ -152,12 +166,38 @@ function validatePendingExternalRequest(
 		/[\u0000-\u001f\u007f]/.test(pending.requestType) ||
 		!isNonEmptyString(pending.resumeAt) ||
 		!isNonEmptyString(pending.manifestPath) ||
+		!isContentDigest(pending.manifestDigest) ||
 		!isNonEmptyString(pending.resultPath) ||
 		!isNonEmptyString(pending.emittedAt) ||
 		!isNonNegativeNumber(pending.emittedAtEpochMs)
 	) {
 		throw new StateCorruptedError("pendingExternalRequest fields invalid");
 	}
+
+	const acceptedFields = [
+		pending.acceptedResolutionPath,
+		pending.acceptedResolutionDigest,
+		pending.acceptedAt,
+	];
+	const acceptedFieldCount = acceptedFields.filter(
+		(value) => value !== undefined,
+	).length;
+	if (acceptedFieldCount !== 0 && acceptedFieldCount !== acceptedFields.length) {
+		throw new StateCorruptedError(
+			"pendingExternalRequest accepted resolution fields are incomplete",
+		);
+	}
+	if (
+		acceptedFieldCount === acceptedFields.length &&
+		(!isNonEmptyString(pending.acceptedResolutionPath) ||
+			!isContentDigest(pending.acceptedResolutionDigest) ||
+			!isIsoTimestamp(pending.acceptedAt))
+	) {
+		throw new StateCorruptedError(
+			"pendingExternalRequest accepted resolution fields are invalid",
+		);
+	}
+
 	if (pending.requestId !== `${runId}/${pending.label}`) {
 		throw new StateCorruptedError("pendingExternalRequest identity invalid");
 	}

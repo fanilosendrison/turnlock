@@ -18,6 +18,9 @@ import {
 import { loadFixture } from "../helpers/fixture-loader";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 
+const VALID_DIGEST =
+	"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 function buildState<S>(data: S): StateFile<S> {
 	return {
 		schemaVersion: STATE_SCHEMA_VERSION,
@@ -304,6 +307,92 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 					resultPath: "/tmp/external-results/push-repo.json",
 					emittedAt: "2026-04-19T12:00:00.000Z",
 					emittedAtEpochMs: 1,
+					manifestDigest: VALID_DIGEST,
+				},
+				usedLabels: ["push-repo"],
+			};
+			writeStateAtomic(dir, state);
+
+			expect(readState(dir)?.pendingExternalRequest).toEqual(
+				state.pendingExternalRequest,
+			);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("rejects a pending external request without a manifest digest", () => {
+		const dir = makeTempDir();
+		try {
+			const state = {
+				...buildState({ a: 1 }),
+				pendingExternalRequest: {
+					requestId: "01HX0000000000000000000001/push-repo",
+					label: "push-repo",
+					requestType: "git.push",
+					resumeAt: "resume",
+					manifestPath: "/tmp/external-requests/push-repo.json",
+					resultPath: "/tmp/external-results/push-repo.json",
+					emittedAt: "2026-04-19T12:00:00.000Z",
+					emittedAtEpochMs: 1,
+				},
+				usedLabels: ["push-repo"],
+			};
+			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+
+			expect(() => readState(dir)).toThrow(StateCorruptedError);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("requires accepted resolution metadata to be all-or-none", () => {
+		const dir = makeTempDir();
+		try {
+			const state = {
+				...buildState({ a: 1 }),
+				pendingExternalRequest: {
+					requestId: "01HX0000000000000000000001/push-repo",
+					label: "push-repo",
+					requestType: "git.push",
+					resumeAt: "resume",
+					manifestPath: "/tmp/external-requests/push-repo.json",
+					manifestDigest: VALID_DIGEST,
+					resultPath: "/tmp/external-results/push-repo.json",
+					emittedAt: "2026-04-19T12:00:00.000Z",
+					emittedAtEpochMs: 1,
+					acceptedResolutionPath:
+						"/tmp/accepted-external-resolutions/push-repo.json",
+				},
+				usedLabels: ["push-repo"],
+			};
+			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+
+			expect(() => readState(dir)).toThrow(StateCorruptedError);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("round-trips a fully accepted external resolution descriptor", () => {
+		const dir = makeTempDir();
+		try {
+			const state: StateFile<{ a: number }> = {
+				...buildState({ a: 1 }),
+				pendingExternalRequest: {
+					requestId: "01HX0000000000000000000001/push-repo",
+					label: "push-repo",
+					requestType: "git.push",
+					resumeAt: "resume",
+					manifestPath: "/tmp/external-requests/push-repo.json",
+					manifestDigest: VALID_DIGEST,
+					resultPath: "/tmp/external-results/push-repo.json",
+					emittedAt: "2026-04-19T12:00:00.000Z",
+					emittedAtEpochMs: 1,
+					acceptedResolutionPath:
+						"/tmp/accepted-external-resolutions/push-repo.json",
+					acceptedResolutionDigest: VALID_DIGEST,
+					acceptedAt: "2026-04-19T12:01:00.000Z",
 				},
 				usedLabels: ["push-repo"],
 			};

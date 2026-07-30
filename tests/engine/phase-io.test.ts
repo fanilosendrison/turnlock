@@ -37,6 +37,8 @@ function makePendingExternal(runDir: string): PendingExternalRequestRecord {
 		requestType: "git.push",
 		resumeAt: "resume",
 		manifestPath: join(runDir, "external-requests", "push-repo.json"),
+		manifestDigest:
+			"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		resultPath: join(runDir, "external-results", "push-repo.json"),
 		emittedAt: "2026-04-19T12:00:00.000Z",
 		emittedAtEpochMs: 1_745_062_800_000,
