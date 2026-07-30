@@ -44,6 +44,30 @@ function acceptedResolutionPath<S extends object>(
 	);
 }
 
+function assertConfinedDirectory<S extends object>(
+	ctx: DispatchContext<S>,
+	directoryName:
+		| "external-requests"
+		| "external-results"
+		| "accepted-external-resolutions",
+): void {
+	try {
+		const realRunDir = fs.realpathSync(ctx.runDir);
+		const realDirectory = fs.realpathSync(path.join(ctx.runDir, directoryName));
+		if (realDirectory !== path.join(realRunDir, directoryName)) {
+			throw new StateCorruptedError(
+				"external request directory escapes the run directory",
+			);
+		}
+	} catch (error) {
+		if (error instanceof StateCorruptedError) throw error;
+		throw new StateCorruptedError(
+			"external request directories are unavailable",
+			{ cause: error },
+		);
+	}
+}
+
 function assertConfinedPaths<S extends object>(
 	ctx: DispatchContext<S>,
 	pending: PendingExternalRequestRecord,
@@ -68,29 +92,8 @@ function assertConfinedPaths<S extends object>(
 		throw new StateCorruptedError("external request paths are invalid");
 	}
 
-	try {
-		const realRunDir = fs.realpathSync(ctx.runDir);
-		for (const directoryName of [
-			"external-requests",
-			"external-results",
-			"accepted-external-resolutions",
-		] as const) {
-			const realDirectory = fs.realpathSync(
-				path.join(ctx.runDir, directoryName),
-			);
-			if (realDirectory !== path.join(realRunDir, directoryName)) {
-				throw new StateCorruptedError(
-					"external request directory escapes the run directory",
-				);
-			}
-		}
-	} catch (error) {
-		if (error instanceof StateCorruptedError) throw error;
-		throw new StateCorruptedError(
-			"external request directories are unavailable",
-			{ cause: error },
-		);
-	}
+	assertConfinedDirectory(ctx, "external-requests");
+	assertConfinedDirectory(ctx, "accepted-external-resolutions");
 }
 
 function readStoredManifest<S extends object>(
@@ -365,6 +368,13 @@ export async function runExternalRequestResume<S extends object>(
 	}
 
 	if (accepted === null) {
+		try {
+			assertConfinedDirectory(ctx, "external-results");
+		} catch (error) {
+			await emitFatalError(ctx, state, pending.resumeAt, error);
+			return undefined as never;
+		}
+
 		let candidateRaw: Buffer;
 		try {
 			candidateRaw = readRegularFileBytes(pending.resultPath);

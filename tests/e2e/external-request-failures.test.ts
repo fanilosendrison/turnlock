@@ -32,6 +32,8 @@ const RUN_IDS = {
 	manifestPayloadTamper: "01HX0000000000000000000046",
 	manifestMetadataTamper: "01HX0000000000000000000047",
 	manifestRequestTypeTamper: "01HX0000000000000000000048",
+	acceptedResolutionTamper: "01HX0000000000000000000050",
+	acceptedResolutionRecovery: "01HX0000000000000000000051",
 } as const;
 
 function baseResumeCommandSource(): string {
@@ -115,6 +117,9 @@ describe("external resolution failures are terminal and non-retrying", () => {
 			expect(readdirSync(join(runDir, "external-requests"))).toEqual([
 				"external-work.json",
 			]);
+			expect(
+				readdirSync(join(runDir, "accepted-external-resolutions")),
+			).toEqual([]);
 			const state = readStateFile<{ stage: string }>(runDir);
 			expect(state.pendingExternalRequest?.requestId).toBe(
 				`${RUN_IDS.malformed}/external-work`,
@@ -211,6 +216,154 @@ describe("external resolution failures are terminal and non-retrying", () => {
 			workspace.cleanup();
 		}
 	});
+
+	test("an accepted schema-invalid resolution cannot be replaced or tampered with", async () => {
+		const workspace = createE2EWorkspace();
+		const entrypoint = workspace.writeEntrypoint(
+			"external-accepted-tamper.ts",
+			failureSource("e2e-external-accepted-tamper"),
+		);
+		try {
+			const initial = await workspace.runEntrypoint(entrypoint, [
+				"--run-id",
+				RUN_IDS.acceptedResolutionTamper,
+			]);
+			expect(initial.exitCode).toBe(0);
+			const runDir = workspace.runDir(
+				"e2e-external-accepted-tamper",
+				RUN_IDS.acceptedResolutionTamper,
+			);
+			writeExternalResolution(runDir, "external-work", { outcome: 42 });
+
+			const firstResume = await workspace.runEntrypoint(entrypoint, [
+				"--resume",
+				"--run-id",
+				RUN_IDS.acceptedResolutionTamper,
+			]);
+			expect(firstResume.exitCode).toBe(1);
+			expect(
+				expectProtocol(
+					firstResume.stdout,
+					"ERROR",
+					RUN_IDS.acceptedResolutionTamper,
+				).fields.errorKind,
+			).toBe("external_resolution_schema");
+
+			const acceptedState = readStateFile<{ stage: string }>(runDir);
+			const acceptedPath =
+				acceptedState.pendingExternalRequest?.acceptedResolutionPath;
+			expect(acceptedPath).toBe(
+				join(runDir, "accepted-external-resolutions", "external-work.json"),
+			);
+			const acceptedBefore = readFileSync(acceptedPath as string, "utf-8");
+			expect(acceptedBefore).toBe('{"outcome":42}');
+
+			writeExternalResolution(runDir, "external-work", { outcome: "OK" });
+			const secondResume = await workspace.runEntrypoint(entrypoint, [
+				"--resume",
+				"--run-id",
+				RUN_IDS.acceptedResolutionTamper,
+			]);
+			expect(secondResume.exitCode).toBe(1);
+			expect(
+				expectProtocol(
+					secondResume.stdout,
+					"ERROR",
+					RUN_IDS.acceptedResolutionTamper,
+				).fields.errorKind,
+			).toBe("external_resolution_schema");
+			expect(readFileSync(acceptedPath as string, "utf-8")).toBe(
+				acceptedBefore,
+			);
+
+			writeFileSync(acceptedPath as string, '{"outcome":"OK"}');
+			const tamperedResume = await workspace.runEntrypoint(entrypoint, [
+				"--resume",
+				"--run-id",
+				RUN_IDS.acceptedResolutionTamper,
+			]);
+			expect(tamperedResume.exitCode).toBe(1);
+			expect(
+				expectProtocol(
+					tamperedResume.stdout,
+					"ERROR",
+					RUN_IDS.acceptedResolutionTamper,
+				).fields.errorKind,
+			).toBe("state_corrupted");
+			expect(eventTypes(readEvents(runDir))).not.toContain("retry_scheduled");
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	test("an accepted artifact is recovered when its state descriptor was not committed", async () => {
+		const workspace = createE2EWorkspace();
+		const entrypoint = workspace.writeEntrypoint(
+			"external-accepted-recovery.ts",
+			failureSource("e2e-external-accepted-recovery"),
+		);
+		try {
+			const initial = await workspace.runEntrypoint(entrypoint, [
+				"--run-id",
+				RUN_IDS.acceptedResolutionRecovery,
+			]);
+			expect(initial.exitCode).toBe(0);
+			const runDir = workspace.runDir(
+				"e2e-external-accepted-recovery",
+				RUN_IDS.acceptedResolutionRecovery,
+			);
+			writeExternalResolution(runDir, "external-work", { outcome: 42 });
+
+			const accepted = await workspace.runEntrypoint(entrypoint, [
+				"--resume",
+				"--run-id",
+				RUN_IDS.acceptedResolutionRecovery,
+			]);
+			expect(accepted.exitCode).toBe(1);
+			const statePath = join(runDir, "state.json");
+			const state = JSON.parse(readFileSync(statePath, "utf-8")) as {
+				pendingExternalRequest: Record<string, unknown>;
+			};
+			const acceptedPath = state.pendingExternalRequest
+				.acceptedResolutionPath as string;
+			const acceptedBefore = readFileSync(acceptedPath, "utf-8");
+			Reflect.deleteProperty(
+				state.pendingExternalRequest,
+				"acceptedResolutionPath",
+			);
+			Reflect.deleteProperty(
+				state.pendingExternalRequest,
+				"acceptedResolutionDigest",
+			);
+			Reflect.deleteProperty(state.pendingExternalRequest, "acceptedAt");
+			writeFileSync(statePath, JSON.stringify(state));
+			writeExternalResolution(runDir, "external-work", { outcome: "OK" });
+
+			const recovered = await workspace.runEntrypoint(entrypoint, [
+				"--resume",
+				"--run-id",
+				RUN_IDS.acceptedResolutionRecovery,
+			]);
+			expect(recovered.exitCode).toBe(1);
+			expect(
+				expectProtocol(
+					recovered.stdout,
+					"ERROR",
+					RUN_IDS.acceptedResolutionRecovery,
+				).fields.errorKind,
+			).toBe("external_resolution_schema");
+			const recoveredState = readStateFile<{ stage: string }>(runDir);
+			expect(
+				recoveredState.pendingExternalRequest?.acceptedResolutionPath,
+			).toBe(acceptedPath);
+			expect(
+				recoveredState.pendingExternalRequest?.acceptedResolutionDigest,
+			).toMatch(/^sha256:[0-9a-f]{64}$/);
+			expect(readFileSync(acceptedPath, "utf-8")).toBe(acceptedBefore);
+		} finally {
+			workspace.cleanup();
+		}
+	});
 });
 
 function resultHasSensitiveData(
@@ -239,11 +392,7 @@ describe("external request manifest identity", () => {
 				"--run-id",
 				runId,
 			]);
-			const request = expectProtocol(
-				initial.stdout,
-				"REQUEST_EXTERNAL",
-				runId,
-			);
+			const request = expectProtocol(initial.stdout, "REQUEST_EXTERNAL", runId);
 			const runDir = workspace.runDir(orchestratorName, runId);
 			const manifestPath = request.fields.manifest as string;
 			const manifest = JSON.parse(
