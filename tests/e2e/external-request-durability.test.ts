@@ -19,6 +19,7 @@ const RUN_IDS = {
 	crashAfterConsume: "01HX0000000000000000000040",
 	migrationDelegation: "01HX0000000000000000000041",
 	migrationRetry: "01HX0000000000000000000044",
+	resumeCommandFailure: "01HX0000000000000000000049",
 } as const;
 
 function baseResumeCommandSource(): string {
@@ -85,9 +86,24 @@ await runOrchestrator<State>({
 			expect(crashed.exitCode).toBe(77);
 			expect(crashed.stdout).toBe("");
 			const stateAfterCrash = readStateFile<{ stage: string }>(runDir);
+			const acceptedResolutionPath = join(
+				runDir,
+				"accepted-external-resolutions",
+				"external-work.json",
+			);
 			expect(stateAfterCrash.pendingExternalRequest).toMatchObject({
 				requestId: `${RUN_IDS.crashAfterConsume}/external-work`,
 				resultPath: join(runDir, "external-results", "external-work.json"),
+				acceptedResolutionPath,
+				acceptedResolutionDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+				acceptedAt: expect.any(String),
+			});
+			expect(readFileSync(acceptedResolutionPath, "utf-8")).toBe(
+				'{"value":"durable"}',
+			);
+
+			writeExternalResolution(runDir, "external-work", {
+				value: "replacement",
 			});
 
 			const lockPath = join(runDir, ".lock");
@@ -119,6 +135,86 @@ await runOrchestrator<State>({
 					(event) => event.eventType === "external_resolution_validated",
 				),
 			).toHaveLength(2);
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	test("a resume command failure cannot roll back a committed external request", async () => {
+		const workspace = createE2EWorkspace();
+		const entrypoint = workspace.writeEntrypoint(
+			"external-resume-command-failure.ts",
+			buildEntrypointSource(`
+interface State { stage: string }
+
+await runOrchestrator<State>({
+	name: "e2e-external-resume-command-failure",
+	initial: "request",
+	initialState: { stage: "initial" },
+	resumeCommand: (runId) => {
+		if (process.env.RESUME_COMMAND_BOOM === "1") throw new Error("boom");
+		return "bun " + import.meta.path + " --run-id " + runId + " --resume";
+	},
+	phases: {
+		request: definePhase<State>(async (_state, io) =>
+			io.requestExternal(
+				{ label: "external-work", requestType: "example.work", payload: null },
+				"consume",
+				{ stage: "waiting" },
+			),
+		),
+		consume: definePhase<State>(async (_state, io) => {
+			const resolution = io.consumePendingExternalResolution(z.unknown());
+			return io.done(resolution);
+		}),
+	},
+});
+`),
+		);
+		try {
+			const failed = await workspace.runEntrypoint(
+				entrypoint,
+				["--run-id", RUN_IDS.resumeCommandFailure],
+				{ env: { RESUME_COMMAND_BOOM: "1" } },
+			);
+			expect(failed.exitCode).toBe(1);
+			expectProtocol(
+				failed.stdout,
+				"ERROR",
+				RUN_IDS.resumeCommandFailure,
+			);
+
+			const runDir = workspace.runDir(
+				"e2e-external-resume-command-failure",
+				RUN_IDS.resumeCommandFailure,
+			);
+			const committed = readStateFile<{ stage: string }>(runDir);
+			expect(committed.data).toEqual({ stage: "waiting" });
+			expect(committed.phasesExecuted).toBe(1);
+			expect(committed.pendingExternalRequest).toMatchObject({
+				requestId: `${RUN_IDS.resumeCommandFailure}/external-work`,
+				label: "external-work",
+				resumeAt: "consume",
+				manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+			});
+			expect(
+				existsSync(
+					join(runDir, "external-requests", "external-work.json"),
+				),
+			).toBe(true);
+
+			const resumed = await workspace.runEntrypoint(entrypoint, [
+				"--resume",
+				"--run-id",
+				RUN_IDS.resumeCommandFailure,
+			]);
+			expect(resumed.exitCode).toBe(0);
+			expectProtocol(
+				resumed.stdout,
+				"REQUEST_EXTERNAL",
+				RUN_IDS.resumeCommandFailure,
+			);
+			expect(readStateFile(runDir)).toEqual(committed);
 		} finally {
 			workspace.cleanup();
 		}
