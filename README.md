@@ -208,9 +208,9 @@ If you don't need crash recovery or auditability, a state-machine library in a l
 
 **Determinism.** The orchestration logic lives in your TypeScript code, not in the agent's judgment. Given the same state, turnlock always picks the same next yield. State is deep-frozen before each phase — no accidental mutation.
 
-**Reliability.** Every completed phase yield snapshots state to disk atomically (`tmp + rename`). If the process dies — session close, OS reboot, API outage — `--resume` picks up from the last snapshot. Nothing is lost.
+**Reliability.** Every stable phase yield snapshots state to disk atomically (`tmp + rename`). `--resume` continues snapshots suspended on a pending delegation or External Request. Turnlock does not currently replay a freely executing phase after a crash.
 
-**Auditability.** Each run produces a `state.json` snapshot, an append-only `events.ndjson` log, and JSON manifests for every delegation — all correlated by `run_id`. You can reconstruct exactly what happened after the fact.
+**Auditability.** Each run produces an authoritative `state.json` snapshot, an append-only `events.ndjson` audit trail, and JSON manifests for yielded requests — all correlated by `run_id`. Events supplement the snapshot; they do not reconstruct `state.data`.
 
 **Host-agnostic.** Delegation requests travel over stdout in a neutral protocol (`@@TURNLOCK@@ ... @@END@@`). Any host that can read them, execute the request, and relaunch the binary is a valid consumer. Claude Code is the reference integration; Codex, Cursor, and custom scripts are all valid.
 
@@ -231,7 +231,7 @@ async function phase(state, io) {
 }
 ```
 
-**Guarantee:** Turnlock provides no guarantee for this effect. The phase may be replayed from its last durable boundary, so a directly executed effect may run again after a crash.
+**Guarantee:** Turnlock provides no guarantee for this effect. If the process dies during a freely executing phase, normal `--resume` refuses to continue because there is no pending yield. The effect's outcome may therefore be unknown and requires consumer- or operator-defined recovery. Turnlock neither automatically replays nor deduplicates that phase.
 
 ### External Request
 
@@ -267,11 +267,13 @@ const phases = {
 };
 ```
 
-**Guarantee:** the request manifest, suspended state, resolution path, and workflow resume are durable. Turnlock treats both the request and its resolution as opaque JSON and leaves resolution validation to the phase's Zod schema.
+**Guarantee:** the suspended state records a SHA-256 digest of the exact request manifest bytes. Every resume verifies that digest before re-emission, so `requestId` cannot remain stable while payload, metadata, formatting, or other manifest content changes. Turnlock treats the request and resolution as opaque JSON and leaves business validation to the phase's Zod schema.
 
-**Limit:** Turnlock does not perform, retry, reconcile, compensate, or interpret the external effect. If no resolution is written, the workflow remains suspended without an implicit success, failure, business timeout, or effect retry. A later resume re-emits the same request identity and paths; this is at-least-once message delivery, not an instruction to retry the effect.
+At the first syntactically valid JSON resolution, Turnlock atomically preserves the exact bytes under `accepted-external-resolutions/<label>.json`, records its path, digest, and acceptance time in `state.json`, and only then runs the continuation phase. A crash before the phase's next stable transition reuses that accepted copy, never a changed consumer result. A syntactically valid but schema-invalid resolution is therefore still pinned and cannot be replaced under the same request identity.
 
-The consumer should ideally write the resolution through a temporary file, flush it when required by its durability model, and atomically rename it to the manifest's `resultPath` before running `resume_cmd`. Turnlock does not write external resolutions.
+**Limit:** Turnlock does not perform, retry, reconcile, compensate, or interpret the external effect. If no resolution is written, the workflow remains suspended without an implicit success, failure, business timeout, or effect retry. Each explicit resume attempt can re-publish the same request identity, manifest, and result path. Turnlock does not guarantee that a host will relaunch the process or receive a publication, and re-publication is not an instruction to retry the effect.
+
+The consumer should write the candidate resolution through a temporary file, flush it when required by its durability model, and atomically rename it to the manifest's `resultPath` before running `resume_cmd`. Turnlock owns the accepted copy and never executes the external effect.
 
 Turnlock 0.10.0 emits protocol version 3 and state schema version 3. It migrates state schema v2 snapshots to v3 during resume while preserving pending delegations. Older Turnlock releases cannot read a state v3 snapshot, and consumers must recognize `REQUEST_EXTERNAL` before handling this new yield type.
 
