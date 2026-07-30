@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	installImmutableFileAtomic,
@@ -16,7 +16,11 @@ describe("immutable file installation", () => {
 				installImmutableFileAtomic(target, Buffer.from('{"value":"A"}')),
 			).toBe("created");
 			expect(readFileSync(target)).toEqual(Buffer.from('{"value":"A"}'));
-			expect(existsSync(`${target}.tmp`)).toBe(false);
+			expect(
+				readdirSync(dir).filter((name) =>
+					name.startsWith("accepted.json.tmp-"),
+				),
+			).toEqual([]);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -33,7 +37,49 @@ describe("immutable file installation", () => {
 			expect(readRegularFileBytes(target)).toEqual(
 				Buffer.from('{"value":"A"}'),
 			);
-			expect(existsSync(`${target}.tmp`)).toBe(false);
+			expect(
+				readdirSync(dir).filter((name) =>
+					name.startsWith("accepted.json.tmp-"),
+				),
+			).toEqual([]);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("never replaces a pre-existing target symlink", () => {
+		const dir = makeTempDir();
+		const target = join(dir, "accepted.json");
+		const outside = join(dir, "outside.json");
+		try {
+			writeFileSync(outside, '{"value":"outside"}');
+			symlinkSync(outside, target);
+
+			expect(
+				installImmutableFileAtomic(target, Buffer.from('{"value":"accepted"}')),
+			).toBe("existing");
+			expect(readFileSync(outside, "utf-8")).toBe('{"value":"outside"}');
+			expect(() => readRegularFileBytes(target)).toThrow();
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("never follows a pre-created temporary-file symlink", () => {
+		const dir = makeTempDir();
+		const target = join(dir, "accepted.json");
+		const outside = join(dir, "outside.json");
+		try {
+			writeFileSync(outside, '{"value":"outside"}');
+			symlinkSync(outside, `${target}.tmp`);
+
+			expect(
+				installImmutableFileAtomic(target, Buffer.from('{"value":"accepted"}')),
+			).toBe("created");
+			expect(readFileSync(outside, "utf-8")).toBe('{"value":"outside"}');
+			expect(readRegularFileBytes(target)).toEqual(
+				Buffer.from('{"value":"accepted"}'),
+			);
 		} finally {
 			cleanupTempDir(dir);
 		}
