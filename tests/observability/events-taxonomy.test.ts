@@ -28,6 +28,47 @@ const requiredFields: Record<string, string[]> = {
 		"zodErrorSummary",
 		"timestamp",
 	],
+	external_request_emit: [
+		"runId",
+		"phase",
+		"label",
+		"requestId",
+		"requestType",
+		"timestamp",
+	],
+	external_request_reemit: [
+		"runId",
+		"phase",
+		"label",
+		"requestId",
+		"requestType",
+		"timestamp",
+	],
+	external_resolution_read: [
+		"runId",
+		"phase",
+		"label",
+		"requestId",
+		"requestType",
+		"timestamp",
+	],
+	external_resolution_validation_failed: [
+		"runId",
+		"phase",
+		"label",
+		"requestId",
+		"requestType",
+		"reason",
+		"timestamp",
+	],
+	external_resolution_validated: [
+		"runId",
+		"phase",
+		"label",
+		"requestId",
+		"requestType",
+		"timestamp",
+	],
 	retry_scheduled: [
 		"runId",
 		"phase",
@@ -106,6 +147,52 @@ function sampleEvents(): Record<string, OrchestratorEvent> {
 			zodErrorSummary: "root: invalid_type",
 			timestamp: "2026-04-19T12:00:00.100Z",
 		},
+		external_request_emit: {
+			eventType: "external_request_emit",
+			runId: "01HX",
+			phase: "a",
+			label: "push-repo",
+			requestId: "01HX/push-repo",
+			requestType: "git.push",
+			timestamp: "2026-04-19T12:00:00.100Z",
+		},
+		external_request_reemit: {
+			eventType: "external_request_reemit",
+			runId: "01HX",
+			phase: "a",
+			label: "push-repo",
+			requestId: "01HX/push-repo",
+			requestType: "git.push",
+			timestamp: "2026-04-19T12:00:01.100Z",
+		},
+		external_resolution_read: {
+			eventType: "external_resolution_read",
+			runId: "01HX",
+			phase: "b",
+			label: "push-repo",
+			requestId: "01HX/push-repo",
+			requestType: "git.push",
+			timestamp: "2026-04-19T12:00:02.100Z",
+		},
+		external_resolution_validation_failed: {
+			eventType: "external_resolution_validation_failed",
+			runId: "01HX",
+			phase: "b",
+			label: "push-repo",
+			requestId: "01HX/push-repo",
+			requestType: "git.push",
+			reason: "schema_invalid",
+			timestamp: "2026-04-19T12:00:02.200Z",
+		},
+		external_resolution_validated: {
+			eventType: "external_resolution_validated",
+			runId: "01HX",
+			phase: "b",
+			label: "push-repo",
+			requestId: "01HX/push-repo",
+			requestType: "git.push",
+			timestamp: "2026-04-19T12:00:02.200Z",
+		},
 		retry_scheduled: {
 			eventType: "retry_scheduled",
 			runId: "01HX",
@@ -142,7 +229,7 @@ function sampleEvents(): Record<string, OrchestratorEvent> {
 	};
 }
 
-describe("[GREEN-L1] events taxonomy (T-OB-01..11)", () => {
+describe("[GREEN-L1] events taxonomy", () => {
 	const events = sampleEvents();
 	for (const [type, fields] of Object.entries(requiredFields)) {
 		test(`T-OB-${type} | ${type} has required fields`, () => {
@@ -157,7 +244,7 @@ describe("[GREEN-L1] events taxonomy (T-OB-01..11)", () => {
 });
 
 describe("[GREEN-L1] events closed taxonomy (T-OB-12..13)", () => {
-	test("T-OB-12 | eventType ∈ 11 known", () => {
+	test("T-OB-12 | eventType belongs to the 16-value taxonomy", () => {
 		const allowed = new Set(Object.keys(requiredFields));
 		for (const type of Object.keys(sampleEvents())) {
 			expect(allowed.has(type)).toBe(true);

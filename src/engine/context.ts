@@ -18,7 +18,7 @@ export interface DispatchContext<S extends object> {
 
 export interface LoadedResults {
 	readonly label: string;
-	readonly kind: "prompt" | "batch";
+	readonly kind: "prompt" | "batch" | "external-request";
 	readonly data: unknown | readonly unknown[];
 }
 

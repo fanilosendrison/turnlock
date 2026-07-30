@@ -1,6 +1,11 @@
 import { PROTOCOL_VERSION } from "../constants";
 
-export type ProtocolAction = "DELEGATE" | "DONE" | "ERROR" | "ABORTED";
+export type ProtocolAction =
+	| "DELEGATE"
+	| "REQUEST_EXTERNAL"
+	| "DONE"
+	| "ERROR"
+	| "ABORTED";
 
 export interface ParsedProtocolBlock {
 	readonly version: number;
@@ -15,6 +20,16 @@ export interface DelegateFields {
 	readonly orchestrator: string;
 	readonly manifest: string;
 	readonly kind: "prompt" | "batch";
+	readonly resumeCmd: string;
+}
+
+export interface RequestExternalFields {
+	readonly runId: string;
+	readonly orchestrator: string;
+	readonly requestId: string;
+	readonly requestType: string;
+	readonly manifest: string;
+	readonly result: string;
 	readonly resumeCmd: string;
 }
 
@@ -82,6 +97,16 @@ function writeDelegate(fields: DelegateFields): string {
 	]);
 }
 
+function writeRequestExternal(fields: RequestExternalFields): string {
+	return buildBlock("REQUEST_EXTERNAL", fields.runId, fields.orchestrator, [
+		`request_id: ${serializeValue(fields.requestId)}`,
+		`request_type: ${serializeValue(fields.requestType)}`,
+		`manifest: ${serializeValue(fields.manifest)}`,
+		`result: ${serializeValue(fields.result)}`,
+		`resume_cmd: ${serializeValue(fields.resumeCmd)}`,
+	]);
+}
+
 function writeDone(fields: DoneFields): string {
 	return buildBlock("DONE", fields.runId, fields.orchestrator, [
 		`output: ${serializeValue(fields.output)}`,
@@ -111,6 +136,10 @@ export function writeProtocolBlock(
 	action: "DELEGATE",
 	fields: DelegateFields,
 ): string;
+export function writeProtocolBlock(
+	action: "REQUEST_EXTERNAL",
+	fields: RequestExternalFields,
+): string;
 export function writeProtocolBlock(action: "DONE", fields: DoneFields): string;
 export function writeProtocolBlock(
 	action: "ERROR",
@@ -122,11 +151,18 @@ export function writeProtocolBlock(
 ): string;
 export function writeProtocolBlock(
 	action: ProtocolAction,
-	fields: DelegateFields | DoneFields | ErrorFields | AbortedFields,
+	fields:
+		| DelegateFields
+		| RequestExternalFields
+		| DoneFields
+		| ErrorFields
+		| AbortedFields,
 ): string {
 	switch (action) {
 		case "DELEGATE":
 			return writeDelegate(fields as DelegateFields);
+		case "REQUEST_EXTERNAL":
+			return writeRequestExternal(fields as RequestExternalFields);
 		case "DONE":
 			return writeDone(fields as DoneFields);
 		case "ERROR":
@@ -137,7 +173,13 @@ export function writeProtocolBlock(
 }
 
 function isValidAction(s: string): s is ProtocolAction {
-	return s === "DELEGATE" || s === "DONE" || s === "ERROR" || s === "ABORTED";
+	return (
+		s === "DELEGATE" ||
+		s === "REQUEST_EXTERNAL" ||
+		s === "DONE" ||
+		s === "ERROR" ||
+		s === "ABORTED"
+	);
 }
 
 function snakeToCamel(s: string): string {

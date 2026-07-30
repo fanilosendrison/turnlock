@@ -18,6 +18,9 @@ export type RetryDecisionReason =
 	| "fatal_state_missing"
 	| "fatal_state_version_mismatch"
 	| "fatal_delegation_missing_result"
+	| "fatal_external_resolution_missing"
+	| "fatal_external_resolution_schema"
+	| "fatal_external_resolution_malformed"
 	| "fatal_phase_error"
 	| "fatal_protocol"
 	| "fatal_aborted"
@@ -63,6 +66,12 @@ export function resolveRetryDecision(
 			return { retry: false, reason: "fatal_state_version_mismatch" };
 		case "delegation_missing_result":
 			return { retry: false, reason: "fatal_delegation_missing_result" };
+		case "external_resolution_missing":
+			return { retry: false, reason: "fatal_external_resolution_missing" };
+		case "external_resolution_schema":
+			return { retry: false, reason: "fatal_external_resolution_schema" };
+		case "external_resolution_malformed":
+			return { retry: false, reason: "fatal_external_resolution_malformed" };
 		case "phase_error":
 			return { retry: false, reason: "fatal_phase_error" };
 		case "protocol":

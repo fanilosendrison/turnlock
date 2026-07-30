@@ -3,12 +3,14 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { ExternalRequestManifest } from "../../src/bindings/external-request";
 import type { DelegationManifest } from "../../src/bindings/types";
 import { parseProtocolBlock } from "../../src/services/protocol";
 import type { StateFile } from "../../src/services/state-io";
@@ -211,6 +213,12 @@ export function readManifestFile(manifestPath: string): DelegationManifest {
 	return readJsonFile<DelegationManifest>(manifestPath);
 }
 
+export function readExternalRequestManifest(
+	manifestPath: string,
+): ExternalRequestManifest {
+	return readJsonFile<ExternalRequestManifest>(manifestPath);
+}
+
 export function readEvents(runDir: string): OrchestratorEvent[] {
 	const eventsPath = join(runDir, "events.ndjson");
 	if (!existsSync(eventsPath)) return [];
@@ -228,6 +236,30 @@ export function writePromptResult(
 	const resultPath = join(runDir, "results", `${label}-${attempt}.json`);
 	mkdirSync(dirname(resultPath), { recursive: true });
 	writeFileSync(resultPath, JSON.stringify(value), { encoding: "utf-8" });
+	return resultPath;
+}
+
+export function writeExternalResolution(
+	runDir: string,
+	label: string,
+	value: unknown,
+): string {
+	const resultPath = join(runDir, "external-results", `${label}.json`);
+	const temporaryPath = `${resultPath}.tmp`;
+	mkdirSync(dirname(resultPath), { recursive: true });
+	writeFileSync(temporaryPath, JSON.stringify(value), { encoding: "utf-8" });
+	renameSync(temporaryPath, resultPath);
+	return resultPath;
+}
+
+export function writeMalformedExternalResolution(
+	runDir: string,
+	label: string,
+	raw: string,
+): string {
+	const resultPath = join(runDir, "external-results", `${label}.json`);
+	mkdirSync(dirname(resultPath), { recursive: true });
+	writeFileSync(resultPath, raw, { encoding: "utf-8" });
 	return resultPath;
 }
 

@@ -1,6 +1,6 @@
 
 @@TURNLOCK@@
-version: 2
+version: 3
 run_id: 01HX0000000000000000000001
 orchestrator: test-orch
 action: DONE
@@ -11,7 +11,7 @@ duration_ms: 100
 @@END@@
 
 @@TURNLOCK@@
-version: 2
+version: 3
 run_id: 01HX0000000000000000000001
 orchestrator: test-orch
 action: DONE

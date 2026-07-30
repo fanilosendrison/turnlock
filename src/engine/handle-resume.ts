@@ -12,6 +12,7 @@ import type { PendingDelegationRecord, StateFile } from "../services/state-io";
 import type { DispatchContext } from "./context";
 import { reemitDelegationAttempt } from "./delegation-reemit";
 import { runDispatchLoop } from "./dispatch-loop";
+import { runExternalRequestResume } from "./external-request-resume";
 import { emitFatalError } from "./terminal-handlers";
 
 function buildExpectedResultPaths(
@@ -190,6 +191,12 @@ export async function runHandleResume<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
 ): Promise<never> {
+	const pendingExternalRequest = state.pendingExternalRequest;
+	if (pendingExternalRequest) {
+		await runExternalRequestResume(ctx, state, pendingExternalRequest);
+		return undefined as never;
+	}
+
 	const pd = state.pendingDelegation;
 	if (!pd) {
 		throw new ProtocolError("resume without pending delegation", {

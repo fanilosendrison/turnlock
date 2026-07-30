@@ -31,6 +31,9 @@ export function classify(err: unknown): ErrorCategory {
 		case "state_missing":
 		case "state_version_mismatch":
 		case "delegation_missing_result":
+		case "external_resolution_missing":
+		case "external_resolution_schema":
+		case "external_resolution_malformed":
 		case "protocol":
 		case "run_locked":
 			return "permanent";

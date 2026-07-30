@@ -12,6 +12,7 @@ import {
 	writeStateAtomic,
 } from "../services/state-io";
 import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
+import { clearPendingYield } from "./pending-yield";
 import { reconstructManifest, selectBinding } from "./shared";
 
 export async function reemitDelegationAttempt<S extends object>(
@@ -77,7 +78,7 @@ export async function reemitDelegationAttempt<S extends object>(
 	writeFileSyncAtomic(newManifestPath, JSON.stringify(newManifest));
 
 	const newState: StateFile<S> = {
-		...state,
+		...clearPendingYield(state),
 		pendingDelegation: {
 			...pd,
 			attempt: newAttempt,

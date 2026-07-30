@@ -46,6 +46,26 @@ describe("writeProtocolBlock DELEGATE (T-PR-01..03)", () => {
 	});
 });
 
+describe("writeProtocolBlock REQUEST_EXTERNAL", () => {
+	test("writes every stable external request field", () => {
+		const out = writeProtocolBlock("REQUEST_EXTERNAL", {
+			runId: RID,
+			orchestrator: "x",
+			requestId: `${RID}/push-repo`,
+			requestType: "git.push",
+			manifest: "/run/external-requests/push-repo.json",
+			result: "/run/external-results/push-repo.json",
+			resumeCmd: RCMD,
+		});
+
+		expect(out).toContain("action: REQUEST_EXTERNAL");
+		expect(out).toContain(`request_id: ${RID}/push-repo`);
+		expect(out).toContain("request_type: git.push");
+		expect(out).toContain("manifest: /run/external-requests/push-repo.json");
+		expect(out).toContain("result: /run/external-results/push-repo.json");
+	});
+});
+
 describe("writeProtocolBlock DONE (T-PR-04..05)", () => {
 	test("T-PR-04 | done full fields", () => {
 		const out = writeProtocolBlock("DONE", {
@@ -170,6 +190,15 @@ describe("parseProtocolBlock happy (T-PR-13..19)", () => {
 		expect(parsed?.action).toBe("DELEGATE");
 		expect(parsed?.fields.kind).toBe("prompt");
 	});
+	test("parses REQUEST_EXTERNAL fields", () => {
+		const parsed = parseProtocolBlock(
+			loadFixture("protocol/request-external.txt"),
+		);
+		expect(parsed?.action).toBe("REQUEST_EXTERNAL");
+		expect(parsed?.fields.requestId).toBe(`${RID}/push-repo`);
+		expect(parsed?.fields.requestType).toBe("git.push");
+		expect(parsed?.fields.result).toBe("/tmp/external-results/push-repo.json");
+	});
 	test("T-PR-14 | DONE full", () => {
 		const parsed = parseProtocolBlock(loadFixture("protocol/done-minimal.txt"));
 		expect(parsed?.action).toBe("DONE");
@@ -217,7 +246,7 @@ describe("parseProtocolBlock rejects (T-PR-20..24)", () => {
 		).toBeNull();
 	});
 	test("T-PR-22 | missing @@TURNLOCK@@ → null", () => {
-		expect(parseProtocolBlock("version: 2\nrun_id: X\n@@END@@")).toBeNull();
+		expect(parseProtocolBlock("version: 3\nrun_id: X\n@@END@@")).toBeNull();
 	});
 	test("T-PR-23 | version incompatible → null", () => {
 		const s =
@@ -226,7 +255,7 @@ describe("parseProtocolBlock rejects (T-PR-20..24)", () => {
 	});
 	test("T-PR-24 | unknown action → null", () => {
 		const s =
-			"\n@@TURNLOCK@@\nversion: 2\nrun_id: X\norchestrator: y\naction: FOOBAR\n@@END@@\n";
+			"\n@@TURNLOCK@@\nversion: 3\nrun_id: X\norchestrator: y\naction: FOOBAR\n@@END@@\n";
 		expect(parseProtocolBlock(s)).toBeNull();
 	});
 });

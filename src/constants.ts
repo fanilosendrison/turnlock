@@ -1,5 +1,9 @@
-export const PROTOCOL_VERSION = 2 as const;
-export const STATE_SCHEMA_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
+export const STATE_SCHEMA_VERSION = 3 as const;
+export const EXTERNAL_REQUEST_MANIFEST_VERSION = 1 as const;
+
+export const MAX_EVENT_FIELD_LENGTH = 200;
+export const MAX_EXTERNAL_LABEL_LENGTH = 173;
 
 export const DEFAULT_MAX_ATTEMPTS = 3;
 export const DEFAULT_BACKOFF_BASE_MS = 1000;

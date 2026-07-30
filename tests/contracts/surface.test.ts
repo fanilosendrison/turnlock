@@ -3,7 +3,14 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { OrchestratorConfig, Phase, PhaseIO } from "../../src/index";
+import type {
+	ExternalRequest,
+	JsonValue,
+	OrchestratorConfig,
+	Phase,
+	PhaseIO,
+	PhaseResult,
+} from "../../src/index";
 import * as publicApi from "../../src/index";
 
 const pkg = JSON.parse(
@@ -16,7 +23,7 @@ const pkg = JSON.parse(
 		),
 		"utf-8",
 	),
-) as { dependencies: Record<string, string> };
+) as { version: string; dependencies: Record<string, string> };
 
 const EXPECTED_EXPORTS = new Set([
 	"runOrchestrator",
@@ -29,6 +36,9 @@ const EXPECTED_EXPORTS = new Set([
 	"DelegationTimeoutError",
 	"DelegationSchemaError",
 	"DelegationMissingResultError",
+	"ExternalResolutionMissingError",
+	"ExternalResolutionSchemaError",
+	"ExternalResolutionMalformedError",
 	"PhaseError",
 	"ProtocolError",
 	"AbortedError",
@@ -84,11 +94,14 @@ describe("[GREEN-L1] " + "surface publique (C-GL-01..03)", () => {
 });
 
 describe("[GREEN-L1] " + "constantes (C-GL-05..06)", () => {
-	test("C-GL-05 | PROTOCOL_VERSION === 2", () => {
-		expect(publicApi.PROTOCOL_VERSION).toBe(2);
+	test("C-GL-05 | PROTOCOL_VERSION === 3", () => {
+		expect(publicApi.PROTOCOL_VERSION).toBe(3);
 	});
-	test("C-GL-06 | STATE_SCHEMA_VERSION === 2", () => {
-		expect(publicApi.STATE_SCHEMA_VERSION).toBe(2);
+	test("C-GL-06 | STATE_SCHEMA_VERSION === 3", () => {
+		expect(publicApi.STATE_SCHEMA_VERSION).toBe(3);
+	});
+	test("package version is 0.10.0", () => {
+		expect(pkg.version).toBe("0.10.0");
 	});
 });
 
@@ -132,6 +145,25 @@ describe("[GREEN-L1] " + "typage (C-GL-09..11)", () => {
 		};
 		expect(typeof assertNoTransition).toBe("function");
 	});
+	test("ExternalRequest, JsonValue, and external PhaseResult compile", () => {
+		const payload: JsonValue = {
+			repository: "/repo",
+			tags: ["release", null],
+		};
+		const request: ExternalRequest = {
+			label: "push-repo",
+			requestType: "git.push",
+			payload,
+		};
+		const result: PhaseResult<{ count: number }> = {
+			kind: "external-request",
+			request,
+			resumeAt: "after-push",
+			nextState: { count: 1 },
+		};
+		expect(result.kind).toBe("external-request");
+	});
+
 	test("C-GL-11 | definePhase pass-through no-op", () => {
 		const fn = async () => ({ kind: "done" as const, output: undefined });
 		expect(publicApi.definePhase(fn)).toBe(fn);
@@ -153,6 +185,18 @@ describe("[GREEN-L1] " + "OrchestratorErrorKind fermé (C-GL-12..13)", () => {
 			"delegation_missing_result",
 			() => new publicApi.DelegationMissingResultError("x"),
 		],
+		[
+			"external_resolution_missing",
+			() => new publicApi.ExternalResolutionMissingError("x"),
+		],
+		[
+			"external_resolution_schema",
+			() => new publicApi.ExternalResolutionSchemaError("x"),
+		],
+		[
+			"external_resolution_malformed",
+			() => new publicApi.ExternalResolutionMalformedError("x"),
+		],
 		["phase_error", () => new publicApi.PhaseError("x")],
 		["protocol", () => new publicApi.ProtocolError("x")],
 		["aborted", () => new publicApi.AbortedError("x")],
@@ -166,8 +210,8 @@ describe("[GREEN-L1] " + "OrchestratorErrorKind fermé (C-GL-12..13)", () => {
 				}),
 		],
 	] as const;
-	test("C-GL-12 | 11 kind values", () => {
-		expect(errorCases).toHaveLength(11);
+	test("C-GL-12 | 14 kind values", () => {
+		expect(errorCases).toHaveLength(14);
 	});
 	test("C-GL-13 | each kind ↔ class mapping", () => {
 		for (const [kind, buildError] of errorCases) {

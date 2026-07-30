@@ -8,12 +8,12 @@ import {
 	StateMissingError,
 } from "../errors/concrete";
 import { clock } from "../services/clock";
-import { acquireLock, type LockHandle } from "../services/lock";
+import { acquireLock, type LockHandle, releaseLock } from "../services/lock";
 import { createLogger } from "../services/logger";
 import { cleanupOldRuns, resolveRunDir } from "../services/run-dir";
 import { generateRunId } from "../services/run-id";
 import {
-	readState,
+	readStateSnapshot,
 	type StateFile,
 	writeStateAtomic,
 } from "../services/state-io";
@@ -45,6 +45,8 @@ async function runInitialMode<S extends object>(
 	fs.mkdirSync(runDir, { recursive: true });
 	fs.mkdirSync(path.join(runDir, "delegations"), { recursive: true });
 	fs.mkdirSync(path.join(runDir, "results"), { recursive: true });
+	fs.mkdirSync(path.join(runDir, "external-requests"), { recursive: true });
+	fs.mkdirSync(path.join(runDir, "external-results"), { recursive: true });
 
 	const logger = createLogger(config.logging);
 	const lockPath = path.join(runDir, ".lock");
@@ -150,27 +152,6 @@ async function runResumeMode<S extends object>(
 		});
 	}
 
-	const state = readState<S>(runDir, config.stateSchema);
-	if (state === null) {
-		throw new StateMissingError("state.json missing at RUN_DIR", {
-			runId,
-			orchestratorName: config.name,
-		});
-	}
-
-	if (state.runId !== runId) {
-		throw new ProtocolError(
-			`RUN_DIR mismatch with argv — state.runId=${state.runId}, argv.runId=${runId}`,
-			{ runId, orchestratorName: config.name },
-		);
-	}
-	if (state.orchestratorName !== config.name) {
-		throw new ProtocolError(
-			`orchestrator name mismatch — state.orchestratorName=${state.orchestratorName}, config.name=${config.name}`,
-			{ runId, orchestratorName: config.name },
-		);
-	}
-
 	const logger = createLogger(config.logging);
 	const lockPath = path.join(runDir, ".lock");
 	let handle: LockHandle;
@@ -182,6 +163,38 @@ async function runResumeMode<S extends object>(
 			doExit(2);
 		}
 		throw err;
+	}
+
+	let state: StateFile<S>;
+	try {
+		const snapshot = readStateSnapshot<S>(runDir, config.stateSchema);
+		if (snapshot.state === null) {
+			throw new StateMissingError("state.json missing at RUN_DIR", {
+				runId,
+				orchestratorName: config.name,
+			});
+		}
+		state = snapshot.state;
+		if (state.runId !== runId) {
+			throw new ProtocolError(
+				`RUN_DIR mismatch with argv — state.runId=${state.runId}, argv.runId=${runId}`,
+				{ runId, orchestratorName: config.name },
+			);
+		}
+		if (state.orchestratorName !== config.name) {
+			throw new ProtocolError(
+				`orchestrator name mismatch — state.orchestratorName=${state.orchestratorName}, config.name=${config.name}`,
+				{ runId, orchestratorName: config.name },
+			);
+		}
+		fs.mkdirSync(path.join(runDir, "external-requests"), { recursive: true });
+		fs.mkdirSync(path.join(runDir, "external-results"), { recursive: true });
+		if (snapshot.migratedFromVersion !== null) {
+			writeStateAtomic(runDir, state, config.stateSchema);
+		}
+	} catch (error) {
+		releaseLock(lockPath, handle, clock, logger, runId);
+		throw error;
 	}
 
 	logger.enableDiskEmit(path.join(runDir, "events.ndjson"));

@@ -28,6 +28,18 @@ export class DelegationMissingResultError extends OrchestratorError {
 	readonly kind = "delegation_missing_result" as const;
 }
 
+export class ExternalResolutionMissingError extends OrchestratorError {
+	readonly kind = "external_resolution_missing" as const;
+}
+
+export class ExternalResolutionSchemaError extends OrchestratorError {
+	readonly kind = "external_resolution_schema" as const;
+}
+
+export class ExternalResolutionMalformedError extends OrchestratorError {
+	readonly kind = "external_resolution_malformed" as const;
+}
+
 export class PhaseError extends OrchestratorError {
 	readonly kind = "phase_error" as const;
 }

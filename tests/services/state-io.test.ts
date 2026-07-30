@@ -9,7 +9,9 @@ import {
 	StateVersionMismatchError,
 } from "../../src/errors/concrete";
 import {
+	type PendingDelegationRecord,
 	readState,
+	readStateSnapshot,
 	type StateFile,
 	writeStateAtomic,
 } from "../../src/services/state-io";
@@ -42,7 +44,7 @@ describe("readState (T-SI-01..07)", () => {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-SI-02 | valid v2 → typed StateFile", () => {
+	test("T-SI-02 | valid v2 → migrated typed StateFile", () => {
 		const dir = makeTempDir();
 		try {
 			writeFileSync(
@@ -52,6 +54,10 @@ describe("readState (T-SI-01..07)", () => {
 			const state = readState(dir);
 			expect(state).not.toBeNull();
 			expect(state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			expect(
+				JSON.parse(readFileSync(join(dir, "state.json"), "utf-8"))
+					.schemaVersion,
+			).toBe(2);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -106,6 +112,111 @@ describe("readState (T-SI-01..07)", () => {
 			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
 			const schema = z.object({ count: z.number() });
 			expect(() => readState(dir, schema)).toThrow(StateCorruptedError);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+});
+
+describe("state v2 to v3 migration", () => {
+	test("preserves a v2 pending delegation without modification", () => {
+		const dir = makeTempDir();
+		try {
+			const legacy = JSON.parse(
+				loadFixture("states/mid-run-agent-pending.json"),
+			) as Record<string, unknown>;
+			writeFileSync(join(dir, "state.json"), JSON.stringify(legacy));
+
+			const result = readStateSnapshot(dir);
+
+			expect(result.migratedFromVersion).toBe(2);
+			expect(result.state?.schemaVersion).toBe(3);
+			expect(result.state?.pendingDelegation).toEqual(
+				legacy.pendingDelegation as PendingDelegationRecord,
+			);
+			expect(result.state?.usedLabels).toEqual(["rev"]);
+			expect(result.state).not.toHaveProperty("pendingExternalRequest");
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("migrates a v2 state without any pending record", () => {
+		const dir = makeTempDir();
+		try {
+			writeFileSync(
+				join(dir, "state.json"),
+				loadFixture("states/mid-run-no-pending.json"),
+			);
+			const result = readStateSnapshot(dir);
+
+			expect(result.migratedFromVersion).toBe(2);
+			expect(result.state?.schemaVersion).toBe(3);
+			expect(result.state).not.toHaveProperty("pendingDelegation");
+			expect(result.state).not.toHaveProperty("pendingExternalRequest");
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("rejects an external pending record mislabeled as state schema v2", () => {
+		const dir = makeTempDir();
+		try {
+			const state = {
+				...buildState({ count: 1 }),
+				schemaVersion: 2,
+				pendingExternalRequest: {
+					requestId: "01HX0000000000000000000001/push-repo",
+					label: "push-repo",
+					requestType: "git.push",
+					resumeAt: "resume",
+					manifestPath: "/tmp/external-requests/push-repo.json",
+					resultPath: "/tmp/external-results/push-repo.json",
+					emittedAt: "2026-04-19T12:00:00.000Z",
+					emittedAtEpochMs: 1,
+				},
+			};
+			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+
+			expect(() => readState(dir)).toThrow(StateCorruptedError);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("rejects a v3 state containing both pending record kinds", () => {
+		const dir = makeTempDir();
+		try {
+			const state = {
+				...buildState({ count: 1 }),
+				pendingDelegation: {
+					label: "review",
+					kind: "prompt",
+					resumeAt: "resume",
+					manifestPath: "/tmp/delegations/review-0.json",
+					emittedAtEpochMs: 1,
+					deadlineAtEpochMs: 2,
+					attempt: 0,
+					effectiveRetryPolicy: {
+						maxAttempts: 3,
+						backoffBaseMs: 1000,
+						maxBackoffMs: 30_000,
+					},
+				},
+				pendingExternalRequest: {
+					requestId: "01HX0000000000000000000001/push-repo",
+					label: "push-repo",
+					requestType: "git.push",
+					resumeAt: "resume",
+					manifestPath: "/tmp/external-requests/push-repo.json",
+					resultPath: "/tmp/external-results/push-repo.json",
+					emittedAt: "2026-04-19T12:00:00.000Z",
+					emittedAtEpochMs: 1,
+				},
+			};
+			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+
+			expect(() => readState(dir)).toThrow(StateCorruptedError);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -167,12 +278,40 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-SI-12 | pendingDelegation undefined → field absent in JSON", () => {
+	test("T-SI-12 | absent pending records stay absent in JSON", () => {
 		const dir = makeTempDir();
 		try {
 			writeStateAtomic(dir, buildState({ a: 1 }));
 			const raw = readFileSync(join(dir, "state.json"), "utf-8");
 			expect(raw.includes("pendingDelegation")).toBe(false);
+			expect(raw.includes("pendingExternalRequest")).toBe(false);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("writes and reads one pending external request", () => {
+		const dir = makeTempDir();
+		try {
+			const state: StateFile<{ a: number }> = {
+				...buildState({ a: 1 }),
+				pendingExternalRequest: {
+					requestId: "01HX0000000000000000000001/push-repo",
+					label: "push-repo",
+					requestType: "git.push",
+					resumeAt: "resume",
+					manifestPath: "/tmp/external-requests/push-repo.json",
+					resultPath: "/tmp/external-results/push-repo.json",
+					emittedAt: "2026-04-19T12:00:00.000Z",
+					emittedAtEpochMs: 1,
+				},
+				usedLabels: ["push-repo"],
+			};
+			writeStateAtomic(dir, state);
+
+			expect(readState(dir)?.pendingExternalRequest).toEqual(
+				state.pendingExternalRequest,
+			);
 		} finally {
 			cleanupTempDir(dir);
 		}

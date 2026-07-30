@@ -5,6 +5,9 @@ import {
 	DelegationMissingResultError,
 	DelegationSchemaError,
 	DelegationTimeoutError,
+	ExternalResolutionMalformedError,
+	ExternalResolutionMissingError,
+	ExternalResolutionSchemaError,
 	InvalidConfigError,
 	PhaseError,
 	ProtocolError,
@@ -42,6 +45,15 @@ describe("error-classifier acceptance (T-EC-01..14)", () => {
 	});
 	test("T-EC-07 | DelegationMissingResultError → permanent", () => {
 		expect(classify(new DelegationMissingResultError("x"))).toBe("permanent");
+	});
+	test("external resolution errors are permanent", () => {
+		for (const error of [
+			new ExternalResolutionMissingError("x"),
+			new ExternalResolutionSchemaError("x"),
+			new ExternalResolutionMalformedError("x"),
+		]) {
+			expect(classify(error)).toBe("permanent");
+		}
 	});
 	test("T-EC-08 | PhaseError(cause=Error) → permanent", () => {
 		expect(classify(new PhaseError("x", { cause: new Error("y") }))).toBe(

@@ -24,7 +24,7 @@ export type OrchestratorEvent =
 			runId: string;
 			phase: string;
 			durationMs: number;
-			resultKind: "delegate" | "done" | "fail";
+			resultKind: "delegate" | "external-request" | "done" | "fail";
 			timestamp: string;
 	  }
 	| {
@@ -58,6 +58,52 @@ export type OrchestratorEvent =
 			phase: string;
 			label: string;
 			zodErrorSummary: string;
+			timestamp: string;
+	  }
+	| {
+			eventType: "external_request_emit";
+			runId: string;
+			phase: string;
+			label: string;
+			requestId: string;
+			requestType: string;
+			timestamp: string;
+	  }
+	| {
+			eventType: "external_request_reemit";
+			runId: string;
+			phase: string;
+			label: string;
+			requestId: string;
+			requestType: string;
+			timestamp: string;
+	  }
+	| {
+			eventType: "external_resolution_read";
+			runId: string;
+			phase: string;
+			label: string;
+			requestId: string;
+			requestType: string;
+			timestamp: string;
+	  }
+	| {
+			eventType: "external_resolution_validation_failed";
+			runId: string;
+			phase: string;
+			label: string;
+			requestId: string;
+			requestType: string;
+			reason: "unreadable" | "malformed_json" | "schema_invalid";
+			timestamp: string;
+	  }
+	| {
+			eventType: "external_resolution_validated";
+			runId: string;
+			phase: string;
+			label: string;
+			requestId: string;
+			requestType: string;
 			timestamp: string;
 	  }
 	| {

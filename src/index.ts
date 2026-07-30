@@ -8,6 +8,9 @@ export {
 	DelegationMissingResultError,
 	DelegationSchemaError,
 	DelegationTimeoutError,
+	ExternalResolutionMalformedError,
+	ExternalResolutionMissingError,
+	ExternalResolutionSchemaError,
 	InvalidConfigError,
 	PhaseError,
 	ProtocolError,
@@ -23,6 +26,11 @@ export type {
 	PromptDelegationRequest,
 } from "./types/delegation";
 export type { OrchestratorEvent, OrchestratorLogger } from "./types/events";
+export type {
+	ExternalRequest,
+	JsonPrimitive,
+	JsonValue,
+} from "./types/external-request";
 export type { Phase, PhaseIO, PhaseResult } from "./types/phase";
 export type {
 	LoggingPolicy,

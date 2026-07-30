@@ -7,6 +7,7 @@ import { releaseLock } from "../services/lock";
 import { writeProtocolBlock } from "../services/protocol";
 import { type StateFile, writeStateAtomic } from "../services/state-io";
 import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
+import { clearPendingYield } from "./pending-yield";
 
 export async function emitFatalError<S extends object>(
 	ctx: DispatchContext<S>,
@@ -107,18 +108,10 @@ export async function handleDone<S extends object>(
 	}
 
 	const newState: StateFile<S> = {
+		...clearPendingYield(state),
 		schemaVersion: STATE_SCHEMA_VERSION,
-		runId: state.runId,
-		orchestratorName: state.orchestratorName,
-		startedAt: state.startedAt,
-		startedAtEpochMs: state.startedAtEpochMs,
-		currentPhase: state.currentPhase,
-		data: state.data,
 		phasesExecuted: state.phasesExecuted + 1,
-		lastTransitionAt: state.lastTransitionAt,
-		lastTransitionAtEpochMs: state.lastTransitionAtEpochMs,
 		accumulatedDurationMs,
-		usedLabels: state.usedLabels,
 	};
 	writeStateAtomic(ctx.runDir, newState, ctx.config.stateSchema);
 
@@ -159,18 +152,10 @@ export async function handleFail<S extends object>(
 			: "phase_error";
 
 	const newState: StateFile<S> = {
+		...clearPendingYield(state),
 		schemaVersion: STATE_SCHEMA_VERSION,
-		runId: state.runId,
-		orchestratorName: state.orchestratorName,
-		startedAt: state.startedAt,
-		startedAtEpochMs: state.startedAtEpochMs,
-		currentPhase: state.currentPhase,
-		data: state.data,
 		phasesExecuted: state.phasesExecuted + 1,
-		lastTransitionAt: state.lastTransitionAt,
-		lastTransitionAtEpochMs: state.lastTransitionAtEpochMs,
 		accumulatedDurationMs,
-		usedLabels: state.usedLabels,
 	};
 	writeStateAtomic(ctx.runDir, newState, ctx.config.stateSchema);
 

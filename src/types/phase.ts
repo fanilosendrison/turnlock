@@ -6,6 +6,7 @@ import type {
 	PromptDelegationRequest,
 } from "./delegation";
 import type { OrchestratorLogger } from "./events";
+import type { ExternalRequest } from "./external-request";
 
 export type Phase<State extends object = object, Output = unknown> = (
 	state: State,
@@ -23,6 +24,11 @@ export interface PhaseIO<State extends object> {
 		resumeAt: string,
 		nextState: State,
 	): PhaseResult<State>;
+	requestExternal(
+		request: ExternalRequest,
+		resumeAt: string,
+		nextState: State,
+	): PhaseResult<State>;
 
 	done<FinalOutput>(output: FinalOutput): PhaseResult<State, FinalOutput>;
 	fail(error: Error): PhaseResult<State>;
@@ -36,6 +42,7 @@ export interface PhaseIO<State extends object> {
 
 	consumePendingResult<T>(schema: ZodSchema<T>): T;
 	consumePendingBatchResults<T>(schema: ZodSchema<T>): readonly T[];
+	consumePendingExternalResolution<T>(schema: ZodSchema<T>): T;
 
 	refreshLock(): void;
 }
@@ -44,6 +51,12 @@ export type PhaseResult<State extends object = object, Output = unknown> =
 	| {
 			readonly kind: "delegate";
 			readonly request: DelegationRequest;
+			readonly resumeAt: string;
+			readonly nextState: State;
+	  }
+	| {
+			readonly kind: "external-request";
+			readonly request: ExternalRequest;
 			readonly resumeAt: string;
 			readonly nextState: State;
 	  }

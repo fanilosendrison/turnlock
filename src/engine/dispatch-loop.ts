@@ -8,9 +8,14 @@ import { refreshLock } from "../services/lock";
 import { resolveRetryDecision } from "../services/retry-resolver";
 import type { StateFile } from "../services/state-io";
 import type { PhaseResult } from "../types/phase";
-import type { DispatchContext, LoadedResults } from "./context";
+import {
+	type DispatchContext,
+	isTestExitSignal,
+	type LoadedResults,
+} from "./context";
 import { handleDelegate } from "./delegate-handler";
 import { reemitDelegationAttempt } from "./delegation-reemit";
+import { handleExternalRequest } from "./external-request-handler";
 import { buildPhaseIO, type PhaseIOGuards } from "./phase-io";
 import { emitFatalError, handleDone, handleFail } from "./terminal-handlers";
 
@@ -55,10 +60,12 @@ export async function runDispatchLoop<S extends object>(
 	};
 
 	const pendingAtEntry = state.pendingDelegation;
+	const pendingExternalAtEntry = state.pendingExternalRequest;
+	const pendingLabel = pendingAtEntry?.label ?? pendingExternalAtEntry?.label;
 	const isResumePhase =
-		pendingAtEntry !== undefined &&
+		pendingLabel !== undefined &&
 		loadedResults !== undefined &&
-		loadedResults.label === pendingAtEntry.label;
+		loadedResults.label === pendingLabel;
 
 	const frozenData = deepFreeze(
 		structuredClone(state.data as unknown as Record<string, unknown>),
@@ -69,6 +76,8 @@ export async function runDispatchLoop<S extends object>(
 		currentPhase,
 		loadedResults,
 		pendingAtEntry,
+		pendingExternalAtEntry,
+		usedLabelsAtEntry: state.usedLabels,
 		guards,
 	});
 
@@ -89,7 +98,7 @@ export async function runDispatchLoop<S extends object>(
 		const returned = (await phaseFn(frozenData, io)) as PhaseResult<S>;
 		if (!guards.committed.value || guards.committedResult.value === null) {
 			throw new PhaseError(
-				"phase returned without emitting a PhaseResult (must call io.delegate/delegateBatch/done/fail)",
+				"phase returned without emitting a PhaseResult (must call io.delegate/delegateBatch/requestExternal/done/fail)",
 				{
 					runId: ctx.runId,
 					orchestratorName: ctx.config.name,
@@ -126,12 +135,16 @@ export async function runDispatchLoop<S extends object>(
 	ctx.accumulatedDurationMs = newAccumulatedDurationMs;
 	ctx.phasesExecuted = state.phasesExecuted + 1;
 
-	if (isResumePhase && pendingAtEntry !== undefined) {
+	if (isResumePhase && pendingLabel !== undefined) {
 		if (guards.consumedCount.value !== 1) {
+			const subject =
+				pendingExternalAtEntry !== undefined
+					? "external resolution"
+					: "delegation";
 			const msg =
 				guards.consumedCount.value === 0
-					? `unconsumed delegation: ${pendingAtEntry.label}`
-					: `multiple consume calls on same delegation: ${pendingAtEntry.label}`;
+					? `unconsumed ${subject}: ${pendingLabel}`
+					: `multiple consume calls on same ${subject}: ${pendingLabel}`;
 			await emitFatalError(
 				ctx,
 				state,
@@ -149,6 +162,7 @@ export async function runDispatchLoop<S extends object>(
 	const resultKind = (result as { readonly kind?: unknown }).kind;
 	if (
 		resultKind !== "delegate" &&
+		resultKind !== "external-request" &&
 		resultKind !== "done" &&
 		resultKind !== "fail"
 	) {
@@ -182,6 +196,22 @@ export async function runDispatchLoop<S extends object>(
 				result as Extract<PhaseResult<S>, { readonly kind: "delegate" }>,
 				newAccumulatedDurationMs,
 			);
+			return undefined as never;
+		case "external-request":
+			try {
+				await handleExternalRequest(
+					ctx,
+					state,
+					result as Extract<
+						PhaseResult<S>,
+						{ readonly kind: "external-request" }
+					>,
+					newAccumulatedDurationMs,
+				);
+			} catch (error) {
+				if (isTestExitSignal(error)) throw error;
+				await emitFatalError(ctx, state, currentPhase, error);
+			}
 			return undefined as never;
 		case "done":
 			await handleDone(

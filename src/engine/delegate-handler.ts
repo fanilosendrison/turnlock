@@ -18,6 +18,7 @@ import type {
 	DelegationRequest,
 } from "../types/delegation";
 import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
+import { clearPendingYield } from "./pending-yield";
 import { selectBinding } from "./shared";
 
 export async function handleDelegate<S extends object>(
@@ -138,7 +139,7 @@ export async function handleDelegate<S extends object>(
 	};
 
 	const newState: StateFile<S> = {
-		...state,
+		...clearPendingYield(state),
 		data: result.nextState,
 		phasesExecuted: state.phasesExecuted + 1,
 		lastTransitionAt: emittedAt,
