@@ -1,20 +1,10 @@
-import {
-	DelegationSchemaError,
-	PhaseError,
-	ProtocolError,
-} from "../errors/concrete";
+import { PhaseError, ProtocolError } from "../errors/concrete";
 import { clock } from "../services/clock";
 import { refreshLock } from "../services/lock";
-import { resolveRetryDecision } from "../services/retry-resolver";
 import type { StateFile } from "../services/state-io";
 import type { PhaseResult } from "../types/phase";
-import {
-	type DispatchContext,
-	isTestExitSignal,
-	type LoadedResults,
-} from "./context";
+import type { DispatchContext, LoadedResults } from "./context";
 import { handleDelegate } from "./delegate-handler";
-import { reemitDelegationAttempt } from "./delegation-reemit";
 import { handleExternalRequest } from "./external-request-handler";
 import { buildPhaseIO, type PhaseIOGuards } from "./phase-io";
 import { emitFatalError, handleDone, handleFail } from "./terminal-handlers";
@@ -34,10 +24,13 @@ function deepFreeze<T>(obj: T): T {
 	return Object.freeze(obj);
 }
 
+export type PhaseErrorHandler = (error: unknown) => Promise<boolean>;
+
 export async function runDispatchLoop<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
 	loadedResults?: LoadedResults,
+	phaseErrorHandler?: PhaseErrorHandler,
 ): Promise<never> {
 	const currentPhase = state.currentPhase;
 	ctx.currentPhase = currentPhase;
@@ -108,22 +101,8 @@ export async function runDispatchLoop<S extends object>(
 		}
 		result = (guards.committedResult.value ?? returned) as PhaseResult<S>;
 	} catch (err) {
-		if (err instanceof DelegationSchemaError && pendingAtEntry !== undefined) {
-			const decision = resolveRetryDecision(
-				err,
-				pendingAtEntry.attempt,
-				pendingAtEntry.effectiveRetryPolicy,
-			);
-			if (decision.retry === true) {
-				await reemitDelegationAttempt(
-					ctx,
-					state,
-					pendingAtEntry,
-					decision,
-					currentPhase,
-				);
-				return undefined as never;
-			}
+		if (phaseErrorHandler !== undefined && (await phaseErrorHandler(err))) {
+			return undefined as never;
 		}
 		await emitFatalError(ctx, state, currentPhase, err);
 		return undefined as never;
@@ -198,20 +177,15 @@ export async function runDispatchLoop<S extends object>(
 			);
 			return undefined as never;
 		case "external-request":
-			try {
-				await handleExternalRequest(
-					ctx,
-					state,
-					result as Extract<
-						PhaseResult<S>,
-						{ readonly kind: "external-request" }
-					>,
-					newAccumulatedDurationMs,
-				);
-			} catch (error) {
-				if (isTestExitSignal(error)) throw error;
-				await emitFatalError(ctx, state, currentPhase, error);
-			}
+			await handleExternalRequest(
+				ctx,
+				state,
+				result as Extract<
+					PhaseResult<S>,
+					{ readonly kind: "external-request" }
+				>,
+				newAccumulatedDurationMs,
+			);
 			return undefined as never;
 		case "done":
 			await handleDone(

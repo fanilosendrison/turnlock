@@ -179,11 +179,32 @@ async function enterDispatchLoopWithResults<S extends object>(
 		currentPhase: pd.resumeAt,
 	};
 
-	await runDispatchLoop(ctx, stateForDispatch, {
-		label: pd.label,
-		kind: pd.kind,
-		data: loadedData as unknown | readonly unknown[],
-	});
+	await runDispatchLoop(
+		ctx,
+		stateForDispatch,
+		{
+			label: pd.label,
+			kind: pd.kind,
+			data: loadedData as unknown | readonly unknown[],
+		},
+		async (error) => {
+			if (!(error instanceof DelegationSchemaError)) return false;
+			const decision = resolveRetryDecision(
+				error,
+				pd.attempt,
+				pd.effectiveRetryPolicy,
+			);
+			if (decision.retry !== true) return false;
+			await reemitDelegationAttempt(
+				ctx,
+				stateForDispatch,
+				pd,
+				decision,
+				pd.resumeAt,
+			);
+			return true;
+		},
+	);
 	return undefined as never;
 }
 
