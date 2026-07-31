@@ -48,10 +48,14 @@ const DB_FILENAME = "turnlock.sqlite3";
 
 /** Seed a freshly created SQLite DB from a legacy state.json snapshot.
  *
- *  Opens the DB, acquires ownership, writes the initial state row, and
- *  projects state.json — but does NOT close the connection.  The caller
- *  receives the open runDb and active handle to continue the resume flow
- *  without a second open/acquire cycle (which would self-lock). */
+ *  Opens the DB, acquires ownership at the **current wall-clock time**,
+ *  writes the initial state row (timestamped at the historical
+ *  `state.lastTransitionAt`), and projects state.json.  Does NOT close
+ *  the connection — the caller receives the open runDb and active handle
+ *  to continue the resume flow without a second open/acquire cycle.
+ *
+ *  On any failure after the DB is opened, the ownership is released
+ *  (if acquired) and the DB is closed before rethrowing. */
 function seedLegacyStateToSqlite<S extends object>(
 	runDir: string,
 	runId: string,
@@ -67,21 +71,28 @@ function seedLegacyStateToSqlite<S extends object>(
 		busyTimeoutMs: 2000,
 	});
 
-	let handle: import("../persistence/sqlite/ownership").LockHandle;
+	// Ownership must be acquired at the *current* time, not the historical
+	// state timestamp.  Otherwise a 3-hour-old state would get a lease that
+	// expired 2.5 hours ago, causing EXPIRED_HANDLE on the first fenced op.
+	const ownershipNowEpochMs = clock.nowEpochMs();
+	const ownershipNowIso = clock.nowWallIso();
+
+	let handle: import("../persistence/sqlite/ownership").LockHandle | null =
+		null;
 
 	try {
 		const acquireResult = acquireOwnership({
 			db: runDb.connection,
 			runId,
 			orchestratorName: state.orchestratorName,
-			nowEpochMs: state.lastTransitionAtEpochMs,
-			nowIso: state.lastTransitionAt,
+			nowEpochMs: ownershipNowEpochMs,
+			nowIso: ownershipNowIso,
 			leaseDurationMs: 30 * 60 * 1000,
 			contentionDeadlineMs: 5000,
 		});
 
 		if (acquireResult.kind !== "ACQUIRED") {
-			runDb.close();
+			// DB opened but acquisition failed — close is handled in catch.
 			throw new StateMissingError(
 				`Failed to acquire ownership during legacy migration: ${acquireResult.kind}`,
 				{ runId, orchestratorName: state.orchestratorName },
@@ -104,7 +115,11 @@ function seedLegacyStateToSqlite<S extends object>(
 
 		return { runDb, handle };
 	} catch (err) {
-		// If anything fails after the DB was opened, close it.
+		// Release ownership if acquired, so the next attempt can
+		// acquire immediately.  Preserve the original error.
+		if (handle !== null) {
+			releaseOwnership({ db: runDb.connection, handle });
+		}
 		runDb.close();
 		throw err;
 	}
