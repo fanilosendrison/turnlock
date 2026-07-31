@@ -1,16 +1,17 @@
 // TL-F-001 point 1 — Authority loss continuation prevention tests.
 //
-// Demonstrates that after a commit rejection, the engine does NOT continue
-// as if the commit succeeded (no DONE protocol block, no normal exit).
+// Demonstrates that after a commit rejection, the real handler does NOT continue
+// as if the commit succeeded:
+//   - No DONE protocol block is emitted
+//   - No doExit(0) occurs
+//   - The error (AuthorityLostError) propagates out
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { join } from "node:path";
 import { STATE_SCHEMA_VERSION } from "../../src/constants";
-import {
-	commitStateWithProjection,
-	refreshOwnershipFromContext,
-	releaseOwnershipFromContext,
-} from "../../src/engine/state-commit";
+import type { DispatchContext } from "../../src/engine/context";
+import { refreshOwnershipFromContext } from "../../src/engine/state-commit";
+import { handleDone } from "../../src/engine/terminal-handlers";
 import {
 	AuthorityLostError,
 	PersistenceFailureError,
@@ -19,15 +20,22 @@ import {
 import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
 import {
 	acquireOwnership,
+	type LockHandle,
 	releaseOwnership as sqliteReleaseOwnership,
 } from "../../src/persistence/sqlite/ownership";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
 import { ensureInitialStateRow } from "../../src/persistence/sqlite/run-state-store";
+import type { StateFile } from "../../src/services/state-io";
+import { createMockLogger } from "../helpers/mock-logger";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 
 const LEASE_MS = 30 * 60 * 1000;
 const CONTENTION_DEADLINE_MS = 2000;
 const RUN_ID = "01HX0000000000000000000001";
+
+interface TestState {
+	readonly ok: boolean;
+}
 
 function now() {
 	return {
@@ -54,16 +62,60 @@ function setup() {
 	};
 }
 
+function makeState(
+	overrides: Partial<StateFile<TestState>> = {},
+): StateFile<TestState> {
+	return {
+		schemaVersion: STATE_SCHEMA_VERSION,
+		runId: RUN_ID,
+		orchestratorName: "test",
+		startedAt: "2024-01-01T00:00:00.000Z",
+		startedAtEpochMs: 1_704_067_200_000,
+		lastTransitionAt: "2024-01-01T00:00:00.000Z",
+		lastTransitionAtEpochMs: 1_704_067_200_000,
+		currentPhase: "test-phase",
+		phasesExecuted: 1,
+		accumulatedDurationMs: 100,
+		data: { ok: true },
+		usedLabels: [],
+		...overrides,
+	};
+}
+
+function makeContext(
+	dir: string,
+	runDb: ReturnType<typeof openRunDatabase>,
+	handle: LockHandle,
+): DispatchContext<TestState> {
+	return {
+		config: {
+			name: "test",
+			initial: "start",
+			initialState: { ok: false },
+			resumeCommand: (id) => `bun test --run-id ${id} --resume`,
+			phases: {
+				start: async (_s, io) => io.done({ ok: true }),
+			},
+		},
+		runId: RUN_ID,
+		runDir: dir,
+		runDb,
+		handle,
+		logger: createMockLogger(),
+		abortController: new AbortController(),
+		currentPhase: "test-phase",
+		phasesExecuted: 1,
+		accumulatedDurationMs: 100,
+		stateRevision: "0",
+	};
+}
+
 // ---------------------------------------------------------------------------
-// Handler continuation prevention
+// Real handleDone() continuation prevention
 // ---------------------------------------------------------------------------
 
-describe("authority loss — handler continuation prevention", () => {
-	// -----------------------------------------------------------------------
-	// 10.10 — DONE handler does not continue after stale commit
-	// -----------------------------------------------------------------------
-
-	test("terminal handler does not continue after stale commit", () => {
+describe("authority loss — real handleDone continuation prevention", () => {
+	test("handleDone with stale handle throws AuthorityLostError and emits no DONE block", async () => {
 		const ctx = setup();
 		try {
 			const { epoch, iso } = now();
@@ -91,13 +143,8 @@ describe("authority loss — handler continuation prevention", () => {
 				iso,
 			);
 
-			// Simulate phase producing DONE, but ownership lost before commit.
-			sqliteReleaseOwnership({
-				db: ctx.runDb.connection,
-				handle: handleA,
-			});
-
-			// Another worker acquires.
+			// Make the handle stale (another worker acquired).
+			sqliteReleaseOwnership({ db: ctx.runDb.connection, handle: handleA });
 			acquireOwnership({
 				db: ctx.runDb.connection,
 				runId: RUN_ID,
@@ -108,59 +155,58 @@ describe("authority loss — handler continuation prevention", () => {
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
 
-			const commitCtx = {
-				runDb: ctx.runDb,
-				handle: handleA,
-				runDir: ctx.dir,
-				runId: RUN_ID,
-				stateRevision: "0",
-			};
+			const dCtx = makeContext(ctx.dir, ctx.runDb, handleA);
+			const state = makeState();
 
-			// This simulates what handleDone() does: commit, then emit DONE, then release, then exit.
-			let emittedProtocolBlock = false;
-			let releasedOwnership = false;
-			let exited = false;
+			// Capture stdout to verify no DONE block is written.
+			let stdoutContent = "";
+			const originalWrite = process.stdout.write.bind(process.stdout);
+			const writeMock = mock((chunk: string | Uint8Array) => {
+				stdoutContent +=
+					typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+				return true;
+			});
+			process.stdout.write = writeMock as typeof process.stdout.write;
 
+			let catchedErr: unknown = null;
 			try {
-				// Step 1: commitStateWithProjection (should throw)
-				commitStateWithProjection(commitCtx, {
-					schemaVersion: STATE_SCHEMA_VERSION,
-					runId: RUN_ID,
-					orchestratorName: "test",
-					startedAt: iso,
-					startedAtEpochMs: epoch,
-					lastTransitionAt: iso,
-					lastTransitionAtEpochMs: epoch,
-					currentPhase: "test-phase",
-					phasesExecuted: 1,
-					accumulatedDurationMs: 100,
-					data: { ok: true },
-					usedLabels: [],
-				});
-				// If we get here, the fix is not working.
-				emittedProtocolBlock = true; // Would emit DONE block here
-				releaseOwnershipFromContext(commitCtx);
-				releasedOwnership = true;
-				exited = true; // Would exit(0) here
+				await handleDone(
+					dCtx,
+					state,
+					{ kind: "done", output: { ok: true } },
+					200,
+				);
 			} catch (err) {
-				expect(err).toBeInstanceOf(AuthorityLostError);
-				expect((err as AuthorityLostError).kind).toBe("authority_lost");
+				catchedErr = err;
+			} finally {
+				process.stdout.write = originalWrite;
 			}
 
-			// None of the post-commit steps should have executed.
-			expect(emittedProtocolBlock).toBe(false);
-			expect(releasedOwnership).toBe(false);
-			expect(exited).toBe(false);
+			// Must throw AuthorityLostError, not TestExitSignal or anything else.
+			expect(catchedErr).toBeInstanceOf(AuthorityLostError);
+			expect((catchedErr as AuthorityLostError).kind).toBe("authority_lost");
+
+			// stdout must NOT contain a DONE block.
+			expect(stdoutContent).not.toContain("@@TURNLOCK@@");
+			expect(stdoutContent).not.toContain("action: DONE");
+
+			// No orchestrator_end(success=true) in the logger.
+			const logger = dCtx.logger as ReturnType<typeof createMockLogger>;
+			const endEvents = logger.findAll("orchestrator_end");
+			const successEnd = endEvents.filter(
+				(e) => (e as { success?: boolean }).success === true,
+			);
+			expect(successEnd.length).toBe(0);
 		} finally {
 			ctx.cleanup();
 		}
 	});
 
 	// -----------------------------------------------------------------------
-	// Revision conflict also prevents continuation
+	// Revision conflict also prevents continuation (real handleDone)
 	// -----------------------------------------------------------------------
 
-	test("revision conflict prevents handler continuation", () => {
+	test("revision conflict in handleDone throws StateRevisionConflictError", async () => {
 		const ctx = setup();
 		try {
 			const { epoch, iso } = now();
@@ -191,36 +237,24 @@ describe("authority loss — handler continuation prevention", () => {
 				"UPDATE run_state SET state_revision = 5 WHERE singleton = 1",
 			);
 
-			const commitCtx = {
-				runDb: ctx.runDb,
-				handle: acquired.handle,
-				runDir: ctx.dir,
-				runId: RUN_ID,
-				stateRevision: "0",
-			};
+			const dCtx = makeContext(ctx.dir, ctx.runDb, acquired.handle);
+			// Override stateRevision to simulate stale expectation.
+			dCtx.stateRevision = "0";
+			const state = makeState();
 
-			let continued = false;
+			let catchedErr: unknown = null;
 			try {
-				commitStateWithProjection(commitCtx, {
-					schemaVersion: STATE_SCHEMA_VERSION,
-					runId: RUN_ID,
-					orchestratorName: "test",
-					startedAt: iso,
-					startedAtEpochMs: epoch,
-					lastTransitionAt: iso,
-					lastTransitionAtEpochMs: epoch,
-					currentPhase: "test-phase",
-					phasesExecuted: 1,
-					accumulatedDurationMs: 100,
-					data: { ok: true },
-					usedLabels: [],
-				});
-				continued = true;
+				await handleDone(
+					dCtx,
+					state,
+					{ kind: "done", output: { ok: true } },
+					200,
+				);
 			} catch (err) {
-				expect(err).toBeInstanceOf(StateRevisionConflictError);
+				catchedErr = err;
 			}
 
-			expect(continued).toBe(false);
+			expect(catchedErr).toBeInstanceOf(StateRevisionConflictError);
 		} finally {
 			ctx.cleanup();
 		}
