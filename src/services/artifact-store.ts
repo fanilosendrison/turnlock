@@ -181,6 +181,7 @@ export function installPreparedArtifact(
 	runDir: string,
 	artifact: PreparedArtifact,
 ): void {
+	validateArtifactRef(artifact.ref, artifact.ref.kind);
 	const targetPath = path.join(runDir, artifact.ref.relativePath);
 	atomicInstallImmutable(targetPath, artifact.bytes);
 }
@@ -198,6 +199,9 @@ export function readAndVerifyArtifact(
 	runDir: string,
 	ref: ArtifactRef,
 ): Uint8Array {
+	// Structural validation — path confinement, digest format, etc.
+	validateArtifactRef(ref, ref.kind);
+
 	const targetPath = path.join(runDir, ref.relativePath);
 
 	let bytes: Buffer;
@@ -231,4 +235,91 @@ export function readAndVerifyArtifact(
  *  for use by tests and canonical projection. */
 export function artifactAbsolutePath(runDir: string, digest: string): string {
 	return path.join(runDir, artifactRelativePath(digest));
+}
+
+// ---------------------------------------------------------------------------
+// ArtifactRef validation
+// ---------------------------------------------------------------------------
+
+/** Validate that an ArtifactRef is structurally sound and confined.
+ *
+ *  Checks:
+ *    - digest matches the expected sha256:<hex> format.
+ *    - relativePath is exactly derived from the digest.
+ *    - relativePath is relative, stays under artifacts/sha256, no `..`.
+ *    - kind matches expectedKind.
+ *    - mediaType is "application/json".
+ *    - sizeBytes is a non-negative finite integer.
+ *
+ *  Throws ArtifactIntegrityError on any violation. */
+export function validateArtifactRef(
+	ref: ArtifactRef,
+	expectedKind: ArtifactKind,
+): void {
+	// Kind
+	if (ref.kind !== expectedKind) {
+		throw new ArtifactIntegrityError(
+			`artifact kind mismatch: expected ${expectedKind}, got ${ref.kind}`,
+		);
+	}
+
+	// Algorithm
+	if (ref.digestAlgorithm !== "sha256") {
+		throw new ArtifactIntegrityError(
+			`unsupported digest algorithm: ${ref.digestAlgorithm}`,
+		);
+	}
+
+	// Digest format: sha256:<64 hex chars>
+	const digestPattern = /^sha256:[0-9a-f]{64}$/;
+	if (!digestPattern.test(ref.digest)) {
+		throw new ArtifactIntegrityError(
+			`artifact digest has invalid format: ${ref.digest.slice(0, 20)}...`,
+		);
+	}
+
+	// Digested path vs actual path
+	const expectedPath = artifactRelativePath(ref.digest);
+	if (ref.relativePath !== expectedPath) {
+		throw new ArtifactIntegrityError(
+			`artifact relativePath does not match digest: expected ${expectedPath}, got ${ref.relativePath}`,
+		);
+	}
+
+	// Path confinement — must be relative, no traversal, under artifacts/sha256.
+	if (path.isAbsolute(ref.relativePath)) {
+		throw new ArtifactIntegrityError(
+			`artifact relativePath must be relative: ${ref.relativePath}`,
+		);
+	}
+	const segments = ref.relativePath.split(path.sep);
+	if (segments.includes("..")) {
+		throw new ArtifactIntegrityError(
+			`artifact relativePath must not contain "..": ${ref.relativePath}`,
+		);
+	}
+	if (segments[0] !== "artifacts" || segments[1] !== "sha256") {
+		throw new ArtifactIntegrityError(
+			`artifact relativePath must start with artifacts/sha256: ${ref.relativePath}`,
+		);
+	}
+
+	// Media type
+	if (ref.mediaType !== "application/json") {
+		throw new ArtifactIntegrityError(
+			`unsupported media type: ${ref.mediaType}`,
+		);
+	}
+
+	// Size
+	if (
+		typeof ref.sizeBytes !== "number" ||
+		!Number.isFinite(ref.sizeBytes) ||
+		ref.sizeBytes < 0 ||
+		!Number.isInteger(ref.sizeBytes)
+	) {
+		throw new ArtifactIntegrityError(
+			`artifact sizeBytes invalid: ${ref.sizeBytes}`,
+		);
+	}
 }
