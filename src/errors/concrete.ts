@@ -34,6 +34,27 @@ export class ArtifactIntegrityError extends OrchestratorError {
 	readonly kind = "artifact_integrity" as const;
 }
 
+/** Reason why a v3→v4 migration could not complete. */
+export type MigrationBlockReason =
+	| "MANIFEST_MISSING"
+	| "MANIFEST_OUTSIDE_RUN_DIR"
+	| "MANIFEST_SYMLINK"
+	| "MANIFEST_NOT_REGULAR"
+	| "MANIFEST_DIGEST_MISMATCH";
+
+export class StateMigrationBlockedError extends OrchestratorError {
+	readonly kind = "state_migration_blocked" as const;
+	readonly reason: MigrationBlockReason;
+
+	constructor(
+		message: string,
+		options: OrchestratorErrorOptions & { readonly reason: MigrationBlockReason },
+	) {
+		super(message, options);
+		this.reason = options.reason;
+	}
+}
+
 export interface PersistenceFailureErrorOptions
 	extends OrchestratorErrorOptions {
 	readonly operation: AuthorityOperation;

@@ -40,6 +40,7 @@ export function classify(err: unknown): ErrorCategory {
 		case "state_revision_conflict":
 		case "persistence_failure":
 		case "artifact_integrity":
+		case "state_migration_blocked":
 			return "permanent";
 	}
 }
