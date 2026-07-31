@@ -114,10 +114,19 @@ function isArtifactRef(value: unknown): value is ArtifactRef {
 	);
 }
 
-function assertArtifactRef(value: unknown, field: string): ArtifactRef {
+function assertArtifactRef(
+	value: unknown,
+	field: string,
+	expectedKind?: ArtifactRef["kind"],
+): ArtifactRef {
 	if (!isArtifactRef(value)) {
 		throw new StateCorruptedError(
 			`state.json field ${field} is not a valid ArtifactRef`,
+		);
+	}
+	if (expectedKind !== undefined && value.kind !== expectedKind) {
+		throw new StateCorruptedError(
+			`state.json field ${field} has wrong kind: expected ${expectedKind}, got ${value.kind}`,
 		);
 	}
 	return value;
@@ -129,6 +138,7 @@ function isTerminalDoneRecord(value: unknown): value is TerminalDoneRecord {
 	return (
 		r.kind === "done" &&
 		isArtifactRef(r.outputArtifact) &&
+		r.outputArtifact.kind === "terminal-output" &&
 		typeof r.completedAt === "string" &&
 		typeof r.completedAtEpochMs === "number" &&
 		Number.isFinite(r.completedAtEpochMs)
@@ -194,6 +204,7 @@ function validatePendingDelegationV4(value: unknown): void {
 		assertArtifactRef(
 			pending.manifestArtifact,
 			"pendingDelegation.manifestArtifact",
+			"delegation-manifest",
 		);
 	} else if (
 		typeof pending.manifestPath !== "string" ||
@@ -275,6 +286,7 @@ function validatePendingExternalRequestV4(
 		assertArtifactRef(
 			pending.manifestArtifact,
 			"pendingExternalRequest.manifestArtifact",
+			"external-request-manifest",
 		);
 	} else {
 		if (
@@ -653,19 +665,28 @@ export function migrateV3ToV4(
 /** Resolve a manifest path that may be absolute (old code used
  *  path.join(runDir, "delegations", ...) which produces absolute paths when
  *  runDir is absolute) or relative.  Returns null if the path cannot be
- *  resolved under the expected RUN_DIR (best-effort migration). */
+ *  resolved under the expected RUN_DIR (best-effort migration).
+ *
+ *  Uses path.resolve + path.relative to close traversal attacks like
+ *  `../outside.json` or `/run/expected/../../outside.json`. */
 function resolveManifestPath(runDir: string, stored: string): string | null {
-	if (path.isAbsolute(stored)) {
-		// Old code: path.join(ctx.runDir, ...) with absolute runDir → absolute.
-		// Verify it's under the expected RUN_DIR.
-		const resolvedRunDir = path.resolve(runDir);
-		if (!stored.startsWith(resolvedRunDir + path.sep)) {
-			// Path outside expected RUN_DIR — cannot safely migrate.
-			return null;
-		}
-		return stored;
+	const root = path.resolve(runDir);
+	const candidate = path.isAbsolute(stored)
+		? path.resolve(stored)
+		: path.resolve(root, stored);
+
+	const relative = path.relative(root, candidate);
+
+	if (
+		relative === "" ||
+		relative.startsWith(`..${path.sep}`) ||
+		relative === ".." ||
+		path.isAbsolute(relative)
+	) {
+		return null;
 	}
-	return path.join(runDir, stored);
+
+	return candidate;
 }
 
 /** Try to read manifest bytes; return null if the file doesn't exist. */
@@ -715,8 +736,10 @@ function installArtifactBlob(
 					"v3→v4 migration: blob collision with different content",
 				);
 			}
+			// Idempotent success: blob already present with correct content.
+		} else {
+			throw err;
 		}
-		throw err;
 	} finally {
 		try {
 			fs.unlinkSync(tmpPath);
