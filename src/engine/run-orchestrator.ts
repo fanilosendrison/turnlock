@@ -889,17 +889,20 @@ async function runResumeMode<S extends object>(
 			releaseResult.kind !== "SUCCESS" &&
 			releaseResult.kind !== "STALE_HANDLE"
 		) {
-			// Ownership release failed — surface both errors so the
-			// ownership leak is observable, but preserve the primary
-			// error as the head of the AggregateError.
-			throw new AggregateError(
-				[
-					primaryError,
-					releaseResult.kind === "DB_FAILURE"
-						? releaseResult.cause
-						: new Error(`ownership release failed: ${releaseResult.kind}`),
-				],
-				"primary error and ownership release both failed",
+			// Release failed — the ownership may be leaked.  Emit a
+			// warning to stderr (so it is observable) but rethrow the
+			// primary error unchanged to preserve its protocol-visible
+			// classification (errorKind, runId, etc.).
+			//
+			// Throwing AggregateError here would mask the primary error
+			// inside handleTopLevelError, which does not know how to
+			// unpack AggregateError.
+			process.stderr.write(
+				`[turnlock] ownership release failed: ${releaseResult.kind}` +
+					(releaseResult.kind === "DB_FAILURE"
+						? ` (${String(releaseResult.cause)})`
+						: "") +
+					"\n",
 			);
 		}
 
