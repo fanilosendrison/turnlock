@@ -9,6 +9,7 @@ import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
 import { clearPendingYield } from "./pending-yield";
 import {
 	commitStateWithProjection,
+	releaseOwnershipBestEffort,
 	releaseOwnershipFromContext,
 } from "./state-commit";
 
@@ -61,7 +62,7 @@ export async function emitFatalError<S extends object>(
 	});
 	process.stdout.write(block);
 
-	releaseOwnershipFromContext(ctx);
+	releaseOwnershipBestEffort(ctx);
 	doExit(1);
 }
 
