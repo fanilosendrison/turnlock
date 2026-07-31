@@ -13,8 +13,8 @@ import type {
 	PendingExternalRequestRecord,
 } from "../../src/services/state-io";
 import type { JsonValue } from "../../src/types/external-request";
-import { testArtifactRef } from "../helpers/state-builder";
 import { createMockLogger } from "../helpers/mock-logger";
+import { testArtifactRef } from "../helpers/state-builder";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 
 interface TestState {
