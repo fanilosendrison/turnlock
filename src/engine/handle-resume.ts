@@ -7,12 +7,19 @@ import {
 	ProtocolError,
 } from "../errors/concrete";
 import { clock } from "../services/clock";
+import { writeProtocolBlock } from "../services/protocol";
 import { resolveRetryDecision } from "../services/retry-resolver";
 import type { PendingDelegationRecord, StateFile } from "../services/state-io";
+import type { TerminalDoneRecord } from "../types/artifacts";
 import type { DispatchContext } from "./context";
+import { doExit } from "./context";
 import { reemitDelegationAttempt } from "./delegation-reemit";
 import { runDispatchLoop } from "./dispatch-loop";
 import { runExternalRequestResume } from "./external-request-resume";
+import {
+	projectCanonicalArtifactFenced,
+	releaseOwnershipFromContext,
+} from "./state-commit";
 import { emitFatalError } from "./terminal-handlers";
 
 function buildExpectedResultPaths(
@@ -97,6 +104,65 @@ function safeFileSize(p: string): number {
 	} catch {
 		return -1;
 	}
+}
+
+async function recoverTerminalState<S extends object>(
+	ctx: DispatchContext<S>,
+	state: StateFile<S>,
+	terminalResult: TerminalDoneRecord,
+): Promise<never> {
+	const outputPath = path.join(ctx.runDir, "output.json");
+
+	// Reconstruct output.json from the immutable blob if missing or invalid.
+	let needReconstruct = false;
+	try {
+		const existing = fs.readFileSync(outputPath);
+		// Verify existing file matches the artifact ref (best-effort).
+		const ref = terminalResult.outputArtifact;
+		if (existing.length !== ref.sizeBytes) {
+			needReconstruct = true;
+		}
+	} catch {
+		needReconstruct = true;
+	}
+
+	if (needReconstruct) {
+		try {
+			projectCanonicalArtifactFenced(
+				ctx,
+				terminalResult.outputArtifact,
+				outputPath,
+			);
+		} catch (err) {
+			await emitFatalError(ctx, state, state.currentPhase, err);
+			return undefined as never;
+		}
+	}
+
+	// Re-emit the DONE protocol block (idempotent — the parent may have
+	// already seen it, but we re-emit for safety).
+	ctx.logger.emit({
+		eventType: "orchestrator_end",
+		runId: ctx.runId,
+		orchestratorName: ctx.config.name,
+		success: true,
+		durationMs: state.accumulatedDurationMs,
+		phasesExecuted: state.phasesExecuted,
+		timestamp: clock.nowWallIso(),
+	});
+
+	const block = writeProtocolBlock("DONE", {
+		runId: ctx.runId,
+		orchestrator: ctx.config.name,
+		output: outputPath,
+		success: true,
+		phasesExecuted: state.phasesExecuted,
+		durationMs: state.accumulatedDurationMs,
+	});
+	process.stdout.write(block);
+
+	releaseOwnershipFromContext(ctx);
+	doExit(0);
 }
 
 async function handleDelegationError<S extends object>(
@@ -212,6 +278,14 @@ export async function runHandleResume<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
 ): Promise<never> {
+	// Terminal recovery: if the previous run committed a terminal result but
+	// crashed before projecting output.json or emitting the protocol block,
+	// reconstruct from the immutable blob now.
+	if (state.terminalResult !== undefined) {
+		await recoverTerminalState(ctx, state, state.terminalResult);
+		return undefined as never;
+	}
+
 	const pendingExternalRequest = state.pendingExternalRequest;
 	if (pendingExternalRequest) {
 		await runExternalRequestResume(ctx, state, pendingExternalRequest);

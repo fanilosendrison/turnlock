@@ -2,13 +2,19 @@ import * as path from "node:path";
 import { STATE_SCHEMA_VERSION } from "../constants";
 import { enrich, OrchestratorError } from "../errors/base";
 import { PhaseError } from "../errors/concrete";
+import {
+	installPreparedArtifact,
+	prepareJsonArtifact,
+} from "../services/artifact-store";
 import { clock } from "../services/clock";
 import { writeProtocolBlock } from "../services/protocol";
 import type { StateFile } from "../services/state-io";
-import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
+import type { TerminalDoneRecord } from "../types/artifacts";
+import { type DispatchContext, doExit } from "./context";
 import { clearPendingYield } from "./pending-yield";
 import {
 	commitStateWithProjection,
+	projectCanonicalArtifactFenced,
 	releaseOwnershipBestEffort,
 	releaseOwnershipFromContext,
 } from "./state-commit";
@@ -72,11 +78,14 @@ export async function handleDone<S extends object>(
 	result: { kind: "done"; output: unknown },
 	accumulatedDurationMs: number,
 ): Promise<never> {
-	const outputPath = path.join(ctx.runDir, "output.json");
-	let serialized: string;
+	// 1. Serialize output and prepare immutable artifact.
+	let preparedOutput: ReturnType<typeof prepareJsonArtifact>;
 	try {
-		serialized = JSON.stringify(result.output);
-		if (serialized === undefined) serialized = "null";
+		preparedOutput = prepareJsonArtifact(
+			ctx.runDir,
+			"terminal-output",
+			result.output,
+		);
 	} catch (err) {
 		throw new PhaseError(
 			`failed to serialize done.output: ${err instanceof Error ? err.message : String(err)}`,
@@ -89,30 +98,30 @@ export async function handleDone<S extends object>(
 		);
 	}
 
-	// Detect functions/non-serializable content that JSON.stringify silently drops.
-	// For `{fn: () => 1}` -> serialized is "{}"; this is accepted per NIB-M-STATE-IO.
-	try {
-		writeFileSyncAtomic(outputPath, serialized);
-	} catch (err) {
-		throw new PhaseError(
-			`failed to write output.json: ${err instanceof Error ? err.message : String(err)}`,
-			{
-				cause: err,
-				runId: ctx.runId,
-				orchestratorName: ctx.config.name,
-				phase: state.currentPhase,
-			},
-		);
-	}
+	// 2. Install immutable blob (may be orphaned if commit fails — acceptable).
+	installPreparedArtifact(ctx.runDir, preparedOutput);
+
+	// 3. Build state with ArtifactRef, commit fenced.
+	const nowEpochMs = clock.nowEpochMs();
+	const nowIso = clock.nowWallIso();
+
+	const terminalResult: TerminalDoneRecord = {
+		kind: "done",
+		outputArtifact: preparedOutput.ref,
+		completedAt: nowIso,
+		completedAtEpochMs: nowEpochMs,
+	};
 
 	const newState: StateFile<S> = {
 		...clearPendingYield(state),
 		schemaVersion: STATE_SCHEMA_VERSION,
 		phasesExecuted: state.phasesExecuted + 1,
 		accumulatedDurationMs,
+		terminalResult,
 	};
 	commitStateWithProjection(ctx, newState);
 
+	// 4. Events and protocol output only after successful fenced commit.
 	const endedAt = clock.nowWallIso();
 	ctx.logger.emit({
 		eventType: "orchestrator_end",
@@ -124,6 +133,11 @@ export async function handleDone<S extends object>(
 		timestamp: endedAt,
 	});
 
+	// 5. Project canonical output.json (fenced).
+	const outputPath = path.join(ctx.runDir, "output.json");
+	projectCanonicalArtifactFenced(ctx, preparedOutput.ref, outputPath);
+
+	// 6. Emit protocol block referencing the canonical path for compatibility.
 	const block = writeProtocolBlock("DONE", {
 		runId: ctx.runId,
 		orchestrator: ctx.config.name,
