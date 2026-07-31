@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { STATE_SCHEMA_VERSION } from "../constants";
 import {
 	InvalidConfigError,
+	LegacyLockMigrationBlockedError,
 	ProtocolError,
 	RunLockedError,
 	StateMigrationBlockedError,
@@ -570,6 +571,18 @@ async function runResumeMode<S extends object>(
 				runId,
 				orchestratorName: config.name,
 			});
+		}
+
+		// Guard: if a legacy .lock file exists, an old-process owner may
+		// still hold the run.  Creating a DB and acquiring SQLite ownership
+		// would allow two owners (legacy file-based + SQLite) to coexist.
+		// Fail-closed: block migration until the legacy lock is removed.
+		const legacyLockPath = path.join(runDir, ".lock");
+		if (fs.existsSync(legacyLockPath)) {
+			throw new LegacyLockMigrationBlockedError(
+				"Legacy ownership lock (.lock) exists; exclusive migration to SQLite cannot be established.",
+				{ runId, orchestratorName: config.name },
+			);
 		}
 
 		// Validate identity BEFORE creating the DB — a mismatched legacy
