@@ -407,8 +407,26 @@ async function runInitialMode<S extends object>(
 
 	if (initResult.kind !== "INITIALIZED") {
 		// Release ownership so the next attempt can acquire immediately.
-		releaseOwnership({ db: runDb.connection, handle });
+		const releaseResult = releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
+
+		if (
+			releaseResult.kind !== "SUCCESS" &&
+			releaseResult.kind !== "STALE_HANDLE"
+		) {
+			throw new ProtocolError(
+				`Failed to establish initial state: ${initResult.kind} (release also failed: ${releaseResult.kind})`,
+				{
+					runId,
+					orchestratorName: config.name,
+					cause:
+						releaseResult.kind === "DB_FAILURE"
+							? releaseResult.cause
+							: undefined,
+				},
+			);
+		}
+
 		throw new ProtocolError(
 			`Failed to establish initial state: ${initResult.kind}`,
 			{ runId, orchestratorName: config.name },
@@ -417,21 +435,31 @@ async function runInitialMode<S extends object>(
 
 	// Project state.json from the authoritative record (with correct
 	// runIncarnationId, stateRevision, committedFenceToken, and digest).
-	projectStateJson(
-		runDir,
-		initResult.committed.state,
-		initResult.committed.stateDigest,
-	);
+	// Wrap in try/catch — if projection fails after the state is already
+	// authoritative, we must release ownership before throwing.
+	try {
+		projectStateJson(
+			runDir,
+			initResult.committed.state,
+			initResult.committed.stateDigest,
+		);
 
-	logger.enableDiskEmit(path.join(runDir, "events.ndjson"));
+		logger.enableDiskEmit(path.join(runDir, "events.ndjson"));
 
-	logger.emit({
-		eventType: "orchestrator_start",
-		runId,
-		orchestratorName: config.name,
-		initialPhase: config.initial,
-		timestamp: nowIso,
-	});
+		logger.emit({
+			eventType: "orchestrator_start",
+			runId,
+			orchestratorName: config.name,
+			initialPhase: config.initial,
+			timestamp: nowIso,
+		});
+	} catch (projectionErr) {
+		// State is already committed in SQLite.  Release ownership so the
+		// next --resume can acquire immediately.
+		releaseOwnership({ db: runDb.connection, handle });
+		runDb.close();
+		throw projectionErr;
+	}
 
 	const abortController = new AbortController();
 	const ctx: DispatchContext<S> = {
