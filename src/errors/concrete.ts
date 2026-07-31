@@ -57,6 +57,10 @@ export class StateMigrationBlockedError extends OrchestratorError {
 	}
 }
 
+export class LegacyLockMigrationBlockedError extends OrchestratorError {
+	readonly kind = "legacy_lock_migration_blocked" as const;
+}
+
 export interface PersistenceFailureErrorOptions
 	extends OrchestratorErrorOptions {
 	readonly operation: AuthorityOperation;

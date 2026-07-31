@@ -17,6 +17,7 @@ export {
 	ExternalResolutionMissingError,
 	ExternalResolutionSchemaError,
 	InvalidConfigError,
+	LegacyLockMigrationBlockedError,
 	type MigrationBlockReason,
 	PersistenceFailureError,
 	type PersistenceFailureErrorOptions,
