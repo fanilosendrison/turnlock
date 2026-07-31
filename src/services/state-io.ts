@@ -584,7 +584,7 @@ function migrateV2ToV3(
  *
  *  Best-effort: if a manifest file is unreadable, migration leaves the
  *  old fields intact so that downstream code can handle the error. */
-function migrateV3ToV4(
+export function migrateV3ToV4(
 	parsed: Record<string, unknown>,
 	runDir: string,
 ): Record<string, unknown> {
@@ -597,18 +597,20 @@ function migrateV3ToV4(
 	if (migrated.pendingDelegation !== undefined) {
 		const pd = migrated.pendingDelegation as Record<string, unknown>;
 		if (pd.manifestPath !== undefined && pd.manifestArtifact === undefined) {
-			const manifestPath = path.join(runDir, String(pd.manifestPath));
-			try {
-				const bytes = fs.readFileSync(manifestPath);
-				const digest = contentDigest(bytes);
-				pd.manifestArtifact = buildArtifactRefFromBytes(
-					"delegation-manifest",
-					digest,
-					bytes,
-				);
-				delete pd.manifestPath;
-			} catch {
-				// Best-effort: leave old fields if manifest is unreadable.
+			const resolved = resolveManifestPath(runDir, String(pd.manifestPath));
+			if (resolved !== null) {
+				const bytes = tryReadManifestBytes(resolved);
+				if (bytes !== null) {
+					const digest = contentDigest(bytes);
+					const ref = buildArtifactRefFromBytes(
+						"delegation-manifest",
+						digest,
+						bytes,
+					);
+					installArtifactBlob(runDir, ref, bytes);
+					pd.manifestArtifact = ref;
+					delete pd.manifestPath;
+				}
 			}
 		}
 	}
@@ -617,34 +619,111 @@ function migrateV3ToV4(
 	if (migrated.pendingExternalRequest !== undefined) {
 		const per = migrated.pendingExternalRequest as Record<string, unknown>;
 		if (per.manifestPath !== undefined && per.manifestArtifact === undefined) {
-			const manifestPath = path.join(runDir, String(per.manifestPath));
-			try {
-				const bytes = fs.readFileSync(manifestPath);
-				const digest = contentDigest(bytes);
-				// Verify the stored digest if present
-				if (
-					per.manifestDigest !== undefined &&
-					String(per.manifestDigest) !== digest
-				) {
-					throw new StateCorruptedError(
-						"v3→v4 migration: external request manifest digest mismatch",
+			const resolved = resolveManifestPath(runDir, String(per.manifestPath));
+			if (resolved !== null) {
+				const bytes = tryReadManifestBytes(resolved);
+				if (bytes !== null) {
+					const digest = contentDigest(bytes);
+					// Verify the stored digest if present
+					if (
+						per.manifestDigest !== undefined &&
+						String(per.manifestDigest) !== digest
+					) {
+						throw new StateCorruptedError(
+							"v3→v4 migration: external request manifest digest mismatch",
+						);
+					}
+					const ref = buildArtifactRefFromBytes(
+						"external-request-manifest",
+						digest,
+						bytes,
 					);
+					installArtifactBlob(runDir, ref, bytes);
+					per.manifestArtifact = ref;
+					delete per.manifestPath;
+					delete per.manifestDigest;
 				}
-				per.manifestArtifact = buildArtifactRefFromBytes(
-					"external-request-manifest",
-					digest,
-					bytes,
-				);
-				delete per.manifestPath;
-				delete per.manifestDigest;
-			} catch (err) {
-				if (err instanceof StateCorruptedError) throw err;
-				// Best-effort: leave old fields if manifest is unreadable.
 			}
 		}
 	}
 
 	return migrated;
+}
+
+/** Resolve a manifest path that may be absolute (old code used
+ *  path.join(runDir, "delegations", ...) which produces absolute paths when
+ *  runDir is absolute) or relative.  Returns null if the path cannot be
+ *  resolved under the expected RUN_DIR (best-effort migration). */
+function resolveManifestPath(runDir: string, stored: string): string | null {
+	if (path.isAbsolute(stored)) {
+		// Old code: path.join(ctx.runDir, ...) with absolute runDir → absolute.
+		// Verify it's under the expected RUN_DIR.
+		const resolvedRunDir = path.resolve(runDir);
+		if (!stored.startsWith(resolvedRunDir + path.sep)) {
+			// Path outside expected RUN_DIR — cannot safely migrate.
+			return null;
+		}
+		return stored;
+	}
+	return path.join(runDir, stored);
+}
+
+/** Try to read manifest bytes; return null if the file doesn't exist. */
+function tryReadManifestBytes(filePath: string): Buffer | null {
+	try {
+		return fs.readFileSync(filePath);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw err;
+	}
+}
+
+/** Install artifact bytes as an immutable blob.  Uses the same atomic
+ *  create-if-absent protocol as installPreparedArtifact.  Idempotent. */
+function installArtifactBlob(
+	runDir: string,
+	ref: ArtifactRef,
+	bytes: Uint8Array,
+): void {
+	const targetPath = path.join(runDir, ref.relativePath);
+	const parentDir = path.dirname(targetPath);
+	fs.mkdirSync(parentDir, { recursive: true });
+
+	// Atomic hard-link publication.
+	const tmpPath = `${targetPath}.tmp-${process.pid}-migrate`;
+	const fd = fs.openSync(
+		tmpPath,
+		fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+		0o600,
+	);
+	try {
+		fs.writeFileSync(fd, bytes);
+		fs.fsyncSync(fd);
+	} finally {
+		fs.closeSync(fd);
+	}
+
+	try {
+		fs.linkSync(tmpPath, targetPath);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+			// Already installed — verify integrity.
+			const existing = fs.readFileSync(targetPath);
+			const existingDigest = contentDigest(existing);
+			if (existingDigest !== ref.digest || existing.length !== ref.sizeBytes) {
+				throw new StateCorruptedError(
+					"v3→v4 migration: blob collision with different content",
+				);
+			}
+		}
+		throw err;
+	} finally {
+		try {
+			fs.unlinkSync(tmpPath);
+		} catch {
+			// best-effort
+		}
+	}
 }
 
 /** Build an ArtifactRef from content bytes without performing I/O.

@@ -135,66 +135,14 @@ function migrateStateFileV3ToV4(
 	parsed: Record<string, unknown>,
 	runDir: string,
 ): Record<string, unknown> {
-	// eslint-disable-next-line @typescript-eslint/no-require-imports
-	const { contentDigest } = require("../services/content-digest") as {
-		contentDigest: (content: string | Uint8Array) => string;
+	// Delegate to the authoritative migration in services/state-io.
+	const { migrateV3ToV4 } = require("../services/state-io") as {
+		migrateV3ToV4: (
+			parsed: Record<string, unknown>,
+			runDir: string,
+		) => Record<string, unknown>;
 	};
-	const migrated: Record<string, unknown> = {
-		...parsed,
-		schemaVersion: STATE_SCHEMA_VERSION,
-	};
-
-	if (migrated.pendingDelegation !== undefined) {
-		const pd = migrated.pendingDelegation as Record<string, unknown>;
-		if (pd.manifestPath !== undefined && pd.manifestArtifact === undefined) {
-			const manifestPath = path.join(runDir, String(pd.manifestPath));
-			let bytes: Buffer;
-			try {
-				bytes = fs.readFileSync(manifestPath);
-			} catch {
-				// Legacy manifest missing — leave as-is; resume will fail cleanly.
-				return migrated;
-			}
-			const digest = contentDigest(bytes);
-			const hex = digest.slice(7);
-			pd.manifestArtifact = {
-				kind: "delegation-manifest",
-				digestAlgorithm: "sha256",
-				digest,
-				relativePath: `artifacts/sha256/${hex.slice(0, 2)}/${hex.slice(2)}.json`,
-				mediaType: "application/json",
-				sizeBytes: bytes.length,
-			};
-			delete pd.manifestPath;
-		}
-	}
-
-	if (migrated.pendingExternalRequest !== undefined) {
-		const per = migrated.pendingExternalRequest as Record<string, unknown>;
-		if (per.manifestPath !== undefined && per.manifestArtifact === undefined) {
-			const manifestPath = path.join(runDir, String(per.manifestPath));
-			let bytes: Buffer;
-			try {
-				bytes = fs.readFileSync(manifestPath);
-			} catch {
-				return migrated;
-			}
-			const digest = contentDigest(bytes);
-			const hex = digest.slice(7);
-			per.manifestArtifact = {
-				kind: "external-request-manifest",
-				digestAlgorithm: "sha256",
-				digest,
-				relativePath: `artifacts/sha256/${hex.slice(0, 2)}/${hex.slice(2)}.json`,
-				mediaType: "application/json",
-				sizeBytes: bytes.length,
-			};
-			delete per.manifestPath;
-			delete per.manifestDigest;
-		}
-	}
-
-	return migrated;
+	return migrateV3ToV4(parsed, runDir);
 }
 
 async function runInitialMode<S extends object>(
@@ -454,7 +402,17 @@ async function runResumeMode<S extends object>(
 	const state = stateRecordToStateFile(readResult.state, runDir);
 
 	// Always project state.json after resume so direct readers see current state.
-	projectStateJson(runDir, readResult.state, readResult.digest ?? "");
+	// Use the migrated state (which may have been converted from v3 to v4).
+	const projected: StateRecord<S> = {
+		...readResult.state,
+		schemaVersion: state.schemaVersion,
+		pendingDelegation: state.pendingDelegation,
+		pendingExternalRequest: state.pendingExternalRequest,
+		...(state.terminalResult !== undefined
+			? { terminalResult: state.terminalResult }
+			: {}),
+	};
+	projectStateJson(runDir, projected, readResult.digest ?? "");
 
 	if (state.runId !== runId) {
 		runDb.close();
