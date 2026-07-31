@@ -86,6 +86,7 @@ function migrateLegacyStateToSqlite<S extends object>(
 
 function stateRecordToStateFile<S extends object>(
 	record: StateRecord<S>,
+	runDir: string,
 ): StateFile<S> {
 	const base = {
 		schemaVersion: record.schemaVersion as typeof STATE_SCHEMA_VERSION,
@@ -110,7 +111,90 @@ function stateRecordToStateFile<S extends object>(
 		(result as unknown as Record<string, unknown>).pendingExternalRequest =
 			record.pendingExternalRequest;
 	}
+	if (record.terminalResult !== undefined) {
+		(result as unknown as Record<string, unknown>).terminalResult =
+			record.terminalResult;
+	}
+
+	// v3→v4 migration: if the SQLite state still uses the old manifestPath
+	// format, convert to manifestArtifact on the fly.
+	if (record.schemaVersion === 3) {
+		const migrated = migrateStateFileV3ToV4(
+			result as unknown as Record<string, unknown>,
+			runDir,
+		);
+		return migrated as unknown as StateFile<S>;
+	}
+
 	return result;
+}
+
+/** Inline migration for SQLite-based resume — converts v3 manifestPath to v4
+ *  manifestArtifact by reading the legacy manifest file from disk. */
+function migrateStateFileV3ToV4(
+	parsed: Record<string, unknown>,
+	runDir: string,
+): Record<string, unknown> {
+	// eslint-disable-next-line @typescript-eslint/no-require-imports
+	const { contentDigest } = require("../services/content-digest") as {
+		contentDigest: (content: string | Uint8Array) => string;
+	};
+	const migrated: Record<string, unknown> = {
+		...parsed,
+		schemaVersion: STATE_SCHEMA_VERSION,
+	};
+
+	if (migrated.pendingDelegation !== undefined) {
+		const pd = migrated.pendingDelegation as Record<string, unknown>;
+		if (pd.manifestPath !== undefined && pd.manifestArtifact === undefined) {
+			const manifestPath = path.join(runDir, String(pd.manifestPath));
+			let bytes: Buffer;
+			try {
+				bytes = fs.readFileSync(manifestPath);
+			} catch {
+				// Legacy manifest missing — leave as-is; resume will fail cleanly.
+				return migrated;
+			}
+			const digest = contentDigest(bytes);
+			const hex = digest.slice(7);
+			pd.manifestArtifact = {
+				kind: "delegation-manifest",
+				digestAlgorithm: "sha256",
+				digest,
+				relativePath: `artifacts/sha256/${hex.slice(0, 2)}/${hex.slice(2)}.json`,
+				mediaType: "application/json",
+				sizeBytes: bytes.length,
+			};
+			delete pd.manifestPath;
+		}
+	}
+
+	if (migrated.pendingExternalRequest !== undefined) {
+		const per = migrated.pendingExternalRequest as Record<string, unknown>;
+		if (per.manifestPath !== undefined && per.manifestArtifact === undefined) {
+			const manifestPath = path.join(runDir, String(per.manifestPath));
+			let bytes: Buffer;
+			try {
+				bytes = fs.readFileSync(manifestPath);
+			} catch {
+				return migrated;
+			}
+			const digest = contentDigest(bytes);
+			const hex = digest.slice(7);
+			per.manifestArtifact = {
+				kind: "external-request-manifest",
+				digestAlgorithm: "sha256",
+				digest,
+				relativePath: `artifacts/sha256/${hex.slice(0, 2)}/${hex.slice(2)}.json`,
+				mediaType: "application/json",
+				sizeBytes: bytes.length,
+			};
+			delete per.manifestPath;
+			delete per.manifestDigest;
+		}
+	}
+
+	return migrated;
 }
 
 async function runInitialMode<S extends object>(
@@ -130,6 +214,9 @@ async function runInitialMode<S extends object>(
 	fs.mkdirSync(path.join(runDir, "external-requests"), { recursive: true });
 	fs.mkdirSync(path.join(runDir, "external-results"), { recursive: true });
 	fs.mkdirSync(path.join(runDir, "accepted-external-resolutions"), {
+		recursive: true,
+	});
+	fs.mkdirSync(path.join(runDir, "artifacts", "sha256"), {
 		recursive: true,
 	});
 
@@ -364,7 +451,7 @@ async function runResumeMode<S extends object>(
 		});
 	}
 
-	const state = stateRecordToStateFile(readResult.state);
+	const state = stateRecordToStateFile(readResult.state, runDir);
 
 	// Always project state.json after resume so direct readers see current state.
 	projectStateJson(runDir, readResult.state, readResult.digest ?? "");
@@ -387,6 +474,9 @@ async function runResumeMode<S extends object>(
 	fs.mkdirSync(path.join(runDir, "external-requests"), { recursive: true });
 	fs.mkdirSync(path.join(runDir, "external-results"), { recursive: true });
 	fs.mkdirSync(path.join(runDir, "accepted-external-resolutions"), {
+		recursive: true,
+	});
+	fs.mkdirSync(path.join(runDir, "artifacts", "sha256"), {
 		recursive: true,
 	});
 

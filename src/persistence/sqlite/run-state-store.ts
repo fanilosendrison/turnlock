@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { TerminalDoneRecord } from "../../types/artifacts";
 import { DbIntegrityError } from "./errors";
 import { beginImmediate, commit, type LockHandle, rollback } from "./ownership";
 import type { SqliteConnection } from "./sqlite-driver";
@@ -34,6 +35,7 @@ export interface StateRecord<S extends object> {
 	readonly data: S;
 	readonly pendingDelegation?: unknown;
 	readonly pendingExternalRequest?: unknown;
+	readonly terminalResult?: TerminalDoneRecord;
 	readonly usedLabels: readonly string[];
 	// Authority metadata — only present when read from SQLite.
 	readonly runIncarnationId: string;
@@ -368,6 +370,9 @@ export function projectStateJson(
 	}
 	if (state.pendingExternalRequest !== undefined) {
 		projection.pendingExternalRequest = state.pendingExternalRequest;
+	}
+	if (state.terminalResult !== undefined) {
+		projection.terminalResult = state.terminalResult;
 	}
 
 	const json = JSON.stringify(projection);

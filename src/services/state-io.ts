@@ -10,16 +10,29 @@ import {
 	StateCorruptedError,
 	StateVersionMismatchError,
 } from "../errors/concrete";
-import { isContentDigest } from "./content-digest";
+import type { ArtifactRef, TerminalDoneRecord } from "../types/artifacts";
+import { contentDigest, isContentDigest } from "./content-digest";
 import { summarizeZodError } from "./validator";
 
+// ---------------------------------------------------------------------------
+// Schema version history
+// ---------------------------------------------------------------------------
+
 const LEGACY_STATE_SCHEMA_VERSION = 2 as const;
+const PREVIOUS_STATE_SCHEMA_VERSION = 3 as const;
+
+// ---------------------------------------------------------------------------
+// Types (v4 — current)
+// ---------------------------------------------------------------------------
 
 export interface PendingDelegationRecord {
 	readonly label: string;
 	readonly kind: "prompt" | "batch";
 	readonly resumeAt: string;
-	readonly manifestPath: string;
+	/** v4+: immutable blob reference. Required for new writes. */
+	readonly manifestArtifact?: ArtifactRef;
+	/** @deprecated v3 field — still accepted at runtime for migration. */
+	readonly manifestPath?: string;
 	readonly emittedAtEpochMs: number;
 	readonly deadlineAtEpochMs: number;
 	readonly attempt: number;
@@ -36,8 +49,12 @@ export interface PendingExternalRequestRecord {
 	readonly label: string;
 	readonly requestType: string;
 	readonly resumeAt: string;
-	readonly manifestPath: string;
-	readonly manifestDigest: string;
+	/** v4+: immutable blob reference. Required for new writes. */
+	readonly manifestArtifact?: ArtifactRef;
+	/** @deprecated v3 fields — still accepted at runtime for migration. */
+	readonly manifestPath?: string;
+	/** @deprecated v3 field — still accepted at runtime for migration. */
+	readonly manifestDigest?: string;
 	readonly resultPath: string;
 	readonly emittedAt: string;
 	readonly emittedAtEpochMs: number;
@@ -62,13 +79,65 @@ export interface StateFile<State> {
 	readonly data: State;
 	readonly pendingDelegation?: PendingDelegationRecord;
 	readonly pendingExternalRequest?: PendingExternalRequestRecord;
+	readonly terminalResult?: TerminalDoneRecord;
 	readonly usedLabels: readonly string[];
 }
 
 export interface StateSnapshot<State> {
 	readonly state: StateFile<State> | null;
-	readonly migratedFromVersion: typeof LEGACY_STATE_SCHEMA_VERSION | null;
+	readonly migratedFromVersion:
+		| typeof LEGACY_STATE_SCHEMA_VERSION
+		| typeof PREVIOUS_STATE_SCHEMA_VERSION
+		| null;
 }
+
+// ---------------------------------------------------------------------------
+// ArtifactRef helpers
+// ---------------------------------------------------------------------------
+
+function isArtifactRef(value: unknown): value is ArtifactRef {
+	if (typeof value !== "object" || value === null) return false;
+	const r = value as Record<string, unknown>;
+	return (
+		typeof r.kind === "string" &&
+		(r.kind === "terminal-output" ||
+			r.kind === "delegation-manifest" ||
+			r.kind === "external-request-manifest") &&
+		r.digestAlgorithm === "sha256" &&
+		isContentDigest(r.digest) &&
+		typeof r.relativePath === "string" &&
+		r.relativePath.length > 0 &&
+		r.mediaType === "application/json" &&
+		typeof r.sizeBytes === "number" &&
+		Number.isInteger(r.sizeBytes) &&
+		r.sizeBytes >= 0
+	);
+}
+
+function assertArtifactRef(value: unknown, field: string): ArtifactRef {
+	if (!isArtifactRef(value)) {
+		throw new StateCorruptedError(
+			`state.json field ${field} is not a valid ArtifactRef`,
+		);
+	}
+	return value;
+}
+
+function isTerminalDoneRecord(value: unknown): value is TerminalDoneRecord {
+	if (typeof value !== "object" || value === null) return false;
+	const r = value as Record<string, unknown>;
+	return (
+		r.kind === "done" &&
+		isArtifactRef(r.outputArtifact) &&
+		typeof r.completedAt === "string" &&
+		typeof r.completedAtEpochMs === "number" &&
+		Number.isFinite(r.completedAtEpochMs)
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function describeError(err: unknown): string {
 	if (err instanceof Error) return err.message.slice(0, 200);
@@ -101,7 +170,170 @@ function requireRecord(value: unknown, field: string): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
-function validatePendingDelegation(value: unknown): void {
+// ---------------------------------------------------------------------------
+// Validation (v4)
+// ---------------------------------------------------------------------------
+
+function validatePendingDelegationV4(value: unknown): void {
+	const pending = requireRecord(value, "pendingDelegation");
+	if (!isNonEmptyString(pending.label)) {
+		throw new StateCorruptedError("pendingDelegation.label invalid");
+	}
+	if (pending.kind !== "prompt" && pending.kind !== "batch") {
+		throw new StateCorruptedError("pendingDelegation.kind invalid");
+	}
+	// Accept both v4 (manifestArtifact) and v3-legacy (manifestPath) shapes.
+	const hasV4 = pending.manifestArtifact !== undefined;
+	const hasV3 = pending.manifestPath !== undefined;
+	if (!hasV4 && !hasV3) {
+		throw new StateCorruptedError(
+			"pendingDelegation must have manifestArtifact or manifestPath",
+		);
+	}
+	if (hasV4) {
+		assertArtifactRef(
+			pending.manifestArtifact,
+			"pendingDelegation.manifestArtifact",
+		);
+	} else if (
+		typeof pending.manifestPath !== "string" ||
+		pending.manifestPath.length === 0
+	) {
+		throw new StateCorruptedError("pendingDelegation.manifestPath invalid");
+	}
+	if (
+		!isNonEmptyString(pending.resumeAt) ||
+		!isNonNegativeNumber(pending.emittedAtEpochMs) ||
+		!isNonNegativeNumber(pending.deadlineAtEpochMs) ||
+		!Number.isInteger(pending.attempt) ||
+		!isNonNegativeNumber(pending.attempt)
+	) {
+		throw new StateCorruptedError("pendingDelegation fields invalid");
+	}
+	const policy = requireRecord(
+		pending.effectiveRetryPolicy,
+		"pendingDelegation.effectiveRetryPolicy",
+	);
+	if (
+		!isNonNegativeNumber(policy.maxAttempts) ||
+		!isNonNegativeNumber(policy.backoffBaseMs) ||
+		!isNonNegativeNumber(policy.maxBackoffMs)
+	) {
+		throw new StateCorruptedError(
+			"pendingDelegation.effectiveRetryPolicy invalid",
+		);
+	}
+	if (
+		pending.kind === "batch" &&
+		(!Array.isArray(pending.jobIds) ||
+			!pending.jobIds.every((jobId: unknown) => isNonEmptyString(jobId)))
+	) {
+		throw new StateCorruptedError("pendingDelegation.jobIds invalid");
+	}
+	if (
+		pending.jobIds !== undefined &&
+		(!Array.isArray(pending.jobIds) ||
+			!pending.jobIds.every((jobId: unknown) => isNonEmptyString(jobId)))
+	) {
+		throw new StateCorruptedError("pendingDelegation.jobIds invalid");
+	}
+}
+
+function validatePendingExternalRequestV4(
+	value: unknown,
+	runId: string,
+	usedLabels: readonly string[],
+): void {
+	const pending = requireRecord(value, "pendingExternalRequest");
+	if (
+		!isNonEmptyString(pending.requestId) ||
+		pending.requestId.length > MAX_EVENT_FIELD_LENGTH ||
+		!isNonEmptyString(pending.label) ||
+		pending.label.length > MAX_EXTERNAL_LABEL_LENGTH ||
+		!/^[a-z][a-z0-9-]*$/.test(pending.label) ||
+		!isNonEmptyString(pending.requestType) ||
+		pending.requestType.trim().length === 0 ||
+		pending.requestType.length > MAX_EVENT_FIELD_LENGTH ||
+		/[\u0000-\u001f\u007f]/.test(pending.requestType) ||
+		!isNonEmptyString(pending.resumeAt) ||
+		!isNonEmptyString(pending.resultPath) ||
+		!isNonEmptyString(pending.emittedAt) ||
+		!isNonNegativeNumber(pending.emittedAtEpochMs)
+	) {
+		throw new StateCorruptedError("pendingExternalRequest fields invalid");
+	}
+	// Accept both v4 (manifestArtifact) and v3-legacy (manifestPath + manifestDigest) shapes.
+	const hasV4 = pending.manifestArtifact !== undefined;
+	const hasV3 =
+		pending.manifestPath !== undefined && pending.manifestDigest !== undefined;
+	if (!hasV4 && !hasV3) {
+		throw new StateCorruptedError(
+			"pendingExternalRequest must have manifestArtifact or manifestPath+manifestDigest",
+		);
+	}
+	if (hasV4) {
+		assertArtifactRef(
+			pending.manifestArtifact,
+			"pendingExternalRequest.manifestArtifact",
+		);
+	} else {
+		if (
+			typeof pending.manifestPath !== "string" ||
+			pending.manifestPath.length === 0
+		) {
+			throw new StateCorruptedError(
+				"pendingExternalRequest.manifestPath invalid",
+			);
+		}
+		if (!isContentDigest(pending.manifestDigest)) {
+			throw new StateCorruptedError(
+				"pendingExternalRequest.manifestDigest invalid",
+			);
+		}
+	}
+
+	const acceptedFields = [
+		pending.acceptedResolutionPath,
+		pending.acceptedResolutionDigest,
+		pending.acceptedAt,
+	];
+	const acceptedFieldCount = acceptedFields.filter(
+		(value) => value !== undefined,
+	).length;
+	if (
+		acceptedFieldCount !== 0 &&
+		acceptedFieldCount !== acceptedFields.length
+	) {
+		throw new StateCorruptedError(
+			"pendingExternalRequest accepted resolution fields are incomplete",
+		);
+	}
+	if (
+		acceptedFieldCount === acceptedFields.length &&
+		(!isNonEmptyString(pending.acceptedResolutionPath) ||
+			!isContentDigest(pending.acceptedResolutionDigest) ||
+			!isIsoTimestamp(pending.acceptedAt))
+	) {
+		throw new StateCorruptedError(
+			"pendingExternalRequest accepted resolution fields are invalid",
+		);
+	}
+
+	if (pending.requestId !== `${runId}/${pending.label}`) {
+		throw new StateCorruptedError("pendingExternalRequest identity invalid");
+	}
+	if (!usedLabels.includes(pending.label)) {
+		throw new StateCorruptedError(
+			"pendingExternalRequest label missing from usedLabels",
+		);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Validation (v3 — backward-compatible reads)
+// ---------------------------------------------------------------------------
+
+function validatePendingDelegationV3(value: unknown): void {
 	const pending = requireRecord(value, "pendingDelegation");
 	if (!isNonEmptyString(pending.label)) {
 		throw new StateCorruptedError("pendingDelegation.label invalid");
@@ -148,7 +380,7 @@ function validatePendingDelegation(value: unknown): void {
 	}
 }
 
-function validatePendingExternalRequest(
+function validatePendingExternalRequestV3(
 	value: unknown,
 	runId: string,
 	usedLabels: readonly string[],
@@ -211,9 +443,13 @@ function validatePendingExternalRequest(
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Canonical shape validation
+// ---------------------------------------------------------------------------
+
 function validateCanonicalShape(
 	obj: Record<string, unknown>,
-	version: 2 | 3,
+	version: 2 | 3 | 4,
 ): void {
 	const required: Array<[string, (value: unknown) => boolean]> = [
 		["runId", isNonEmptyString],
@@ -259,20 +495,47 @@ function validateCanonicalShape(
 			"pendingExternalRequest is invalid in state schema v2",
 		);
 	}
-	if (version === 3 && hasDelegation && hasExternal) {
+	if (hasDelegation && hasExternal) {
 		throw new StateCorruptedError(
 			"pendingDelegation and pendingExternalRequest are mutually exclusive",
 		);
 	}
-	if (hasDelegation) validatePendingDelegation(obj.pendingDelegation);
-	if (version === 3 && hasExternal) {
-		validatePendingExternalRequest(
-			obj.pendingExternalRequest,
-			obj.runId as string,
-			obj.usedLabels as readonly string[],
-		);
+	if (hasDelegation) {
+		if (version <= 3) {
+			validatePendingDelegationV3(obj.pendingDelegation);
+		} else {
+			validatePendingDelegationV4(obj.pendingDelegation);
+		}
+	}
+	if (hasExternal) {
+		if (version <= 3) {
+			validatePendingExternalRequestV3(
+				obj.pendingExternalRequest,
+				obj.runId as string,
+				obj.usedLabels as readonly string[],
+			);
+		} else {
+			validatePendingExternalRequestV4(
+				obj.pendingExternalRequest,
+				obj.runId as string,
+				obj.usedLabels as readonly string[],
+			);
+		}
+	}
+
+	// v4: optional terminalResult
+	if (version >= 4 && obj.terminalResult !== undefined) {
+		if (!isTerminalDoneRecord(obj.terminalResult)) {
+			throw new StateCorruptedError(
+				"state.json terminalResult is not a valid TerminalDoneRecord",
+			);
+		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Parsing + migration
+// ---------------------------------------------------------------------------
 
 function parseStateFile(runDir: string): Record<string, unknown> | null {
 	const statePath = path.join(runDir, "state.json");
@@ -309,11 +572,104 @@ function migrateV2ToV3(
 ): Record<string, unknown> {
 	const migrated = {
 		...parsed,
-		schemaVersion: STATE_SCHEMA_VERSION,
+		schemaVersion: PREVIOUS_STATE_SCHEMA_VERSION,
 	};
 	Reflect.deleteProperty(migrated, "pendingExternalRequest");
 	return migrated;
 }
+
+/** Migrate a v3 state record to v4 by converting manifestPath/manifestDigest
+ *  fields to manifestArtifact.  Reads the old manifest file from disk to
+ *  compute the digest and derive the immutable blob path.
+ *
+ *  Best-effort: if a manifest file is unreadable, migration leaves the
+ *  old fields intact so that downstream code can handle the error. */
+function migrateV3ToV4(
+	parsed: Record<string, unknown>,
+	runDir: string,
+): Record<string, unknown> {
+	const migrated: Record<string, unknown> = {
+		...parsed,
+		schemaVersion: STATE_SCHEMA_VERSION,
+	};
+
+	// Convert pendingDelegation.manifestPath → manifestArtifact
+	if (migrated.pendingDelegation !== undefined) {
+		const pd = migrated.pendingDelegation as Record<string, unknown>;
+		if (pd.manifestPath !== undefined && pd.manifestArtifact === undefined) {
+			const manifestPath = path.join(runDir, String(pd.manifestPath));
+			try {
+				const bytes = fs.readFileSync(manifestPath);
+				const digest = contentDigest(bytes);
+				pd.manifestArtifact = buildArtifactRefFromBytes(
+					"delegation-manifest",
+					digest,
+					bytes,
+				);
+				delete pd.manifestPath;
+			} catch {
+				// Best-effort: leave old fields if manifest is unreadable.
+			}
+		}
+	}
+
+	// Convert pendingExternalRequest.manifestPath + manifestDigest → manifestArtifact
+	if (migrated.pendingExternalRequest !== undefined) {
+		const per = migrated.pendingExternalRequest as Record<string, unknown>;
+		if (per.manifestPath !== undefined && per.manifestArtifact === undefined) {
+			const manifestPath = path.join(runDir, String(per.manifestPath));
+			try {
+				const bytes = fs.readFileSync(manifestPath);
+				const digest = contentDigest(bytes);
+				// Verify the stored digest if present
+				if (
+					per.manifestDigest !== undefined &&
+					String(per.manifestDigest) !== digest
+				) {
+					throw new StateCorruptedError(
+						"v3→v4 migration: external request manifest digest mismatch",
+					);
+				}
+				per.manifestArtifact = buildArtifactRefFromBytes(
+					"external-request-manifest",
+					digest,
+					bytes,
+				);
+				delete per.manifestPath;
+				delete per.manifestDigest;
+			} catch (err) {
+				if (err instanceof StateCorruptedError) throw err;
+				// Best-effort: leave old fields if manifest is unreadable.
+			}
+		}
+	}
+
+	return migrated;
+}
+
+/** Build an ArtifactRef from content bytes without performing I/O.
+ *  The relativePath is derived from the digest. */
+function buildArtifactRefFromBytes(
+	kind: ArtifactRef["kind"],
+	digest: string,
+	bytes: Uint8Array,
+): ArtifactRef {
+	const hex = digest.slice(7); // strip "sha256:"
+	const prefix = hex.slice(0, 2);
+	const rest = hex.slice(2);
+	return {
+		kind,
+		digestAlgorithm: "sha256",
+		digest,
+		relativePath: `artifacts/sha256/${prefix}/${rest}.json`,
+		mediaType: "application/json",
+		sizeBytes: bytes.length,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 export function readStateSnapshot<S>(
 	runDir: string,
@@ -329,16 +685,23 @@ export function readStateSnapshot<S>(
 
 	const version = parsed.schemaVersion;
 	let current: Record<string, unknown>;
-	let migratedFromVersion: typeof LEGACY_STATE_SCHEMA_VERSION | null = null;
+	let migratedFromVersion: StateSnapshot<S>["migratedFromVersion"] = null;
+
 	if (version === LEGACY_STATE_SCHEMA_VERSION) {
 		validateCanonicalShape(parsed, LEGACY_STATE_SCHEMA_VERSION);
 		current = migrateV2ToV3(parsed);
+		// v2→v3→v4 chain migration
+		current = migrateV3ToV4(current, runDir);
 		migratedFromVersion = LEGACY_STATE_SCHEMA_VERSION;
+	} else if (version === PREVIOUS_STATE_SCHEMA_VERSION) {
+		validateCanonicalShape(parsed, PREVIOUS_STATE_SCHEMA_VERSION);
+		current = migrateV3ToV4(parsed, runDir);
+		migratedFromVersion = PREVIOUS_STATE_SCHEMA_VERSION;
 	} else if (version === STATE_SCHEMA_VERSION) {
 		current = parsed;
 	} else {
 		throw new StateVersionMismatchError(
-			`state.json schemaVersion mismatch: expected ${STATE_SCHEMA_VERSION} or ${LEGACY_STATE_SCHEMA_VERSION}, got ${String(version)}`,
+			`state.json schemaVersion mismatch: expected ${STATE_SCHEMA_VERSION}, ${PREVIOUS_STATE_SCHEMA_VERSION}, or ${LEGACY_STATE_SCHEMA_VERSION}, got ${String(version)}`,
 		);
 	}
 

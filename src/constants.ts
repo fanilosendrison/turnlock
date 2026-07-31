@@ -1,5 +1,5 @@
 export const PROTOCOL_VERSION = 3 as const;
-export const STATE_SCHEMA_VERSION = 3 as const;
+export const STATE_SCHEMA_VERSION = 4 as const;
 export const EXTERNAL_REQUEST_MANIFEST_VERSION = 1 as const;
 
 export const MAX_EVENT_FIELD_LENGTH = 200;
