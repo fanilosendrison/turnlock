@@ -232,9 +232,20 @@ describe("[GREEN-L1] " + "OrchestratorErrorKind fermé (C-GL-12..13)", () => {
 				}),
 		],
 		["artifact_integrity", () => new publicApi.ArtifactIntegrityError("x")],
+		[
+			"state_migration_blocked",
+			() =>
+				new publicApi.StateMigrationBlockedError("x", {
+					reason: "MANIFEST_MISSING",
+				}),
+		],
+		[
+			"legacy_lock_migration_blocked",
+			() => new publicApi.LegacyLockMigrationBlockedError("x"),
+		],
 	] as const;
-	test("C-GL-12 | 18 kind values", () => {
-		expect(errorCases).toHaveLength(18);
+	test("C-GL-12 | 20 kind values", () => {
+		expect(errorCases).toHaveLength(20);
 	});
 	test("C-GL-13 | each kind ↔ class mapping", () => {
 		for (const [kind, buildError] of errorCases) {
