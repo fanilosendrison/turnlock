@@ -139,19 +139,29 @@ function stateRecordToStateFile<S extends object>(
 }
 
 /** Inline migration for SQLite-based resume — converts v3 manifestPath to v4
- *  manifestArtifact by reading the legacy manifest file from disk. */
+ *  manifestArtifact by reading the legacy manifest file from disk.
+ *  This is a defensive fallback; the primary migration happens before
+ *  stateRecordToStateFile is called.  Returns the migrated state or
+ *  the original if migration is blocked (caller must handle). */
 function migrateStateFileV3ToV4(
 	parsed: Record<string, unknown>,
 	runDir: string,
 ): Record<string, unknown> {
-	// Delegate to the authoritative migration in services/state-io.
-	const { migrateV3ToV4 } = require("../services/state-io") as {
-		migrateV3ToV4: (
-			parsed: Record<string, unknown>,
-			runDir: string,
-		) => Record<string, unknown>;
-	};
-	return migrateV3ToV4(parsed, runDir);
+	try {
+		const { migrateV3ToV4 } = require("../services/state-io") as {
+			migrateV3ToV4: typeof import("../services/state-io").migrateV3ToV4;
+		};
+		const result = migrateV3ToV4(parsed, runDir);
+		if (result.kind === "MIGRATED") {
+			return result.state;
+		}
+		// Migration blocked — return as-is; the caller already has a v3 state
+		// and the primary path would have thrown before reaching here.
+		return parsed;
+	} catch {
+		// Best-effort fallback — return the original parsed state.
+		return parsed;
+	}
 }
 
 async function runInitialMode<S extends object>(
@@ -339,25 +349,32 @@ async function runResumeMode<S extends object>(
 
 	if (!dbExists) {
 		// Legacy migration path: state.json exists but no SQLite DB.
-		const snapshot = readStateSnapshot<S>(runDir, config.stateSchema);
+		// readStateSnapshot now throws StateMigrationBlockedError with the
+		// specific reason when v3→v4 migration cannot complete.
+		let snapshot: ReturnType<typeof readStateSnapshot<S>>;
+		try {
+			snapshot = readStateSnapshot<S>(runDir, config.stateSchema);
+		} catch (err) {
+			if (err instanceof StateMigrationBlockedError) {
+				throw new StateMigrationBlockedError(
+					`v3→v4 migration incomplete — cannot create authoritative SQLite DB: ${err.message}`,
+					{
+						reason: err.reason,
+						runId,
+						orchestratorName: config.name,
+					},
+				);
+			}
+			throw err;
+		}
 		if (snapshot.state === null) {
 			throw new StateMissingError("state.json missing at RUN_DIR", {
 				runId,
 				orchestratorName: config.name,
 			});
 		}
-		// If the state is still v3 after migration, we cannot create a
-		// SQLite DB from an incomplete v4 state.
-		if (snapshot.state.schemaVersion !== STATE_SCHEMA_VERSION) {
-			throw new StateMigrationBlockedError(
-				"v3→v4 migration incomplete — cannot create authoritative SQLite DB from partial v4 state",
-				{
-					reason: "MANIFEST_MISSING",
-					runId,
-					orchestratorName: config.name,
-				},
-			);
-		}
+		// snapshot.state.schemaVersion is guaranteed to be STATE_SCHEMA_VERSION
+		// because readStateSnapshot now throws on blocked migration.
 		migrateLegacyStateToSqlite(runDir, runId, snapshot.state);
 	}
 
@@ -420,19 +437,22 @@ async function runResumeMode<S extends object>(
 		});
 	}
 
-	// Attempt v3→v4 migration.  migrateV3ToV4 is all-or-nothing: it only
-	// bumps schemaVersion to 4 if every legacy field was converted.
+	// Attempt v3→v4 migration via migrateV3ToV4.  The migration is
+	// all-or-nothing: if any legacy manifest cannot be converted, the
+	// result includes the blocking reason.  A v3 state with no legacy
+	// fields at all is a successful no-op migration.
 	let authoritativeRecord = readResult.state;
 	let authoritativeDigest = readResult.digest;
 
 	if (readResult.state.schemaVersion === 3) {
-		const maybeMigrated = migrateV3ToV4(
+		const migrationResult = migrateV3ToV4(
 			readResult.state as unknown as Record<string, unknown>,
 			runDir,
 		);
 
-		if (maybeMigrated.schemaVersion === STATE_SCHEMA_VERSION) {
-			// All legacy fields were converted — commit the v4 state.
+		if (migrationResult.kind === "MIGRATED") {
+			const maybeMigrated = migrationResult.state;
+			// All legacy fields were converted (or none existed) — commit the v4 state.
 			const migratedRecord: StateRecord<S> = {
 				...readResult.state,
 				schemaVersion: STATE_SCHEMA_VERSION,
@@ -470,16 +490,41 @@ async function runResumeMode<S extends object>(
 			authoritativeRecord = commitResult.committed.state as StateRecord<S>;
 			authoritativeDigest = commitResult.committed.stateDigest;
 		} else {
-			// Migration incomplete — state stays v3.  This is fatal:
+			// Migration blocked — state stays v3.  This is fatal:
 			// we cannot resume with a v3 state that cannot be migrated.
 			// Release ownership before closing so the next attempt
 			// can acquire immediately.
-			releaseOwnership({ db: runDb.connection, handle });
+			const releaseResult = releaseOwnership({
+				db: runDb.connection,
+				handle,
+			});
 			runDb.close();
+
+			// STALE_HANDLE is acceptable: another owner has already
+			// replaced this handle, so the ownership row is free.
+			// DB_FAILURE means we could not release — report it.
+			if (
+				releaseResult.kind !== "SUCCESS" &&
+				releaseResult.kind !== "STALE_HANDLE"
+			) {
+				throw new StateMigrationBlockedError(
+					`v3→v4 migration blocked: legacy manifest cannot be converted (release failed: ${releaseResult.kind})`,
+					{
+						reason: migrationResult.reason,
+						cause:
+							releaseResult.kind === "DB_FAILURE"
+								? releaseResult.cause
+								: undefined,
+						runId,
+						orchestratorName: config.name,
+					},
+				);
+			}
+
 			throw new StateMigrationBlockedError(
 				"v3→v4 migration blocked: legacy manifest cannot be converted",
 				{
-					reason: "MANIFEST_MISSING",
+					reason: migrationResult.reason,
 					runId,
 					orchestratorName: config.name,
 				},

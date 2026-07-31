@@ -7,7 +7,9 @@ import {
 	STATE_SCHEMA_VERSION,
 } from "../constants";
 import {
+	type MigrationBlockReason,
 	StateCorruptedError,
+	StateMigrationBlockedError,
 	StateVersionMismatchError,
 } from "../errors/concrete";
 import type { ArtifactRef, TerminalDoneRecord } from "../types/artifacts";
@@ -591,47 +593,72 @@ function migrateV2ToV3(
 	return migrated;
 }
 
+// ---------------------------------------------------------------------------
+// Migration result type (v3 → v4)
+// ---------------------------------------------------------------------------
+
+export type MigrationResult =
+	| {
+			readonly kind: "MIGRATED";
+			readonly state: Record<string, unknown>;
+	  }
+	| {
+			readonly kind: "BLOCKED";
+			readonly reason: MigrationBlockReason;
+			readonly path?: string;
+			readonly cause?: unknown;
+	  };
+
 /** Migrate a v3 state record to v4 by converting manifestPath/manifestDigest
  *  fields to manifestArtifact.  Reads the old manifest file from disk to
  *  compute the digest and derive the immutable blob path.
  *
  *  All-or-nothing: if any legacy manifest cannot be fully converted, the
- *  schema version stays at 3 and old fields remain intact.  Callers must
- *  check schemaVersion to determine whether migration succeeded. */
+ *  schema version stays at 3 and the result includes the blocking reason.
+ *  A v3 state without any legacy fields is a successful no-op migration. */
 export function migrateV3ToV4(
 	parsed: Record<string, unknown>,
 	runDir: string,
-): Record<string, unknown> {
+): MigrationResult {
 	const migrated: Record<string, unknown> = {
 		...parsed,
 	};
 
 	let allConverted = true;
-	let hasAnyLegacy = false;
+	let blockReason: MigrationBlockReason | null = null;
+	let blockPath: string | undefined;
 
 	// Convert pendingDelegation.manifestPath → manifestArtifact
 	if (migrated.pendingDelegation !== undefined) {
 		const pd = migrated.pendingDelegation as Record<string, unknown>;
 		if (pd.manifestPath !== undefined && pd.manifestArtifact === undefined) {
-			hasAnyLegacy = true;
-			const resolved = resolveManifestPath(runDir, String(pd.manifestPath));
-			if (resolved !== null) {
-				const bytes = tryReadManifestBytes(resolved);
-				if (bytes !== null) {
-					const digest = contentDigest(bytes);
+			const rawPath = String(pd.manifestPath);
+			const resolved = resolveManifestPath(runDir, rawPath);
+			if (resolved === null) {
+				allConverted = false;
+				if (blockReason === null) {
+					blockReason = "MANIFEST_OUTSIDE_RUN_DIR";
+					blockPath = rawPath;
+				}
+			} else {
+				const readResult = tryReadManifestBytesWithReason(resolved);
+				if (readResult.kind === "OK") {
+					const digest = contentDigest(readResult.bytes);
 					const ref = buildArtifactRefFromBytes(
 						"delegation-manifest",
 						digest,
-						bytes,
+						readResult.bytes,
 					);
-					installArtifactBlob(runDir, ref, bytes);
+					installArtifactBlob(runDir, ref, readResult.bytes);
 					pd.manifestArtifact = ref;
 					delete pd.manifestPath;
 				} else {
 					allConverted = false;
+					if (blockReason === null) {
+						blockReason = readResult.reason;
+						blockPath = resolved;
+					}
 				}
-			} else {
-				allConverted = false;
 			}
 		}
 	}
@@ -640,45 +667,66 @@ export function migrateV3ToV4(
 	if (migrated.pendingExternalRequest !== undefined) {
 		const per = migrated.pendingExternalRequest as Record<string, unknown>;
 		if (per.manifestPath !== undefined && per.manifestArtifact === undefined) {
-			hasAnyLegacy = true;
-			const resolved = resolveManifestPath(runDir, String(per.manifestPath));
-			if (resolved !== null) {
-				const bytes = tryReadManifestBytes(resolved);
-				if (bytes !== null) {
-					const digest = contentDigest(bytes);
+			const rawPath = String(per.manifestPath);
+			const resolved = resolveManifestPath(runDir, rawPath);
+			if (resolved === null) {
+				allConverted = false;
+				if (blockReason === null) {
+					blockReason = "MANIFEST_OUTSIDE_RUN_DIR";
+					blockPath = rawPath;
+				}
+			} else {
+				const readResult = tryReadManifestBytesWithReason(resolved);
+				if (readResult.kind === "OK") {
+					const digest = contentDigest(readResult.bytes);
 					// Verify the stored digest if present
 					if (
 						per.manifestDigest !== undefined &&
 						String(per.manifestDigest) !== digest
 					) {
-						throw new StateCorruptedError(
-							"v3→v4 migration: external request manifest digest mismatch",
+						allConverted = false;
+						if (blockReason === null) {
+							blockReason = "MANIFEST_DIGEST_MISMATCH";
+							blockPath = resolved;
+						}
+					} else {
+						const ref = buildArtifactRefFromBytes(
+							"external-request-manifest",
+							digest,
+							readResult.bytes,
 						);
+						installArtifactBlob(runDir, ref, readResult.bytes);
+						per.manifestArtifact = ref;
+						delete per.manifestPath;
+						delete per.manifestDigest;
 					}
-					const ref = buildArtifactRefFromBytes(
-						"external-request-manifest",
-						digest,
-						bytes,
-					);
-					installArtifactBlob(runDir, ref, bytes);
-					per.manifestArtifact = ref;
-					delete per.manifestPath;
-					delete per.manifestDigest;
 				} else {
 					allConverted = false;
+					if (blockReason === null) {
+						blockReason = readResult.reason;
+						blockPath = resolved;
+					}
 				}
-			} else {
-				allConverted = false;
 			}
 		}
 	}
 
-	// Only bump the version if all legacy fields were successfully converted.
-	if (hasAnyLegacy && allConverted) {
+	// A no-op v3 (no legacy fields at all) is a successful migration.
+	if (allConverted) {
 		migrated.schemaVersion = STATE_SCHEMA_VERSION;
+		return { kind: "MIGRATED", state: migrated };
 	}
 
-	return migrated;
+	return blockPath !== undefined
+		? {
+				kind: "BLOCKED" as const,
+				reason: blockReason ?? "MANIFEST_MISSING",
+				path: blockPath,
+			}
+		: {
+				kind: "BLOCKED" as const,
+				reason: blockReason ?? "MANIFEST_MISSING",
+			};
 }
 
 /** Resolve a manifest path that may be absolute (old code used
@@ -708,15 +756,30 @@ function resolveManifestPath(runDir: string, stored: string): string | null {
 	return candidate;
 }
 
-/** Try to read manifest bytes; return null if the file doesn't exist or is
- *  a symlink.  Symlinks are rejected for migration safety. */
-function tryReadManifestBytes(filePath: string): Buffer | null {
+// ---------------------------------------------------------------------------
+// Manifest byte reading with reason discrimination
+// ---------------------------------------------------------------------------
+
+type ManifestReadResult =
+	| { readonly kind: "OK"; readonly bytes: Buffer }
+	| { readonly kind: "MISSING"; readonly reason: MigrationBlockReason };
+
+/** Try to read manifest bytes, discriminating between ENOENT, symlinks, and
+ *  non-regular files.  Symlinks are rejected for migration safety. */
+function tryReadManifestBytesWithReason(filePath: string): ManifestReadResult {
 	try {
 		const stat = fs.lstatSync(filePath);
-		if (!stat.isFile()) return null; // reject symlinks, directories, etc.
-		return fs.readFileSync(filePath);
+		if (stat.isSymbolicLink()) {
+			return { kind: "MISSING", reason: "MANIFEST_SYMLINK" };
+		}
+		if (!stat.isFile()) {
+			return { kind: "MISSING", reason: "MANIFEST_NOT_REGULAR" };
+		}
+		return { kind: "OK", bytes: fs.readFileSync(filePath) };
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+			return { kind: "MISSING", reason: "MANIFEST_MISSING" };
+		}
 		throw err;
 	}
 }
@@ -774,13 +837,34 @@ export function readStateSnapshot<S>(
 	if (version === LEGACY_STATE_SCHEMA_VERSION) {
 		validateCanonicalShape(parsed, LEGACY_STATE_SCHEMA_VERSION);
 		current = migrateV2ToV3(parsed);
-		// v2→v3→v4 chain migration — migrateV3ToV4 only bumps the
-		// version if conversion succeeded.  Callers must check.
-		current = migrateV3ToV4(current, runDir);
+		// v2→v3→v4 chain migration
+		const migrationResult = migrateV3ToV4(current, runDir);
+		if (migrationResult.kind === "BLOCKED") {
+			throw new StateMigrationBlockedError(
+				"v2→v4 migration blocked: legacy manifest cannot be converted",
+				{
+					reason: migrationResult.reason,
+					runId: parsed.runId as string,
+					orchestratorName: parsed.orchestratorName as string,
+				},
+			);
+		}
+		current = migrationResult.state;
 		migratedFromVersion = LEGACY_STATE_SCHEMA_VERSION;
 	} else if (version === PREVIOUS_STATE_SCHEMA_VERSION) {
 		validateCanonicalShape(parsed, PREVIOUS_STATE_SCHEMA_VERSION);
-		current = migrateV3ToV4(parsed, runDir);
+		const migrationResult = migrateV3ToV4(parsed, runDir);
+		if (migrationResult.kind === "BLOCKED") {
+			throw new StateMigrationBlockedError(
+				"v3→v4 migration blocked: legacy manifest cannot be converted",
+				{
+					reason: migrationResult.reason,
+					runId: parsed.runId as string,
+					orchestratorName: parsed.orchestratorName as string,
+				},
+			);
+		}
+		current = migrationResult.state;
 		migratedFromVersion = PREVIOUS_STATE_SCHEMA_VERSION;
 	} else if (version === STATE_SCHEMA_VERSION) {
 		current = parsed;
@@ -790,7 +874,8 @@ export function readStateSnapshot<S>(
 		);
 	}
 
-	validateCanonicalShape(current, current.schemaVersion as 2 | 3 | 4);
+	// After migration, current.schemaVersion is always STATE_SCHEMA_VERSION.
+	validateCanonicalShape(current, STATE_SCHEMA_VERSION);
 
 	if (schema !== undefined) {
 		const result = schema.safeParse(current.data);
