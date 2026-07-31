@@ -808,6 +808,7 @@ async function runResumeMode<S extends object>(
 			});
 
 			if (commitResult.kind !== "COMMITTED") {
+				releaseOwnership({ db: runDb.connection, handle });
 				runDb.close();
 				throw new ProtocolError(
 					`v3→v4 migration commit failed: ${commitResult.kind}`,
