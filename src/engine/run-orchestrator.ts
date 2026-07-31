@@ -126,14 +126,17 @@ function seedLegacyStateToSqlite<S extends object>(
 
 		// Use the fenced initialization primitive so the initial state
 		// is only established if the caller still holds a valid lease.
-		// committed_at will be the current wall-clock time (bootstrap
-		// moment), not the legacy lastTransitionAt.
+		// Re-read the clock *now* — the lease was checked at acquisition
+		// time, and the process may have been suspended since then.
+		const initNowEpochMs = clock.nowEpochMs();
+		const initNowIso = clock.nowWallIso();
+
 		const initResult = initializeStateUnderFence({
 			db: runDb.connection,
 			handle,
 			initialState: state as unknown as Record<string, unknown>,
-			nowEpochMs: ownershipNowEpochMs,
-			nowIso: ownershipNowIso,
+			nowEpochMs: initNowEpochMs,
+			nowIso: initNowIso,
 		});
 
 		if (initResult.kind === "STALE_HANDLE") {
@@ -159,10 +162,10 @@ function seedLegacyStateToSqlite<S extends object>(
 			);
 		}
 		if (initResult.kind === "ALREADY_INITIALIZED") {
-			throw new StateMissingError(
-				"State row already exists in DB — cannot seed from legacy state.json",
-				{ runId, orchestratorName: state.orchestratorName },
-			);
+			// Another process completed the bootstrap between our pre-read
+			// and this call.  The state is now authoritative — fall through
+			// to return the open connection.  The caller will re-read the
+			// authoritative state.
 		}
 
 		// Do NOT project state.json here.  The caller re-reads the
@@ -389,15 +392,22 @@ async function runInitialMode<S extends object>(
 	};
 
 	// Establish the initial authoritative state under the current fence.
+	// Re-read the clock *now* — the process may have been suspended
+	// between acquisition and this call.
+	const initNowEpochMs = clock.nowEpochMs();
+	const initNowIso = clock.nowWallIso();
+
 	const initResult = initializeStateUnderFence({
 		db: runDb.connection,
 		handle,
 		initialState: initialState as unknown as Record<string, unknown>,
-		nowEpochMs: nowEpoch,
-		nowIso,
+		nowEpochMs: initNowEpochMs,
+		nowIso: initNowIso,
 	});
 
 	if (initResult.kind !== "INITIALIZED") {
+		// Release ownership so the next attempt can acquire immediately.
+		releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
 		throw new ProtocolError(
 			`Failed to establish initial state: ${initResult.kind}`,
