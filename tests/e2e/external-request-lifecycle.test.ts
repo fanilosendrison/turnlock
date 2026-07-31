@@ -142,7 +142,9 @@ describe("external request lifecycle", () => {
 				emittedAtEpochMs: manifest.emittedAtEpochMs,
 			});
 			expect(state.pendingExternalRequest?.manifestArtifact).toBeDefined();
-			expect(state.pendingExternalRequest?.manifestArtifact?.kind).toBe("external-request-manifest");
+			expect(state.pendingExternalRequest?.manifestArtifact?.kind).toBe(
+				"external-request-manifest",
+			);
 			expect(state).not.toHaveProperty("pendingDelegation");
 			expect(state.lastTransitionAt).toBe(manifest.emittedAt);
 			expect(state.lastTransitionAtEpochMs).toBe(manifest.emittedAtEpochMs);

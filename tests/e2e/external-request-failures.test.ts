@@ -404,9 +404,10 @@ describe("external request manifest identity", () => {
 			const blobPath = join(runDir, artifactRef.relativePath);
 
 			// Tamper with the immutable blob, not the canonical projection.
-			const blob = JSON.parse(
-				readFileSync(blobPath, "utf-8"),
-			) as Record<string, unknown>;
+			const blob = JSON.parse(readFileSync(blobPath, "utf-8")) as Record<
+				string,
+				unknown
+			>;
 			writeFileSync(blobPath, JSON.stringify(mutate(blob)));
 
 			const resumed = await workspace.runEntrypoint(entrypoint, [
@@ -477,9 +478,10 @@ describe("external request manifest identity", () => {
 				throw new Error("manifestArtifact missing from state");
 			}
 			const blobPath = join(runDir, artifactRef.relativePath);
-			const manifest = JSON.parse(
-				readFileSync(blobPath, "utf-8"),
-			) as Record<string, unknown>;
+			const manifest = JSON.parse(readFileSync(blobPath, "utf-8")) as Record<
+				string,
+				unknown
+			>;
 			writeFileSync(
 				blobPath,
 				JSON.stringify({ ...manifest, orchestratorName: "other-orchestrator" }),

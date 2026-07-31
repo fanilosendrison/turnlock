@@ -201,13 +201,11 @@ await runOrchestrator<State>({
 				/* manifestArtifact checked separately below */
 			});
 			// The immutable blob must exist even if the canonical projection doesn't.
-		const artifactRef = committed.pendingExternalRequest?.manifestArtifact;
-		expect(artifactRef).toBeDefined();
-		if (artifactRef?.relativePath) {
-			expect(
-				existsSync(join(runDir, artifactRef.relativePath)),
-			).toBe(true);
-		}
+			const artifactRef = committed.pendingExternalRequest?.manifestArtifact;
+			expect(artifactRef).toBeDefined();
+			if (artifactRef?.relativePath) {
+				expect(existsSync(join(runDir, artifactRef.relativePath))).toBe(true);
+			}
 
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",

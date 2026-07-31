@@ -19,7 +19,9 @@ export function testArtifactRef(
 	kind: ArtifactRef["kind"],
 	digest?: string,
 ): ArtifactRef {
-	const d = digest ?? "sha256:0000000000000000000000000000000000000000000000000000000000000001";
+	const d =
+		digest ??
+		"sha256:0000000000000000000000000000000000000000000000000000000000000001";
 	const hex = d.slice(7);
 	return {
 		kind,

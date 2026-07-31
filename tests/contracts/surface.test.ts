@@ -231,10 +231,7 @@ describe("[GREEN-L1] " + "OrchestratorErrorKind fermé (C-GL-12..13)", () => {
 					operation: "state_commit",
 				}),
 		],
-		[
-			"artifact_integrity",
-			() => new publicApi.ArtifactIntegrityError("x"),
-		],
+		["artifact_integrity", () => new publicApi.ArtifactIntegrityError("x")],
 	] as const;
 	test("C-GL-12 | 18 kind values", () => {
 		expect(errorCases).toHaveLength(18);
