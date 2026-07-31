@@ -321,30 +321,14 @@ export function initializeStateUnderFence(
 		}
 
 		// Insert returned no row.  Diagnose why.
+		//
+		// CRITICAL: check ownership BEFORE checking whether run_state
+		// exists.  A stale or expired handle must not be reported as
+		// ALREADY_INITIALIZED — the caller would continue with a handle
+		// it no longer owns.
 		rollback(db);
 
-		// Check if the state row already exists.
-		const existing = db
-			.prepare("SELECT 1 FROM run_state WHERE singleton = 1")
-			.get();
-		if (existing !== undefined) {
-			const read = readAuthoritativeState(db);
-			if (read.state !== null) {
-				return {
-					kind: "ALREADY_INITIALIZED",
-					state: read.state,
-					digest: read.digest ?? "",
-				};
-			}
-			return {
-				kind: "DB_FAILURE",
-				cause: new DbIntegrityError(
-					"run_state row exists but could not be read",
-				),
-			};
-		}
-
-		// State row does not exist — the ownership check must have failed.
+		// Read ownership first.
 		const ownershipRow = db
 			.prepare(
 				`SELECT ownership_status, owner_token, fence_token,
@@ -388,6 +372,29 @@ export function initializeStateUnderFence(
 			return { kind: "EXPIRED_HANDLE" };
 		}
 
+		// Ownership is still valid.  Now check whether run_state exists.
+		const existing = db
+			.prepare("SELECT 1 FROM run_state WHERE singleton = 1")
+			.get();
+		if (existing !== undefined) {
+			const read = readAuthoritativeState(db);
+			if (read.state !== null) {
+				return {
+					kind: "ALREADY_INITIALIZED",
+					state: read.state,
+					digest: read.digest ?? "",
+				};
+			}
+			return {
+				kind: "DB_FAILURE",
+				cause: new DbIntegrityError(
+					"run_state row exists but could not be read",
+				),
+			};
+		}
+
+		// Ownership valid, no state row — the INSERT condition failed
+		// for an unknown reason (should not happen since ownership matches).
 		return {
 			kind: "DB_FAILURE",
 			cause: new DbIntegrityError("initialize state failed for unknown reason"),
