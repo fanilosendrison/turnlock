@@ -790,10 +790,7 @@ export function readStateSnapshot<S>(
 		);
 	}
 
-	validateCanonicalShape(
-		current,
-		current.schemaVersion as 2 | 3 | 4,
-	);
+	validateCanonicalShape(current, current.schemaVersion as 2 | 3 | 4);
 
 	if (schema !== undefined) {
 		const result = schema.safeParse(current.data);

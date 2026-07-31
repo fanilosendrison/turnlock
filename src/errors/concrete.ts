@@ -48,7 +48,9 @@ export class StateMigrationBlockedError extends OrchestratorError {
 
 	constructor(
 		message: string,
-		options: OrchestratorErrorOptions & { readonly reason: MigrationBlockReason },
+		options: OrchestratorErrorOptions & {
+			readonly reason: MigrationBlockReason;
+		},
 	) {
 		super(message, options);
 		this.reason = options.reason;
