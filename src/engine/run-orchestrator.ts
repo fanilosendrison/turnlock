@@ -46,11 +46,20 @@ import { installSignalHandlers } from "./signal-handlers";
 
 const DB_FILENAME = "turnlock.sqlite3";
 
-function migrateLegacyStateToSqlite<S extends object>(
+/** Seed a freshly created SQLite DB from a legacy state.json snapshot.
+ *
+ *  Opens the DB, acquires ownership, writes the initial state row, and
+ *  projects state.json — but does NOT close the connection.  The caller
+ *  receives the open runDb and active handle to continue the resume flow
+ *  without a second open/acquire cycle (which would self-lock). */
+function seedLegacyStateToSqlite<S extends object>(
 	runDir: string,
 	runId: string,
 	state: StateFile<S>,
-): void {
+): {
+	runDb: ReturnType<typeof openRunDatabase>;
+	handle: import("../persistence/sqlite/ownership").LockHandle;
+} {
 	const dbPath = path.join(runDir, DB_FILENAME);
 	const runDb = openRunDatabase({
 		driver: bunSqliteDriver,
@@ -58,8 +67,9 @@ function migrateLegacyStateToSqlite<S extends object>(
 		busyTimeoutMs: 2000,
 	});
 
+	let handle: import("../persistence/sqlite/ownership").LockHandle;
+
 	try {
-		// Acquire ownership to seed the initial state row.
 		const acquireResult = acquireOwnership({
 			db: runDb.connection,
 			runId,
@@ -71,15 +81,18 @@ function migrateLegacyStateToSqlite<S extends object>(
 		});
 
 		if (acquireResult.kind !== "ACQUIRED") {
+			runDb.close();
 			throw new StateMissingError(
 				`Failed to acquire ownership during legacy migration: ${acquireResult.kind}`,
 				{ runId, orchestratorName: state.orchestratorName },
 			);
 		}
 
+		handle = acquireResult.handle;
+
 		ensureInitialStateRow(
 			runDb.connection,
-			acquireResult.handle.incarnationId,
+			handle.incarnationId,
 			state.schemaVersion,
 			JSON.stringify(state),
 			state.lastTransitionAtEpochMs,
@@ -88,8 +101,12 @@ function migrateLegacyStateToSqlite<S extends object>(
 
 		// Project state.json for readers that haven't switched to SQLite.
 		projectStateJson(runDir, state as unknown as StateRecord<S>, "");
-	} finally {
+
+		return { runDb, handle };
+	} catch (err) {
+		// If anything fails after the DB was opened, close it.
 		runDb.close();
+		throw err;
 	}
 }
 
@@ -347,6 +364,9 @@ async function runResumeMode<S extends object>(
 	const dbPath = path.join(runDir, DB_FILENAME);
 	const dbExists = fs.existsSync(dbPath);
 
+	let runDb: ReturnType<typeof openRunDatabase>;
+	let handle: import("../persistence/sqlite/ownership").LockHandle;
+
 	if (!dbExists) {
 		// Legacy migration path: state.json exists but no SQLite DB.
 		// readStateSnapshot now throws StateMigrationBlockedError with the
@@ -375,57 +395,64 @@ async function runResumeMode<S extends object>(
 		}
 		// snapshot.state.schemaVersion is guaranteed to be STATE_SCHEMA_VERSION
 		// because readStateSnapshot now throws on blocked migration.
-		migrateLegacyStateToSqlite(runDir, runId, snapshot.state);
-	}
+		//
+		// seedLegacyStateToSqlite opens the DB, acquires ownership, seeds the
+		// state, and returns the open connection + active handle.  We continue
+		// with the same connection — no double open/acquire cycle.
+		const seeded = seedLegacyStateToSqlite(runDir, runId, snapshot.state);
+		runDb = seeded.runDb;
+		handle = seeded.handle;
+	} else {
+		// Normal resume path: DB already exists, open and acquire.
+		runDb = openRunDatabase({
+			driver: bunSqliteDriver,
+			dbPath,
+			busyTimeoutMs: 2000,
+		});
 
-	const runDb = openRunDatabase({
-		driver: bunSqliteDriver,
-		dbPath,
-		busyTimeoutMs: 2000,
-	});
+		// Acquire ownership via SQLite.
+		const nowEpoch = clock.nowEpochMs();
+		const nowIso = clock.nowWallIso();
 
-	// Acquire ownership via SQLite.
-	const nowEpoch = clock.nowEpochMs();
-	const nowIso = clock.nowWallIso();
-
-	const acquireResult = acquireOwnership({
-		db: runDb.connection,
-		runId,
-		orchestratorName: config.name,
-		nowEpochMs: nowEpoch,
-		nowIso,
-		leaseDurationMs: 30 * 60 * 1000,
-		contentionDeadlineMs: 5000,
-	});
-
-	if (acquireResult.kind === "ACTIVE_CONFLICT") {
-		runDb.close();
-		emitRunLockedError(
-			new RunLockedError(
-				`Run is locked by PID ${acquireResult.ownerPid}, lease until ${new Date(acquireResult.leaseUntilEpochMs).toISOString()}`,
-				{
-					ownerPid: acquireResult.ownerPid,
-					acquiredAtEpochMs: nowEpoch,
-					leaseUntilEpochMs: acquireResult.leaseUntilEpochMs,
-					runId,
-				},
-			),
-			config,
+		const acquireResult = acquireOwnership({
+			db: runDb.connection,
 			runId,
-			logger,
-		);
-		doExit(2);
-	}
+			orchestratorName: config.name,
+			nowEpochMs: nowEpoch,
+			nowIso,
+			leaseDurationMs: 30 * 60 * 1000,
+			contentionDeadlineMs: 5000,
+		});
 
-	if (acquireResult.kind !== "ACQUIRED") {
-		runDb.close();
-		throw new ProtocolError(
-			`Failed to acquire ownership: ${acquireResult.kind}`,
-			{ runId, orchestratorName: config.name },
-		);
-	}
+		if (acquireResult.kind === "ACTIVE_CONFLICT") {
+			runDb.close();
+			emitRunLockedError(
+				new RunLockedError(
+					`Run is locked by PID ${acquireResult.ownerPid}, lease until ${new Date(acquireResult.leaseUntilEpochMs).toISOString()}`,
+					{
+						ownerPid: acquireResult.ownerPid,
+						acquiredAtEpochMs: nowEpoch,
+						leaseUntilEpochMs: acquireResult.leaseUntilEpochMs,
+						runId,
+					},
+				),
+				config,
+				runId,
+				logger,
+			);
+			doExit(2);
+		}
 
-	const handle = acquireResult.handle;
+		if (acquireResult.kind !== "ACQUIRED") {
+			runDb.close();
+			throw new ProtocolError(
+				`Failed to acquire ownership: ${acquireResult.kind}`,
+				{ runId, orchestratorName: config.name },
+			);
+		}
+
+		handle = acquireResult.handle;
+	}
 
 	// Read authoritative state from SQLite.
 	const readResult = readAuthoritativeState<S>(runDb.connection);
@@ -500,8 +527,9 @@ async function runResumeMode<S extends object>(
 			});
 			runDb.close();
 
-			// STALE_HANDLE is acceptable: another owner has already
-			// replaced this handle, so the ownership row is free.
+			// STALE_HANDLE is acceptable: this handle no longer owns
+			// the row (a successor may hold it).  No further release
+			// should be attempted.
 			// DB_FAILURE means we could not release — report it.
 			if (
 				releaseResult.kind !== "SUCCESS" &&
