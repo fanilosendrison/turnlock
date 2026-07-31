@@ -159,7 +159,12 @@ function seedLegacyStateToSqlite<S extends object>(
 						runId,
 						orchestratorName: state.orchestratorName,
 						cause:
-							releaseResult.kind === "DB_FAILURE" ? releaseResult.cause : err,
+							releaseResult.kind === "DB_FAILURE"
+								? new AggregateError(
+										[err, releaseResult.cause],
+										"legacy seed and ownership release both failed",
+									)
+								: err,
 					},
 				);
 				runDb.close();
@@ -481,61 +486,149 @@ async function runResumeMode<S extends object>(
 		runDb = seeded.runDb;
 		handle = seeded.handle;
 	} else {
-		// Normal resume path: DB already exists, open and acquire.
+		// DB file exists — open it first to determine whether the bootstrap
+		// completed or was interrupted by a crash.  The DB file can exist
+		// without an authoritative state row if the previous process crashed
+		// between schema creation and ensureInitialStateRow.
 		runDb = openRunDatabase({
 			driver: bunSqliteDriver,
 			dbPath,
 			busyTimeoutMs: 2000,
 		});
 
-		// Acquire ownership via SQLite.
-		const nowEpoch = clock.nowEpochMs();
-		const nowIso = clock.nowWallIso();
+		const preRead = readAuthoritativeState<S>(runDb.connection);
 
-		const acquireResult = acquireOwnership({
-			db: runDb.connection,
-			runId,
-			orchestratorName: config.name,
-			nowEpochMs: nowEpoch,
-			nowIso,
-			leaseDurationMs: 30 * 60 * 1000,
-			contentionDeadlineMs: 5000,
-		});
+		if (preRead.state !== null) {
+			// Fully bootstrapped — acquire ownership normally.
+			const nowEpoch = clock.nowEpochMs();
+			const nowIso = clock.nowWallIso();
 
-		if (acquireResult.kind === "ACTIVE_CONFLICT") {
-			runDb.close();
-			emitRunLockedError(
-				new RunLockedError(
-					`Run is locked by PID ${acquireResult.ownerPid}, lease until ${new Date(acquireResult.leaseUntilEpochMs).toISOString()}`,
-					{
-						ownerPid: acquireResult.ownerPid,
-						acquiredAtEpochMs: nowEpoch,
-						leaseUntilEpochMs: acquireResult.leaseUntilEpochMs,
-						runId,
-					},
-				),
-				config,
+			const acquireResult = acquireOwnership({
+				db: runDb.connection,
 				runId,
-				logger,
-			);
-			doExit(2);
-		}
+				orchestratorName: config.name,
+				nowEpochMs: nowEpoch,
+				nowIso,
+				leaseDurationMs: 30 * 60 * 1000,
+				contentionDeadlineMs: 5000,
+			});
 
-		if (acquireResult.kind !== "ACQUIRED") {
+			if (acquireResult.kind === "ACTIVE_CONFLICT") {
+				runDb.close();
+				emitRunLockedError(
+					new RunLockedError(
+						`Run is locked by PID ${acquireResult.ownerPid}, lease until ${new Date(acquireResult.leaseUntilEpochMs).toISOString()}`,
+						{
+							ownerPid: acquireResult.ownerPid,
+							acquiredAtEpochMs: nowEpoch,
+							leaseUntilEpochMs: acquireResult.leaseUntilEpochMs,
+							runId,
+						},
+					),
+					config,
+					runId,
+					logger,
+				);
+				doExit(2);
+			}
+
+			if (acquireResult.kind !== "ACQUIRED") {
+				runDb.close();
+				throw new ProtocolError(
+					`Failed to acquire ownership: ${acquireResult.kind}`,
+					{ runId, orchestratorName: config.name },
+				);
+			}
+
+			handle = acquireResult.handle;
+		} else {
+			// Incomplete bootstrap — the DB has schema tables but no
+			// authoritative state row.  Close this connection and recover
+			// via the legacy seed path, which is idempotent: the incarnation
+			// pre-creation uses INSERT OR IGNORE, acquireOwnership handles
+			// existing ownership rows via CAS, and ensureInitialStateRow
+			// uses INSERT OR IGNORE.
 			runDb.close();
-			throw new ProtocolError(
-				`Failed to acquire ownership: ${acquireResult.kind}`,
-				{ runId, orchestratorName: config.name },
-			);
-		}
 
-		handle = acquireResult.handle;
+			const legacyStatePath = path.join(runDir, "state.json");
+			if (!fs.existsSync(legacyStatePath)) {
+				throw new StateMissingError(
+					"SQLite DB exists but has no state row, and state.json is also missing",
+					{ runId, orchestratorName: config.name },
+				);
+			}
+
+			let snapshot: ReturnType<typeof readStateSnapshot<S>>;
+			try {
+				snapshot = readStateSnapshot<S>(runDir, config.stateSchema);
+			} catch (err) {
+				if (err instanceof StateMigrationBlockedError) {
+					throw new StateMigrationBlockedError(
+						`v3→v4 migration incomplete — cannot recover incomplete SQLite bootstrap: ${err.message}`,
+						{
+							reason: err.reason,
+							runId,
+							orchestratorName: config.name,
+						},
+					);
+				}
+				throw err;
+			}
+			if (snapshot.state === null) {
+				throw new StateMissingError(
+					"state.json missing — cannot recover incomplete SQLite bootstrap",
+					{ runId, orchestratorName: config.name },
+				);
+			}
+
+			// Validate identity before seed.
+			if (snapshot.state.runId !== runId) {
+				throw new ProtocolError(
+					`RUN_DIR mismatch — state.runId=${snapshot.state.runId}, argv.runId=${runId}`,
+					{ runId, orchestratorName: config.name },
+				);
+			}
+			if (snapshot.state.orchestratorName !== config.name) {
+				throw new ProtocolError(
+					`orchestrator name mismatch — state.orchestratorName=${snapshot.state.orchestratorName}, config.name=${config.name}`,
+					{ runId, orchestratorName: config.name },
+				);
+			}
+
+			// seedLegacyStateToSqlite is idempotent — it opens the DB,
+			// pre-creates the incarnation (INSERT OR IGNORE), acquires
+			// ownership (CAS), seeds the state (INSERT OR IGNORE), and
+			// returns the open connection + active handle.
+			const seeded = seedLegacyStateToSqlite(runDir, runId, snapshot.state);
+			runDb = seeded.runDb;
+			handle = seeded.handle;
+		}
 	}
 
-	// Read authoritative state from SQLite.
+	// Read authoritative state from SQLite (defense-in-depth — should
+	// always succeed after the paths above).
 	const readResult = readAuthoritativeState<S>(runDb.connection);
 	if (readResult.state === null) {
+		// Release ownership so the next attempt can acquire immediately.
+		// STALE_HANDLE is acceptable — this handle should still be valid.
+		const releaseResult = releaseOwnership({
+			db: runDb.connection,
+			handle,
+		});
 		runDb.close();
+
+		if (
+			releaseResult.kind !== "SUCCESS" &&
+			releaseResult.kind !== "STALE_HANDLE"
+		) {
+			throw new StateMissingError("state missing in SQLite (release failed)", {
+				runId,
+				orchestratorName: config.name,
+				cause:
+					releaseResult.kind === "DB_FAILURE" ? releaseResult.cause : undefined,
+			});
+		}
+
 		throw new StateMissingError("state missing in SQLite", {
 			runId,
 			orchestratorName: config.name,
