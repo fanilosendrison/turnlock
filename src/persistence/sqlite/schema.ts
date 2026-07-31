@@ -14,5 +14,29 @@ CREATE TABLE IF NOT EXISTS schema_metadata (
     schema_version INTEGER NOT NULL
 );
 
--- Placeholder — tables will be added in Lot 1 (incarnation, ownership, state).
+-- Exactly one row per run.  incarnationId is immutable once created.
+CREATE TABLE IF NOT EXISTS run_incarnation (
+    singleton     INTEGER PRIMARY KEY CHECK (singleton = 1),
+    run_id        TEXT    NOT NULL,
+    incarnation_id TEXT   NOT NULL UNIQUE,
+    orchestrator_name TEXT NOT NULL,
+    created_at_epoch_ms INTEGER NOT NULL,
+    created_at_iso      TEXT    NOT NULL
+);
+
+-- Exactly one row per run.  Ownership state machine: FREE ↔ HELD.
+-- The fence_token is monotonic and never decremented or reused.
+CREATE TABLE IF NOT EXISTS run_ownership (
+    singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+    incarnation_id     TEXT    NOT NULL,
+    ownership_status   TEXT    NOT NULL
+        CHECK (ownership_status IN ('FREE', 'HELD')),
+    owner_token        TEXT,
+    owner_pid          INTEGER,
+    fence_token        INTEGER NOT NULL DEFAULT 0,
+    acquired_at_epoch_ms   INTEGER,
+    lease_until_epoch_ms   INTEGER,
+    FOREIGN KEY (incarnation_id)
+        REFERENCES run_incarnation(incarnation_id)
+);
 `;
