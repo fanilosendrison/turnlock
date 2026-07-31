@@ -29,7 +29,7 @@ let fenceToken: string | undefined;
 try {
 	const result = acquireOwnership({
 		db: runDb.connection,
-		runId: "01HXCONTENDER000000000000000",
+		runId: "contention",
 		orchestratorName: "contention-test",
 		nowEpochMs: 1_000_000_000_000,
 		nowIso: "2001-09-09T01:46:40.000Z",

@@ -53,13 +53,7 @@ function setupRunDir() {
 	const base = makeTempDir();
 	const orchestratorName = "bootstrap-test";
 	const runId = "01HX0000000000000000000001";
-	const runDir = join(
-		base,
-		".turnlock",
-		"runs",
-		orchestratorName,
-		runId,
-	);
+	const runDir = join(base, ".turnlock", "runs", orchestratorName, runId);
 	mkdirSync(runDir, { recursive: true });
 	mkdirSync(join(runDir, "delegations"), { recursive: true });
 	mkdirSync(join(runDir, "results"), { recursive: true });
@@ -347,6 +341,7 @@ describe("bootstrap crash recovery", () => {
 		// Verify the stale handle from the crashed process has a valid shape
 		// but the DB connection is closed — the next process must re-acquire.
 		expect(staleHandle.kind).toBe("ACQUIRED");
+		if (staleHandle.kind !== "ACQUIRED") return;
 		expect(typeof staleHandle.handle.ownerToken).toBe("string");
 
 		// We simulate time passing beyond the lease so the next process
@@ -559,8 +554,7 @@ describe("bootstrap crash recovery", () => {
 			handle: acquireResult.handle,
 		});
 		expect(
-			releaseResult.kind === "SUCCESS" ||
-				releaseResult.kind === "STALE_HANDLE",
+			releaseResult.kind === "SUCCESS" || releaseResult.kind === "STALE_HANDLE",
 		).toBe(true);
 
 		runDb.close();
@@ -679,7 +673,10 @@ describe("bootstrap crash recovery", () => {
 		expect(incRow.created_at_epoch_ms).toBe(NOW_EPOCH);
 
 		// ensureInitialStateRow — INSERT OR IGNORE, should be no-op.
-		const differentState = { ...ctx.legacyState, currentPhase: "should-not-overwrite" };
+		const differentState = {
+			...ctx.legacyState,
+			currentPhase: "should-not-overwrite",
+		};
 		ensureInitialStateRow(
 			runDb.connection,
 			first.handle.incarnationId,
