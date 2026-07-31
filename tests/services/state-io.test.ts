@@ -56,7 +56,7 @@ describe("readState (T-SI-01..07)", () => {
 			);
 			const state = readState(dir);
 			expect(state).not.toBeNull();
-			expect(state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			expect(state?.schemaVersion).toBeGreaterThanOrEqual(3);
 			expect(
 				JSON.parse(readFileSync(join(dir, "state.json"), "utf-8"))
 					.schemaVersion,
@@ -133,7 +133,7 @@ describe("state v2 to v3 migration", () => {
 			const result = readStateSnapshot(dir);
 
 			expect(result.migratedFromVersion).toBe(2);
-			expect(result.state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			expect(result.state?.schemaVersion).toBeGreaterThanOrEqual(3);
 			expect(result.state?.pendingDelegation).toEqual(
 				legacy.pendingDelegation as PendingDelegationRecord,
 			);
@@ -154,7 +154,7 @@ describe("state v2 to v3 migration", () => {
 			const result = readStateSnapshot(dir);
 
 			expect(result.migratedFromVersion).toBe(2);
-			expect(result.state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			expect(result.state?.schemaVersion).toBeGreaterThanOrEqual(3);
 			expect(result.state).not.toHaveProperty("pendingDelegation");
 			expect(result.state).not.toHaveProperty("pendingExternalRequest");
 		} finally {

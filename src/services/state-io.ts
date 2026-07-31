@@ -774,15 +774,13 @@ export function readStateSnapshot<S>(
 	if (version === LEGACY_STATE_SCHEMA_VERSION) {
 		validateCanonicalShape(parsed, LEGACY_STATE_SCHEMA_VERSION);
 		current = migrateV2ToV3(parsed);
-		// v2→v3→v4 chain migration — always bump to v4 for the legacy
-		// state.json path, even if manifest conversion was incomplete.
+		// v2→v3→v4 chain migration — migrateV3ToV4 only bumps the
+		// version if conversion succeeded.  Callers must check.
 		current = migrateV3ToV4(current, runDir);
-		current.schemaVersion = STATE_SCHEMA_VERSION;
 		migratedFromVersion = LEGACY_STATE_SCHEMA_VERSION;
 	} else if (version === PREVIOUS_STATE_SCHEMA_VERSION) {
 		validateCanonicalShape(parsed, PREVIOUS_STATE_SCHEMA_VERSION);
 		current = migrateV3ToV4(parsed, runDir);
-		current.schemaVersion = STATE_SCHEMA_VERSION;
 		migratedFromVersion = PREVIOUS_STATE_SCHEMA_VERSION;
 	} else if (version === STATE_SCHEMA_VERSION) {
 		current = parsed;
@@ -792,7 +790,10 @@ export function readStateSnapshot<S>(
 		);
 	}
 
-	validateCanonicalShape(current, STATE_SCHEMA_VERSION);
+	validateCanonicalShape(
+		current,
+		current.schemaVersion as 2 | 3 | 4,
+	);
 
 	if (schema !== undefined) {
 		const result = schema.safeParse(current.data);
