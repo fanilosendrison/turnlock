@@ -9,7 +9,7 @@ export interface DispatchContext<S extends object> {
 	readonly runId: string;
 	readonly runDir: string;
 	readonly runDb: RunDatabase;
-	readonly handle: LockHandle;
+	handle: LockHandle;
 	readonly logger: InternalLogger;
 	readonly abortController: AbortController;
 	currentPhase: string | null;

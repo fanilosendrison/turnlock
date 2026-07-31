@@ -139,4 +139,10 @@ export type OrchestratorEvent =
 			durationMs: number;
 			phasesExecuted: number;
 			timestamp: string;
+	  }
+	| {
+			eventType: "ownership_release_failed";
+			runId: string;
+			reason?: string;
+			timestamp: string;
 	  };

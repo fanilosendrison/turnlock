@@ -12,7 +12,10 @@ export type OrchestratorErrorKind =
 	| "phase_error"
 	| "protocol"
 	| "aborted"
-	| "run_locked";
+	| "run_locked"
+	| "authority_lost"
+	| "state_revision_conflict"
+	| "persistence_failure";
 
 export interface OrchestratorErrorOptions {
 	readonly cause?: unknown;

@@ -5,6 +5,10 @@ export type { OrchestratorErrorKind } from "./errors/base";
 export { OrchestratorError } from "./errors/base";
 export {
 	AbortedError,
+	type AuthorityLossReason,
+	AuthorityLostError,
+	type AuthorityLostErrorOptions,
+	type AuthorityOperation,
 	DelegationMissingResultError,
 	DelegationSchemaError,
 	DelegationTimeoutError,
@@ -12,11 +16,14 @@ export {
 	ExternalResolutionMissingError,
 	ExternalResolutionSchemaError,
 	InvalidConfigError,
+	PersistenceFailureError,
+	type PersistenceFailureErrorOptions,
 	PhaseError,
 	ProtocolError,
 	RunLockedError,
 	StateCorruptedError,
 	StateMissingError,
+	StateRevisionConflictError,
 	StateVersionMismatchError,
 } from "./errors/concrete";
 export type { Clock, OrchestratorConfig } from "./types/config";

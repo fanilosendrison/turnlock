@@ -1,5 +1,55 @@
 import { OrchestratorError, type OrchestratorErrorOptions } from "./base";
 
+// ---------------------------------------------------------------------------
+// Authority / persistence errors (TL-F-001)
+// ---------------------------------------------------------------------------
+
+export type AuthorityOperation = "state_commit" | "refresh" | "release";
+
+export type AuthorityLossReason = "STALE_HANDLE" | "EXPIRED_HANDLE";
+
+export interface AuthorityLostErrorOptions extends OrchestratorErrorOptions {
+	readonly operation: AuthorityOperation;
+	readonly reason: AuthorityLossReason;
+}
+
+export class AuthorityLostError extends OrchestratorError {
+	readonly kind = "authority_lost" as const;
+
+	readonly operation: AuthorityOperation;
+	readonly reason: AuthorityLossReason;
+
+	constructor(message: string, options: AuthorityLostErrorOptions) {
+		super(message, options);
+		this.operation = options.operation;
+		this.reason = options.reason;
+	}
+}
+
+export class StateRevisionConflictError extends OrchestratorError {
+	readonly kind = "state_revision_conflict" as const;
+}
+
+export interface PersistenceFailureErrorOptions
+	extends OrchestratorErrorOptions {
+	readonly operation: AuthorityOperation;
+}
+
+export class PersistenceFailureError extends OrchestratorError {
+	readonly kind = "persistence_failure" as const;
+
+	readonly operation: AuthorityOperation;
+
+	constructor(message: string, options: PersistenceFailureErrorOptions) {
+		super(message, options);
+		this.operation = options.operation;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Existing errors
+// ---------------------------------------------------------------------------
+
 export class InvalidConfigError extends OrchestratorError {
 	readonly kind = "invalid_config" as const;
 }

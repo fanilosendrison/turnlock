@@ -36,6 +36,9 @@ export function classify(err: unknown): ErrorCategory {
 		case "external_resolution_malformed":
 		case "protocol":
 		case "run_locked":
+		case "authority_lost":
+		case "state_revision_conflict":
+		case "persistence_failure":
 			return "permanent";
 	}
 }
