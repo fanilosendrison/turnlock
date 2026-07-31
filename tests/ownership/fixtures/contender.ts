@@ -1,10 +1,9 @@
 // TL-F-001 multiprocess contender — spawned by the ownership contention test.
 // Uses SQLite-based ownership (acquireOwnership) instead of the old file lock.
 
-import { Database } from "bun:sqlite";
-import { openRunDatabase } from "../../../src/persistence/sqlite/run-database";
-import { acquireOwnership } from "../../../src/persistence/sqlite/ownership";
 import { bunSqliteDriver } from "../../../src/persistence/sqlite/bun-sqlite-driver";
+import { acquireOwnership } from "../../../src/persistence/sqlite/ownership";
+import { openRunDatabase } from "../../../src/persistence/sqlite/run-database";
 
 const DB_PATH = process.env.TL_DB_PATH;
 const ID = process.env.TL_CONTENDER_ID;
@@ -49,4 +48,6 @@ try {
 	runDb.close();
 }
 
-process.stdout.write(`${JSON.stringify({ id: ID, outcome, ownerToken, fenceToken })}\n`);
+process.stdout.write(
+	`${JSON.stringify({ id: ID, outcome, ownerToken, fenceToken })}\n`,
+);

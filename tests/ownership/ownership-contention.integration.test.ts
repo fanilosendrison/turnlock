@@ -1,29 +1,27 @@
-// TL-F-001 — reproduce expired-lock takeover race.
+// TL-F-001 — SQLite ownership campaign.
 //
-// Writes an expired lock file with a deliberately large payload (to widen the
-// writeFileSync window during overrideLock), then spawns N contenders that all
-// attempt acquireLock().  The current file-based lock uses a shared
-// `<lock>.tmp` path + read-then-act for takeover, so multiple contenders can
-// win.
-//
-// Once TL-F-001 is fixed the expected outcome becomes exactly 1 × ACQUIRED.
+// Seeds a SQLite DB with an expired HELD ownership row, then spawns N
+// contenders that all race to take over.  With the CAS-based lock, exactly
+// one contender must win.
 
 import { describe, expect, test } from "bun:test";
-import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
+import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 
 const CONTENDER_COUNT = 24;
 
 interface ContenderReport {
 	id: string;
-	outcome: "ACQUIRED" | "ACTIVE_CONFLICT" | "ERROR";
+	outcome: string;
 	ownerToken?: string;
+	fenceToken?: string;
 }
 
 function spawnContender(
 	contenderScript: string,
-	lockPath: string,
+	dbPath: string,
 	id: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	return new Promise((resolve) => {
@@ -31,7 +29,7 @@ function spawnContender(
 			cmd: ["bun", "run", contenderScript],
 			env: {
 				...process.env,
-				TL_LOCK_PATH: lockPath,
+				TL_DB_PATH: dbPath,
 				TL_CONTENDER_ID: id,
 			},
 			stdout: "pipe",
@@ -51,32 +49,39 @@ function spawnContender(
 	});
 }
 
-describe("TL-F-001 reproduction", () => {
-	test("expired lock takeover is not mutually exclusive (documented race)", async () => {
+describe("TL-F-001 SQLite ownership campaign", () => {
+	test("exactly one contender wins the CAS race", async () => {
 		const dir = makeTempDir();
-		const lockPath = join(dir, ".lock");
+		const dbPath = join(dir, "turnlock.sqlite3");
 
 		try {
-			// Deliberately large predecessor payload to widen the
-			// writeFileSync window during overrideLock, as documented
-			// in the original finding reproduction.
-			const padding = "x".repeat(64 * 1024); // 64 KiB
-			writeFileSync(
-				lockPath,
-				JSON.stringify({
-					ownerPid: 99999,
-					ownerToken: "PREDECESSOR-TOKEN",
-					acquiredAtEpochMs: 0,
-					leaseUntilEpochMs: -1,
-					padding,
-				}),
-			);
+			// Open the DB to create the schema, then seed an expired HELD row.
+			const seedDb = openRunDatabase({
+				driver: bunSqliteDriver,
+				dbPath,
+				busyTimeoutMs: 500,
+			});
+			seedDb.connection.exec(`
+					INSERT OR IGNORE INTO run_incarnation
+						(singleton, run_id, incarnation_id, orchestrator_name,
+						 created_at_epoch_ms, created_at_iso)
+					VALUES (1, 'contention', 'inc-campaign-001', 'contention-test',
+					        0, '1970-01-01T00:00:00.000Z');
+					INSERT OR IGNORE INTO run_ownership
+						(singleton, incarnation_id, ownership_status,
+						 owner_token, owner_pid, fence_token,
+						 acquired_at_epoch_ms, lease_until_epoch_ms)
+					VALUES (1, 'inc-campaign-001', 'HELD',
+					        'EXPIRED-OWNER', 99999, 5,
+					        0, -1);
+				`);
+			seedDb.close();
 
+			// Spawn all contenders.
 			const contenderScript = join(import.meta.dir, "fixtures", "contender.ts");
 
-			// Spawn all contenders as close together as possible.
 			const promises = Array.from({ length: CONTENDER_COUNT }, (_, i) =>
-				spawnContender(contenderScript, lockPath, String(i)),
+				spawnContender(contenderScript, dbPath, String(i)),
 			);
 
 			const results = await Promise.all(promises);
@@ -97,36 +102,31 @@ describe("TL-F-001 reproduction", () => {
 			}
 
 			const acquired = reports.filter((r) => r.outcome === "ACQUIRED");
+			const casMisses = reports.filter(
+				(r) => r.outcome === "PREDECESSOR_CAS_MISS",
+			);
 			const conflicts = reports.filter((r) => r.outcome === "ACTIVE_CONFLICT");
-			const errors = reports.filter((r) => r.outcome === "ERROR");
+			const timeouts = reports.filter(
+				(r) => r.outcome === "DB_CONTENTION_TIMEOUT",
+			);
+			const errors = reports.filter((r) => r.outcome.startsWith("ERROR"));
 
 			console.error(
-				`TL-F-001 results: ACQUIRED=${acquired.length} CONFLICT=${conflicts.length} ERROR=${errors.length}`,
+				`TL-F-001 SQLite: ACQUIRED=${acquired.length} CAS_MISS=${casMisses.length} CONFLICT=${conflicts.length} TIMEOUT=${timeouts.length} ERROR=${errors.length}`,
 			);
 
 			expect(reports.length).toBe(CONTENDER_COUNT);
 			expect(errors.length).toBe(0);
 
-			// Minimum guarantee — at least one contender must acquire.
-			expect(acquired.length).toBeGreaterThanOrEqual(1);
+			// Exactly one winner — the CAS guarantees it.
+			expect(acquired.length).toBe(1);
+			expect(acquired[0]?.fenceToken).toBe("6"); // predecessor had fence 5
 
-			// Document whether the race manifests.  When TL-F-001 is
-			// fixed this becomes `expect(acquired.length).toBe(1)`.
-			if (acquired.length >= 2) {
-				console.error(
-					`⚠ TL-F-001 CONFIRMED: ${acquired.length} winners for the same lock`,
-				);
-			} else {
-				console.error(
-					"ℹ TL-F-001 race window closed on this run (1 winner); re-run may trigger",
-				);
-			}
+			// All non-winning outcomes must be safe.
+			expect(
+				acquired.length + casMisses.length + conflicts.length + timeouts.length,
+			).toBe(CONTENDER_COUNT);
 		} finally {
-			try {
-				unlinkSync(lockPath);
-			} catch {
-				/* */
-			}
 			cleanupTempDir(dir);
 		}
 	}, 60_000);
