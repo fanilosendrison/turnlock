@@ -15,11 +15,11 @@ import {
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
 import {
 	commitState,
-	projectStateJson,
 	readAuthoritativeState,
 	type StateRecord,
 } from "../../src/persistence/sqlite/run-state-store";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+import { unsafeWriteStateJson } from "../helpers/unsafe-state-projection";
 import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
 
 const LEASE_MS = 30 * 60 * 1000;
@@ -212,7 +212,11 @@ describe("crash recovery", () => {
 			if (cr.kind !== "COMMITTED") return;
 
 			// Project state.json.
-			projectStateJson(ctx.dir, cr.committed.state, cr.committed.stateDigest);
+			unsafeWriteStateJson(
+				ctx.dir,
+				cr.committed.state,
+				cr.committed.stateDigest,
+			);
 
 			const statePath = join(ctx.dir, "state.json");
 			expect(existsSync(statePath)).toBe(true);

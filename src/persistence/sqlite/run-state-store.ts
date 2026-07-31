@@ -7,6 +7,10 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { STATE_SCHEMA_VERSION } from "../../constants";
+import {
+	AuthorityLostError,
+	PersistenceFailureError,
+} from "../../errors/concrete";
 import type { TerminalDoneRecord } from "../../types/artifacts";
 import { DbIntegrityError } from "./errors";
 import { beginImmediate, commit, type LockHandle, rollback } from "./ownership";
@@ -540,10 +544,12 @@ export function readAuthoritativeState<S extends object>(
 }
 
 // ---------------------------------------------------------------------------
-// state.json projection
+// state.json projection (private writer — only projectAuthoritativeStateFenced
+// may call this, after verifying ownership and re-reading the authoritative
+// record from SQLite inside a transaction).
 // ---------------------------------------------------------------------------
 
-export function projectStateJson(
+function writeStateJsonProjection(
 	runDir: string,
 	state: StateRecord<object>,
 	digest: string,
@@ -583,4 +589,205 @@ export function projectStateJson(
 
 	fs.writeFileSync(tmpPath, json, { encoding: "utf-8" });
 	fs.renameSync(tmpPath, statePath);
+}
+
+// ---------------------------------------------------------------------------
+// Fenced canonical projection — the ONLY public projection API
+// ---------------------------------------------------------------------------
+
+/** Project the authoritative `state.json` under fence.
+ *
+ *  Protocol (all inside BEGIN IMMEDIATE):
+ *    1. Verify ownership: status=HELD, matching incarnation/owner/fence,
+ *       AND lease_until_epoch_ms > now (clock captured *after* the lock
+ *       is acquired).
+ *    2. Re-read the full authoritative state from `run_state` inside the
+ *       transaction — the projected content ALWAYS comes from SQLite, never
+ *       from a caller-supplied object.
+ *    3. Verify the re-read revision and digest match the expected values.
+ *    4. Write state.json atomically (tmp + rename) using the re-read state.
+ *    5. COMMIT.
+ *
+ *  Guarantees:
+ *    - A stale owner whose lease expired is rejected (EXPIRED_HANDLE).
+ *    - A successor with a higher fence token is rejected (STALE_HANDLE).
+ *    - A projection superseded by a later revision is rejected.
+ *    - The projected content is *exactly* what SQLite holds — a caller
+ *      cannot pass a fabricated StateRecord.
+ *
+ *  Parameters:
+ *    - `db` + `handle` — the active SQLite connection and lock handle.
+ *    - `runDir` — the run directory where `state.json` is written.
+ *    - `expectedRevision` — the revision the caller believes is current.
+ *    - `expectedDigest` — the digest the caller believes is current.
+ *
+ *  Throws:
+ *    - AuthorityLostError  on ownership or revision mismatch
+ *    - PersistenceFailureError on DB corruption or I/O failure */
+export function projectAuthoritativeStateFenced(
+	db: SqliteConnection,
+	handle: LockHandle,
+	runDir: string,
+	expectedRevision: string,
+	expectedDigest: string,
+): void {
+	try {
+		beginImmediate(db);
+	} catch (error) {
+		throw new PersistenceFailureError(
+			"fenced state.json projection: BEGIN IMMEDIATE failed",
+			{ operation: "state_commit", cause: error },
+		);
+	}
+
+	// Clock captured AFTER lock acquisition — the wait for BEGIN IMMEDIATE
+	// (governed by busy_timeout) must not produce a stale clock reading.
+	const nowEpochMs = Date.now();
+
+	try {
+		// Step 1 — Verify ownership including lease expiration.
+		const ownershipRow = db
+			.prepare(
+				`SELECT ownership_status, incarnation_id, owner_token,
+				        fence_token, lease_until_epoch_ms
+				 FROM run_ownership WHERE singleton = 1`,
+			)
+			.get() as
+			| {
+					ownership_status: string;
+					incarnation_id: string;
+					owner_token: string;
+					fence_token: number | bigint;
+					lease_until_epoch_ms: number | null;
+			  }
+			| undefined;
+
+		if (ownershipRow === undefined) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: ownership row missing",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+				},
+			);
+		}
+
+		if (ownershipRow.ownership_status !== "HELD") {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: ownership not held",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+				},
+			);
+		}
+
+		if (ownershipRow.incarnation_id !== handle.incarnationId) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: incarnation mismatch",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+				},
+			);
+		}
+
+		if (ownershipRow.owner_token !== handle.ownerToken) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: owner token mismatch",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+				},
+			);
+		}
+
+		const rowFence =
+			typeof ownershipRow.fence_token === "bigint"
+				? ownershipRow.fence_token
+				: BigInt(ownershipRow.fence_token);
+		if (rowFence !== handle.fenceToken) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: fence token mismatch",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+				},
+			);
+		}
+
+		// Lease check — lease is expired at the exact instant now >= leaseUntil.
+		if (
+			ownershipRow.lease_until_epoch_ms === null ||
+			nowEpochMs >= ownershipRow.lease_until_epoch_ms
+		) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: lease expired",
+				{
+					operation: "state_commit",
+					reason: "EXPIRED_HANDLE",
+				},
+			);
+		}
+
+		// Step 2 — Re-read the FULL authoritative state from SQLite.
+		// This is the content-authenticity guarantee: we never project a
+		// caller-supplied object; we project what SQLite actually holds.
+		const readResult = readAuthoritativeState(db);
+		if (readResult.state === null) {
+			rollback(db);
+			throw new PersistenceFailureError(
+				"fenced state.json projection: state row missing",
+				{ operation: "state_commit" },
+			);
+		}
+
+		// Step 3 — Verify expected revision and digest against the re-read state.
+		if (readResult.state.stateRevision !== expectedRevision) {
+			rollback(db);
+			throw new AuthorityLostError(
+				`Fenced state.json projection rejected: revision mismatch (expected ${expectedRevision}, got ${readResult.state.stateRevision})`,
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+				},
+			);
+		}
+
+		if ((readResult.digest ?? "") !== expectedDigest) {
+			rollback(db);
+			throw new PersistenceFailureError(
+				"fenced state.json projection: digest mismatch",
+				{ operation: "state_commit" },
+			);
+		}
+
+		// Step 4 — Write projection atomically using the re-read state.
+		writeStateJsonProjection(
+			runDir,
+			readResult.state,
+			readResult.digest ?? expectedDigest,
+		);
+
+		// Step 5 — COMMIT.
+		commit(db);
+	} catch (error) {
+		rollback(db);
+		if (
+			error instanceof AuthorityLostError ||
+			error instanceof PersistenceFailureError
+		) {
+			throw error;
+		}
+		throw new PersistenceFailureError(
+			`fenced state.json projection failed: ${error instanceof Error ? error.message : String(error)}`,
+			{ operation: "state_commit", cause: error },
+		);
+	}
 }

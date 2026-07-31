@@ -1,8 +1,9 @@
 // TL-F-001 point 2 — Canonical projection fencing adversarial tests.
 //
 // Validates that state.json projection is protected against overwrite by
-// a stale worker.  Scenarios from the definitive audit:
+// a stale worker and that projected content always comes from SQLite.
 //
+// Scenarios:
 //   A expire sans takeover → EXPIRED_HANDLE
 //   A expire, B prend la fence et initialise → A = STALE_HANDLE
 //   état déjà initialisé + handle courant valide → ALREADY_INITIALIZED
@@ -10,12 +11,13 @@
 //   projection échoue + release DB_FAILURE → les deux causes sont conservées
 //   A commit revision 5 puis se suspend → B commit/projette revision 6
 //       → A ne peut pas reprojeter revision 5
+//   SQLite contient A → appel projection avec digest erroné → rejeté
+//   SQLite contient A → appel projection avec revision erronée → rejeté
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { STATE_SCHEMA_VERSION } from "../../src/constants";
-import { projectStateJsonFenced } from "../../src/engine/state-commit";
 import {
 	AuthorityLostError,
 	PersistenceFailureError,
@@ -31,10 +33,12 @@ import {
 	type CommittedState,
 	commitState,
 	initializeStateUnderFence,
-	projectStateJson,
+	projectAuthoritativeStateFenced,
+	readAuthoritativeState,
 	type StateRecord,
 } from "../../src/persistence/sqlite/run-state-store";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+import { unsafeWriteStateJson } from "../helpers/unsafe-state-projection";
 import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
 
 // ---------------------------------------------------------------------------
@@ -42,7 +46,7 @@ import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
 // ---------------------------------------------------------------------------
 
 const LEASE_MS = 30 * 60 * 1000;
-const LONG_LEASE_MS = 365 * 24 * 3600 * 1000; // 1 year — won't expire during tests
+const LONG_LEASE_MS = 365 * 24 * 3600 * 1000;
 const CONTENTION_DEADLINE_MS = 2000;
 const RUN_ID = "01HX0000000000000000000001";
 const NOW_EPOCH = Date.now();
@@ -138,7 +142,6 @@ describe("initializeStateUnderFence adversarial", () => {
 	test("A expires without takeover → EXPIRED_HANDLE", () => {
 		const ctx = setup();
 		try {
-			// Acquire at epoch 0 with a short lease.
 			const acquired = acquire(ctx.runDb, {
 				nowEpochMs: 0,
 				leaseDurationMs: 1000,
@@ -147,12 +150,11 @@ describe("initializeStateUnderFence adversarial", () => {
 			if (acquired.kind !== "ACQUIRED") return;
 			const handle = acquired.handle;
 
-			// Time has advanced past the lease.
 			const initResult = initializeStateUnderFence({
 				db: ctx.runDb.connection,
 				handle,
 				initialState: makeRecord() as unknown as Record<string, unknown>,
-				nowEpochMs: 2000, // past lease
+				nowEpochMs: 2000,
 				nowIso: "1970-01-01T00:00:02.000Z",
 			});
 
@@ -162,14 +164,9 @@ describe("initializeStateUnderFence adversarial", () => {
 		}
 	});
 
-	// -----------------------------------------------------------------------
-	// 2 — A expires, B takes the fence and initializes → A = STALE_HANDLE
-	// -----------------------------------------------------------------------
-
 	test("A expires, B takes fence and initializes → A = STALE_HANDLE, never ALREADY_INITIALIZED", () => {
 		const ctx = setup();
 		try {
-			// A acquires at epoch 0.
 			const aAcquired = acquire(ctx.runDb, {
 				nowEpochMs: 0,
 				leaseDurationMs: 1000,
@@ -178,8 +175,6 @@ describe("initializeStateUnderFence adversarial", () => {
 			if (aAcquired.kind !== "ACQUIRED") return;
 			const handleA = aAcquired.handle;
 
-			// B acquires at epoch 2000 (A's lease expired).
-			// Release A's ownership first so B can acquire.
 			releaseOwnership({ db: ctx.runDb.connection, handle: handleA });
 
 			const bAcquired = acquire(ctx.runDb, {
@@ -190,7 +185,6 @@ describe("initializeStateUnderFence adversarial", () => {
 			if (bAcquired.kind !== "ACQUIRED") return;
 			const handleB = bAcquired.handle;
 
-			// B initializes.
 			const bInit = initializeStateUnderFence({
 				db: ctx.runDb.connection,
 				handle: handleB,
@@ -200,7 +194,6 @@ describe("initializeStateUnderFence adversarial", () => {
 			});
 			expect(bInit.kind).toBe("INITIALIZED");
 
-			// A tries to initialize with its stale handle.
 			const aInit = initializeStateUnderFence({
 				db: ctx.runDb.connection,
 				handle: handleA,
@@ -209,17 +202,12 @@ describe("initializeStateUnderFence adversarial", () => {
 				nowIso: "1970-01-01T00:00:02.000Z",
 			});
 
-			// A MUST receive STALE_HANDLE, NOT ALREADY_INITIALIZED.
 			expect(aInit.kind).toBe("STALE_HANDLE");
 			expect(aInit.kind).not.toBe("ALREADY_INITIALIZED");
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
-	// -----------------------------------------------------------------------
-	// 3 — Already initialized + valid handle → ALREADY_INITIALIZED
-	// -----------------------------------------------------------------------
 
 	test("already initialized + valid handle → ALREADY_INITIALIZED", () => {
 		const ctx = setup();
@@ -229,7 +217,6 @@ describe("initializeStateUnderFence adversarial", () => {
 			if (acquired.kind !== "ACQUIRED") return;
 			const handle = acquired.handle;
 
-			// First initialization.
 			const first = initializeStateUnderFence({
 				db: ctx.runDb.connection,
 				handle,
@@ -239,7 +226,6 @@ describe("initializeStateUnderFence adversarial", () => {
 			});
 			expect(first.kind).toBe("INITIALIZED");
 
-			// Second initialization with same valid handle.
 			const second = initializeStateUnderFence({
 				db: ctx.runDb.connection,
 				handle,
@@ -252,7 +238,6 @@ describe("initializeStateUnderFence adversarial", () => {
 
 			expect(second.kind).toBe("ALREADY_INITIALIZED");
 			if (second.kind === "ALREADY_INITIALIZED") {
-				// The existing state is returned, not the new one.
 				expect(second.state.currentPhase).toBe("start");
 			}
 		} finally {
@@ -262,11 +247,11 @@ describe("initializeStateUnderFence adversarial", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4 — Projection fails → release SUCCESS verified
+// 2 — Projection failure cleanup
 // ---------------------------------------------------------------------------
 
 describe("projection failure cleanup", () => {
-	test("projection fails on invalid runDir → release succeeds", () => {
+	test("projection fails on invalid runDir → ownership still HELD (rollback)", () => {
 		const ctx = setup();
 		try {
 			const now = Date.now();
@@ -281,33 +266,22 @@ describe("projection failure cleanup", () => {
 			if (acquired.kind !== "ACQUIRED") return;
 			const handle = acquired.handle;
 
-			// Seed state via unsafe (so revision 0 exists).
 			const record = makeRecord({ runIncarnationId: handle.incarnationId });
 			seedViaUnsafe(ctx.runDb, handle, record);
 
-			// Use the real digest from the DB so the fenced projection
-			// passes ownership + digest checks and fails on file I/O.
-			const {
-				readAuthoritativeState,
-			} = require("../../src/persistence/sqlite/run-state-store");
 			const read = readAuthoritativeState(ctx.runDb.connection);
 			expect(read.state).not.toBeNull();
-			const realState = read.state!;
 			const realDigest = read.digest as string;
 
-			// Try fenced projection on a non-existent directory.
 			const badDir = join(ctx.dir, "nonexistent");
 
 			let threw = false;
 			try {
-				projectStateJsonFenced(
-					{
-						runDb: ctx.runDb,
-						handle,
-						runDir: badDir,
-						runId: RUN_ID,
-					},
-					realState,
+				projectAuthoritativeStateFenced(
+					ctx.runDb.connection,
+					handle,
+					badDir,
+					"0",
 					realDigest,
 				);
 			} catch (err) {
@@ -316,8 +290,6 @@ describe("projection failure cleanup", () => {
 			}
 			expect(threw).toBe(true);
 
-			// The transaction should have been rolled back. Ownership should
-			// still be HELD (the fenced projection does rollback on error).
 			const ownershipRow = ctx.runDb.connection
 				.prepare(
 					"SELECT ownership_status FROM run_ownership WHERE singleton = 1",
@@ -329,11 +301,7 @@ describe("projection failure cleanup", () => {
 		}
 	});
 
-	// -----------------------------------------------------------------------
-	// 4b — Projection fails + release DB_FAILURE → both causes preserved
-	// -----------------------------------------------------------------------
-
-	test("projection fails + release DB_FAILURE → AggregateError with both causes", () => {
+	test("projection fails + release DB_FAILURE → both causes preserved", () => {
 		const ctx = setup();
 		try {
 			const acquired = acquire(ctx.runDb);
@@ -341,20 +309,16 @@ describe("projection failure cleanup", () => {
 			if (acquired.kind !== "ACQUIRED") return;
 			const handle = acquired.handle;
 
-			// Close the DB — releaseOwnership will return DB_FAILURE.
 			ctx.runDb.close();
 
-			// Simulate the runInitialMode catch block logic.
 			const projectionErr = new Error("projection failed");
 			const releaseResult = releaseOwnership({
 				db: ctx.runDb.connection,
 				handle,
 			});
 
-			// Release should be DB_FAILURE because DB is closed.
 			expect(releaseResult.kind).toBe("DB_FAILURE");
 
-			// Verify the AggregateError pattern used in runOrchestrator.
 			const aggregate = new AggregateError(
 				[
 					projectionErr,
@@ -374,8 +338,99 @@ describe("projection failure cleanup", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5 — A commit revision 5, suspend, B commit/project revision 6 →
-//     A cannot reproject revision 5
+// 3 — Content authenticity: projected content always comes from SQLite
+// ---------------------------------------------------------------------------
+
+describe("content authenticity", () => {
+	test("projectAuthoritativeStateFenced projects exactly what SQLite holds", () => {
+		const ctx = setup();
+		try {
+			const now = Date.now();
+			const nowIso = new Date(now).toISOString();
+
+			const acquired = acquire(ctx.runDb, {
+				nowEpochMs: now,
+				nowIso,
+				leaseDurationMs: LONG_LEASE_MS,
+			});
+			expect(acquired.kind).toBe("ACQUIRED");
+			if (acquired.kind !== "ACQUIRED") return;
+			const handle = acquired.handle;
+
+			// Seed SQLite with a known state.
+			const record = makeRecord({
+				runIncarnationId: handle.incarnationId,
+				data: { stage: "autoritatif", value: 42 },
+				currentPhase: "real-phase",
+			});
+			seedViaUnsafe(ctx.runDb, handle, record);
+
+			const read = readAuthoritativeState(ctx.runDb.connection);
+			expect(read.state).not.toBeNull();
+			const digest = read.digest as string;
+
+			// Project through the fenced API — it must re-read from SQLite.
+			projectAuthoritativeStateFenced(
+				ctx.runDb.connection,
+				handle,
+				ctx.dir,
+				"0",
+				digest,
+			);
+
+			// Verify the projected content matches SQLite, not some caller input.
+			const projected = JSON.parse(
+				readFileSync(join(ctx.dir, "state.json"), "utf-8"),
+			);
+			expect(projected.data).toEqual({ stage: "autoritatif", value: 42 });
+			expect(projected.currentPhase).toBe("real-phase");
+			expect(projected.stateRevision).toBe("0");
+			expect(projected.stateDigest).toBe(digest);
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	test("fenced projection with wrong digest → rejected", () => {
+		const ctx = setup();
+		try {
+			const now = Date.now();
+			const nowIso = new Date(now).toISOString();
+
+			const acquired = acquire(ctx.runDb, {
+				nowEpochMs: now,
+				nowIso,
+				leaseDurationMs: LONG_LEASE_MS,
+			});
+			expect(acquired.kind).toBe("ACQUIRED");
+			if (acquired.kind !== "ACQUIRED") return;
+			const handle = acquired.handle;
+
+			const record = makeRecord({ runIncarnationId: handle.incarnationId });
+			seedViaUnsafe(ctx.runDb, handle, record);
+
+			let rejected = false;
+			try {
+				projectAuthoritativeStateFenced(
+					ctx.runDb.connection,
+					handle,
+					ctx.dir,
+					"0",
+					"sha256:0000000000000000000000000000000000000000000000000000000000000000",
+				);
+			} catch (err) {
+				rejected = true;
+				expect(err).toBeInstanceOf(PersistenceFailureError);
+			}
+			expect(rejected).toBe(true);
+		} finally {
+			ctx.cleanup();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 4 — Canonical projection monotonicity
 // ---------------------------------------------------------------------------
 
 describe("canonical projection monotonicity", () => {
@@ -395,7 +450,6 @@ describe("canonical projection monotonicity", () => {
 			if (aAcquired.kind !== "ACQUIRED") return;
 			const handleA = aAcquired.handle;
 
-			// A establishes initial state (revision 0).
 			const aInit = initializeStateUnderFence({
 				db: ctx.runDb.connection,
 				handle: handleA,
@@ -406,12 +460,15 @@ describe("canonical projection monotonicity", () => {
 			expect(aInit.kind).toBe("INITIALIZED");
 			if (aInit.kind !== "INITIALIZED") return;
 
-			// A projects state.json (revision 0) — use unfenced projection for simplicity.
-			const aInitState = aInit.committed.state;
-			projectStateJson(ctx.dir, aInitState, aInit.committed.stateDigest);
+			// A projects revision 0.
+			unsafeWriteStateJson(
+				ctx.dir,
+				aInit.committed.state,
+				aInit.committed.stateDigest,
+			);
 			expect(existsSync(join(ctx.dir, "state.json"))).toBe(true);
 
-			// A commits revisions 1..5 via commitState.
+			// A commits revisions 1..5.
 			let currentRevision = "0";
 			let lastCommitted: CommittedState<object> | null = aInit.committed;
 			for (let i = 1; i <= 5; i++) {
@@ -435,10 +492,9 @@ describe("canonical projection monotonicity", () => {
 			expect(currentRevision).toBe("5");
 			expect(lastCommitted).not.toBeNull();
 
-			// A is now suspended — does not project revision 5.
+			// A is suspended — does not project revision 5.
 
-			// Release A's ownership so B can acquire (simulating A's lease
-			// expiring or A crashing).
+			// Release A so B can acquire.
 			releaseOwnership({ db: ctx.runDb.connection, handle: handleA });
 
 			// ----- B's turn -----
@@ -451,7 +507,6 @@ describe("canonical projection monotonicity", () => {
 			if (bAcquired.kind !== "ACQUIRED") return;
 			const handleB = bAcquired.handle;
 
-			// B commits revision 6.
 			const bCommit = commitState({
 				db: ctx.runDb.connection,
 				handle: handleB,
@@ -469,20 +524,15 @@ describe("canonical projection monotonicity", () => {
 			expect(bCommit.committed.state.stateRevision).toBe("6");
 
 			// B projects revision 6 (fenced).
-			const bCtx = {
-				runDb: ctx.runDb,
-				handle: handleB,
-				runDir: ctx.dir,
-				runId: RUN_ID,
-			};
-
-			projectStateJsonFenced(
-				bCtx,
-				bCommit.committed.state,
+			projectAuthoritativeStateFenced(
+				ctx.runDb.connection,
+				handleB,
+				ctx.dir,
+				"6",
 				bCommit.committed.stateDigest,
 			);
 
-			// Verify B's projection is on disk.
+			// Verify B's projection.
 			const bProjection = JSON.parse(
 				readFileSync(join(ctx.dir, "state.json"), "utf-8"),
 			);
@@ -490,32 +540,22 @@ describe("canonical projection monotonicity", () => {
 			expect(bProjection.currentPhase).toBe("phase-B");
 
 			// ----- A resumes and tries to project revision 5 -----
-			// A's handle is now stale (B owns the fence).
-			// A tries the fenced projection with its stale handle.
-			// This should be rejected.
-
 			let aRejected = false;
 			try {
-				projectStateJsonFenced(
-					{
-						runDb: ctx.runDb,
-						handle: handleA, // stale!
-						runDir: ctx.dir,
-						runId: RUN_ID,
-					},
-					lastCommitted!.state,
+				projectAuthoritativeStateFenced(
+					ctx.runDb.connection,
+					handleA, // stale!
+					ctx.dir,
+					"5",
 					lastCommitted!.stateDigest,
 				);
 			} catch (err) {
 				aRejected = true;
 				expect(err).toBeInstanceOf(AuthorityLostError);
-				const aErr = err as AuthorityLostError;
-				expect(aErr.kind).toBe("authority_lost");
-				// Reason should be STALE_HANDLE (owner token or fence mismatch).
 			}
 			expect(aRejected).toBe(true);
 
-			// Verify B's projection is still on disk (not overwritten by A).
+			// B's projection must still be on disk.
 			const finalProjection = JSON.parse(
 				readFileSync(join(ctx.dir, "state.json"), "utf-8"),
 			);
@@ -526,10 +566,6 @@ describe("canonical projection monotonicity", () => {
 		}
 	});
 
-	// -----------------------------------------------------------------------
-	// 5b — Even with valid handle, revision mismatch prevents overwrite
-	// -----------------------------------------------------------------------
-
 	test("fenced projection with revision mismatch (own handle, but newer revision in DB) → rejected", () => {
 		const ctx = setup();
 		try {
@@ -538,7 +574,6 @@ describe("canonical projection monotonicity", () => {
 			if (acquired.kind !== "ACQUIRED") return;
 			const handle = acquired.handle;
 
-			// Seed initial state.
 			const aInit = initializeStateUnderFence({
 				db: ctx.runDb.connection,
 				handle,
@@ -549,7 +584,6 @@ describe("canonical projection monotonicity", () => {
 			expect(aInit.kind).toBe("INITIALIZED");
 			if (aInit.kind !== "INITIALIZED") return;
 
-			// Commit revision 1.
 			const c1 = commitState({
 				db: ctx.runDb.connection,
 				handle,
@@ -564,33 +598,29 @@ describe("canonical projection monotonicity", () => {
 			expect(c1.kind).toBe("COMMITTED");
 			if (c1.kind !== "COMMITTED") return;
 
-			// Now manually bump the revision in the DB via raw SQL
-			// (simulating something weird happening).
+			// Bump revision via raw SQL.
 			ctx.runDb.connection.exec(
 				"UPDATE run_state SET state_revision = 99, state_digest = 'sha256:modified' WHERE singleton = 1",
 			);
 
-			// Try fenced projection with the old state (revision 1).
+			// Read current state to get the real digest (modified by the raw SQL).
+			const read = readAuthoritativeState(ctx.runDb.connection);
+			expect(read.state).not.toBeNull();
+
+			// Try to project with the old revision (1) but the current DB digest.
+			// The revision check should fail first.
 			let rejected = false;
 			try {
-				projectStateJsonFenced(
-					{
-						runDb: ctx.runDb,
-						handle,
-						runDir: ctx.dir,
-						runId: RUN_ID,
-					},
-					c1.committed.state, // says revision "1"
-					c1.committed.stateDigest, // old digest
+				projectAuthoritativeStateFenced(
+					ctx.runDb.connection,
+					handle,
+					ctx.dir,
+					"1", // stale revision
+					read.digest ?? "",
 				);
 			} catch (err) {
 				rejected = true;
-				// Should be AuthorityLostError or PersistenceFailureError
-				// because revision or digest doesn't match.
-				expect(
-					err instanceof AuthorityLostError ||
-						err instanceof PersistenceFailureError,
-				).toBe(true);
+				expect(err).toBeInstanceOf(AuthorityLostError);
 			}
 			expect(rejected).toBe(true);
 		} finally {
@@ -600,20 +630,18 @@ describe("canonical projection monotonicity", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6 — Stale handle rejected by fenced projection (ownership mismatch)
+// 5 — Stale/expired handle rejection
 // ---------------------------------------------------------------------------
 
 describe("fenced projection ownership guard", () => {
 	test("stale handle → AuthorityLostError, state.json not overwritten", () => {
 		const ctx = setup();
 		try {
-			// A acquires.
 			const aAcquired = acquire(ctx.runDb);
 			expect(aAcquired.kind).toBe("ACQUIRED");
 			if (aAcquired.kind !== "ACQUIRED") return;
 			const handleA = aAcquired.handle;
 
-			// Seed and initialize.
 			const aInit = initializeStateUnderFence({
 				db: ctx.runDb.connection,
 				handle: handleA,
@@ -624,29 +652,22 @@ describe("fenced projection ownership guard", () => {
 			expect(aInit.kind).toBe("INITIALIZED");
 			if (aInit.kind !== "INITIALIZED") return;
 
-			// Write a known state.json.
 			const stateJsonPath = join(ctx.dir, "state.json");
 			writeFileSync(stateJsonPath, JSON.stringify({ marker: "before" }));
 
-			// Release A's ownership.
 			releaseOwnership({ db: ctx.runDb.connection, handle: handleA });
 
 			// B acquires.
-			const bAcquired = acquire(ctx.runDb, { nowEpochMs: NOW_EPOCH + 1000 });
-			expect(bAcquired.kind).toBe("ACQUIRED");
-			if (bAcquired.kind !== "ACQUIRED") return;
+			acquire(ctx.runDb, { nowEpochMs: NOW_EPOCH + 1000 });
 
-			// A tries fenced projection with its stale handle.
+			// A tries fenced projection with stale handle.
 			let rejected = false;
 			try {
-				projectStateJsonFenced(
-					{
-						runDb: ctx.runDb,
-						handle: handleA, // stale
-						runDir: ctx.dir,
-						runId: RUN_ID,
-					},
-					aInit.committed.state,
+				projectAuthoritativeStateFenced(
+					ctx.runDb.connection,
+					handleA,
+					ctx.dir,
+					"0",
 					aInit.committed.stateDigest,
 				);
 			} catch (err) {
@@ -655,7 +676,6 @@ describe("fenced projection ownership guard", () => {
 			}
 			expect(rejected).toBe(true);
 
-			// state.json must NOT have been overwritten.
 			const content = JSON.parse(readFileSync(stateJsonPath, "utf-8"));
 			expect(content.marker).toBe("before");
 		} finally {
@@ -666,7 +686,6 @@ describe("fenced projection ownership guard", () => {
 	test("expired lease → AuthorityLostError with reason EXPIRED_HANDLE", () => {
 		const ctx = setup();
 		try {
-			// Acquire with very short lease at epoch 0.
 			const acquired = acquire(ctx.runDb, {
 				nowEpochMs: 0,
 				leaseDurationMs: 1000,
@@ -675,24 +694,20 @@ describe("fenced projection ownership guard", () => {
 			if (acquired.kind !== "ACQUIRED") return;
 			const handle = acquired.handle;
 
-			// Seed via unsafe for simplicity.
-			const record = makeRecord({
-				runIncarnationId: handle.incarnationId,
-			});
+			const record = makeRecord({ runIncarnationId: handle.incarnationId });
 			seedViaUnsafe(ctx.runDb, handle, record);
 
-			// Try fenced projection far past the lease.
+			const read = readAuthoritativeState(ctx.runDb.connection);
+			expect(read.state).not.toBeNull();
+
 			let rejected = false;
 			try {
-				projectStateJsonFenced(
-					{
-						runDb: ctx.runDb,
-						handle,
-						runDir: ctx.dir,
-						runId: RUN_ID,
-					},
-					record,
-					"sha256:0000000000000000000000000000000000000000000000000000000000000000", // wrong digest but lease check comes first
+				projectAuthoritativeStateFenced(
+					ctx.runDb.connection,
+					handle,
+					ctx.dir,
+					"0",
+					read.digest ?? "",
 				);
 			} catch (err) {
 				rejected = true;

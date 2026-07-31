@@ -16,6 +16,7 @@ import {
 import { openRunDatabase } from "../persistence/sqlite/run-database";
 import {
 	initializeStateUnderFence,
+	projectAuthoritativeStateFenced,
 	readAuthoritativeState,
 	type StateRecord,
 } from "../persistence/sqlite/run-state-store";
@@ -42,7 +43,6 @@ import {
 	validateExternalRunId,
 } from "./preflight";
 import { installSignalHandlers } from "./signal-handlers";
-import { projectStateJsonFenced } from "./state-commit";
 
 const DB_FILENAME = "turnlock.sqlite3";
 
@@ -439,15 +439,11 @@ async function runInitialMode<S extends object>(
 	// Wrap in try/catch — if projection fails after the state is already
 	// authoritative, we must release ownership before throwing.
 	try {
-		projectStateJsonFenced(
-			{
-				runDb,
-				handle,
-				runDir,
-				runId,
-				config,
-			},
-			initResult.committed.state,
+		projectAuthoritativeStateFenced(
+			runDb.connection,
+			handle,
+			runDir,
+			initResult.committed.state.stateRevision,
 			initResult.committed.stateDigest,
 		);
 
@@ -870,64 +866,97 @@ async function runResumeMode<S extends object>(
 	const state = stateRecordToStateFile(authoritativeRecord, runDir);
 
 	// Project state.json from the authoritative record under fence.
-	projectStateJsonFenced(
-		{
-			runDb,
+	// The fenced projection re-reads from SQLite — content always comes
+	// from the authority.
+	// Wrap in try/catch — if projection fails after the state is already
+	// authoritative, we must release ownership before throwing.
+	try {
+		projectAuthoritativeStateFenced(
+			runDb.connection,
 			handle,
 			runDir,
-			runId,
+			authoritativeRecord.stateRevision,
+			authoritativeDigest ?? "",
+		);
+
+		if (state.runId !== runId) {
+			releaseOwnership({ db: runDb.connection, handle });
+			runDb.close();
+			throw new ProtocolError(
+				`RUN_DIR mismatch with argv — state.runId=${state.runId}, argv.runId=${runId}`,
+				{ runId, orchestratorName: config.name },
+			);
+		}
+		if (state.orchestratorName !== config.name) {
+			releaseOwnership({ db: runDb.connection, handle });
+			runDb.close();
+			throw new ProtocolError(
+				`orchestrator name mismatch — state.orchestratorName=${state.orchestratorName}, config.name=${config.name}`,
+				{ runId, orchestratorName: config.name },
+			);
+		}
+
+		fs.mkdirSync(path.join(runDir, "external-requests"), { recursive: true });
+		fs.mkdirSync(path.join(runDir, "external-results"), { recursive: true });
+		fs.mkdirSync(path.join(runDir, "accepted-external-resolutions"), {
+			recursive: true,
+		});
+		fs.mkdirSync(path.join(runDir, "artifacts", "sha256"), {
+			recursive: true,
+		});
+
+		logger.enableDiskEmit(path.join(runDir, "events.ndjson"));
+
+		const abortController = new AbortController();
+		const ctx: DispatchContext<S> = {
 			config,
-		},
-		authoritativeRecord,
-		authoritativeDigest ?? "",
-	);
+			runId,
+			runDir,
+			runDb,
+			handle,
+			logger,
+			abortController,
+			currentPhase: state.currentPhase,
+			phasesExecuted: state.phasesExecuted,
+			accumulatedDurationMs: state.accumulatedDurationMs,
+			stateRevision: authoritativeRecord.stateRevision,
+		};
 
-	if (state.runId !== runId) {
-		releaseOwnership({ db: runDb.connection, handle });
+		installSignalHandlers(ctx);
+
+		await runHandleResume(ctx, state);
+	} catch (projectionErr) {
+		// State is already committed in SQLite.  Release ownership so the
+		// next --resume can acquire immediately.
+		const releaseResult = releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
-		throw new ProtocolError(
-			`RUN_DIR mismatch with argv — state.runId=${state.runId}, argv.runId=${runId}`,
-			{ runId, orchestratorName: config.name },
-		);
+
+		// If release also failed, surface both errors so the ownership
+		// leak is observable.
+		if (
+			releaseResult.kind !== "SUCCESS" &&
+			releaseResult.kind !== "STALE_HANDLE"
+		) {
+			throw new ProtocolError(
+				"Resume projection/setup failed and ownership release also failed",
+				{
+					runId,
+					orchestratorName: config.name,
+					cause: new AggregateError(
+						[
+							projectionErr,
+							releaseResult.kind === "DB_FAILURE"
+								? releaseResult.cause
+								: new Error(releaseResult.kind),
+						],
+						"resume projection/setup and release both failed",
+					),
+				},
+			);
+		}
+
+		throw projectionErr;
 	}
-	if (state.orchestratorName !== config.name) {
-		releaseOwnership({ db: runDb.connection, handle });
-		runDb.close();
-		throw new ProtocolError(
-			`orchestrator name mismatch — state.orchestratorName=${state.orchestratorName}, config.name=${config.name}`,
-			{ runId, orchestratorName: config.name },
-		);
-	}
-
-	fs.mkdirSync(path.join(runDir, "external-requests"), { recursive: true });
-	fs.mkdirSync(path.join(runDir, "external-results"), { recursive: true });
-	fs.mkdirSync(path.join(runDir, "accepted-external-resolutions"), {
-		recursive: true,
-	});
-	fs.mkdirSync(path.join(runDir, "artifacts", "sha256"), {
-		recursive: true,
-	});
-
-	logger.enableDiskEmit(path.join(runDir, "events.ndjson"));
-
-	const abortController = new AbortController();
-	const ctx: DispatchContext<S> = {
-		config,
-		runId,
-		runDir,
-		runDb,
-		handle,
-		logger,
-		abortController,
-		currentPhase: state.currentPhase,
-		phasesExecuted: state.phasesExecuted,
-		accumulatedDurationMs: state.accumulatedDurationMs,
-		stateRevision: authoritativeRecord.stateRevision,
-	};
-
-	installSignalHandlers(ctx);
-
-	await runHandleResume(ctx, state);
 }
 
 export async function runOrchestrator<S extends object>(

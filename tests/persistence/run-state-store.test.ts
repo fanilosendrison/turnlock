@@ -11,11 +11,11 @@ import { acquireOwnership } from "../../src/persistence/sqlite/ownership";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
 import {
 	commitState,
-	projectStateJson,
 	readAuthoritativeState,
 	type StateRecord,
 } from "../../src/persistence/sqlite/run-state-store";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+import { unsafeWriteStateJson } from "../helpers/unsafe-state-projection";
 import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
 
 const LEASE_MS = 30 * 60 * 1000;
@@ -267,7 +267,7 @@ describe("run-state-store", () => {
 			expect(commitResult.kind).toBe("COMMITTED");
 			if (commitResult.kind !== "COMMITTED") return;
 
-			projectStateJson(
+			unsafeWriteStateJson(
 				ctx.dir,
 				commitResult.committed.state,
 				commitResult.committed.stateDigest,
