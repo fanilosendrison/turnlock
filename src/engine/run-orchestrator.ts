@@ -738,37 +738,12 @@ async function runResumeMode<S extends object>(
 	// Read authoritative state from SQLite (defense-in-depth — should
 	// always succeed after the paths above).
 	//
-	// From here to runHandleResume, any failure — including
-	// DbIntegrityError from digest verification — must release
-	// ownership before throwing.
+	// From here to runHandleResume, the catch block at the end of
+	// this scope is the single owner of releaseOwnership + runDb.close().
+	// Individual branches must NOT release or close — just throw.
 	try {
 		const readResult = readAuthoritativeState<S>(runDb.connection);
 		if (readResult.state === null) {
-			// Release ownership so the next attempt can acquire immediately.
-			// STALE_HANDLE is acceptable — this handle should still be valid.
-			const releaseResult = releaseOwnership({
-				db: runDb.connection,
-				handle,
-			});
-			runDb.close();
-
-			if (
-				releaseResult.kind !== "SUCCESS" &&
-				releaseResult.kind !== "STALE_HANDLE"
-			) {
-				throw new StateMissingError(
-					"state missing in SQLite (release failed)",
-					{
-						runId,
-						orchestratorName: config.name,
-						cause:
-							releaseResult.kind === "DB_FAILURE"
-								? releaseResult.cause
-								: undefined,
-					},
-				);
-			}
-
 			throw new StateMissingError("state missing in SQLite", {
 				runId,
 				orchestratorName: config.name,
@@ -818,77 +793,22 @@ async function runResumeMode<S extends object>(
 				});
 
 				if (commitResult.kind !== "COMMITTED") {
-					const releaseResult = releaseOwnership({
-						db: runDb.connection,
-						handle,
-					});
-					runDb.close();
-
-					// Verify release — a DB_FAILURE means the lock may
-					// still be HELD.
-					if (
-						releaseResult.kind !== "SUCCESS" &&
-						releaseResult.kind !== "STALE_HANDLE"
-					) {
-						throw new ProtocolError(
-							`v3→v4 migration commit failed and ownership release also failed: ${commitResult.kind} + ${releaseResult.kind}`,
-							{
-								runId,
-								orchestratorName: config.name,
-								cause: new AggregateError(
-									[
-										new Error(`migration commit: ${commitResult.kind}`),
-										releaseResult.kind === "DB_FAILURE"
-											? releaseResult.cause
-											: new Error(releaseResult.kind),
-									],
-									"migration commit and release both failed",
-								),
-							},
-						);
-					}
-
 					throw new ProtocolError(
 						`v3→v4 migration commit failed: ${commitResult.kind}`,
-						{ runId, orchestratorName: config.name },
+						{
+							runId,
+							orchestratorName: config.name,
+							cause:
+								commitResult.kind === "DB_FAILURE"
+									? commitResult.cause
+									: undefined,
+						},
 					);
 				}
 
 				authoritativeRecord = commitResult.committed.state as StateRecord<S>;
 				authoritativeDigest = commitResult.committed.stateDigest;
 			} else {
-				// Migration blocked — state stays v3.  This is fatal:
-				// we cannot resume with a v3 state that cannot be migrated.
-				// Release ownership before closing so the next attempt
-				// can acquire immediately.
-				const releaseResult = releaseOwnership({
-					db: runDb.connection,
-					handle,
-				});
-				runDb.close();
-
-				// STALE_HANDLE is acceptable: this handle no longer owns
-				// the row (a successor may hold it).  No further release
-				// should be attempted.
-				// DB_FAILURE means we could not release — report it.
-				if (
-					releaseResult.kind !== "SUCCESS" &&
-					releaseResult.kind !== "STALE_HANDLE"
-				) {
-					throw new StateMigrationBlockedError(
-						`v3→v4 migration blocked: legacy manifest cannot be converted (release failed: ${releaseResult.kind})`,
-						{
-							reason: migrationResult.reason,
-							cause:
-								releaseResult.kind === "DB_FAILURE"
-									? releaseResult.cause
-									: undefined,
-							runId,
-							orchestratorName: config.name,
-						},
-					);
-				}
-
 				throw new StateMigrationBlockedError(
 					"v3→v4 migration blocked: legacy manifest cannot be converted",
 					{
@@ -918,16 +838,12 @@ async function runResumeMode<S extends object>(
 		);
 
 		if (state.runId !== runId) {
-			releaseOwnership({ db: runDb.connection, handle });
-			runDb.close();
 			throw new ProtocolError(
 				`RUN_DIR mismatch with argv — state.runId=${state.runId}, argv.runId=${runId}`,
 				{ runId, orchestratorName: config.name },
 			);
 		}
 		if (state.orchestratorName !== config.name) {
-			releaseOwnership({ db: runDb.connection, handle });
-			runDb.close();
 			throw new ProtocolError(
 				`orchestrator name mismatch — state.orchestratorName=${state.orchestratorName}, config.name=${config.name}`,
 				{ runId, orchestratorName: config.name },
@@ -963,37 +879,31 @@ async function runResumeMode<S extends object>(
 		installSignalHandlers(ctx);
 
 		await runHandleResume(ctx, state);
-	} catch (resumeErr) {
-		// Any failure after ownership was acquired — read, migration,
-		// projection, setup, or dispatch — must release before throwing.
+	} catch (primaryError) {
+		// Single cleanup owner — release ownership then close the DB.
+		// Internal branches MUST NOT release or close; they just throw.
 		const releaseResult = releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
 
-		// If release also failed, surface both errors so the ownership
-		// leak is observable.
 		if (
 			releaseResult.kind !== "SUCCESS" &&
 			releaseResult.kind !== "STALE_HANDLE"
 		) {
-			throw new ProtocolError(
-				"Resume failed and ownership release also failed",
-				{
-					runId,
-					orchestratorName: config.name,
-					cause: new AggregateError(
-						[
-							resumeErr,
-							releaseResult.kind === "DB_FAILURE"
-								? releaseResult.cause
-								: new Error(releaseResult.kind),
-						],
-						"resume and release both failed",
-					),
-				},
+			// Ownership release failed — surface both errors so the
+			// ownership leak is observable, but preserve the primary
+			// error as the head of the AggregateError.
+			throw new AggregateError(
+				[
+					primaryError,
+					releaseResult.kind === "DB_FAILURE"
+						? releaseResult.cause
+						: new Error(`ownership release failed: ${releaseResult.kind}`),
+				],
+				"primary error and ownership release both failed",
 			);
 		}
 
-		throw resumeErr;
+		throw primaryError;
 	}
 }
 
