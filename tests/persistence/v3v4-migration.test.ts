@@ -918,4 +918,321 @@ await runOrchestrator<State>({
 			workspace.cleanup();
 		}
 	});
+
+	// -------------------------------------------------------------------
+	// Legacy .lock inter-protocol guard
+	// -------------------------------------------------------------------
+
+	test("legacy .lock present + no DB → resume blocked, SQLite DB not created", async () => {
+		const workspace = createE2EWorkspace("lock-guard-blocked-");
+		const orchestratorName = "e2e-lock-guard";
+		const runId = "01HX000000000000000000K0K1";
+
+		try {
+			// 1. Write entrypoint.
+			const entrypoint = workspace.writeEntrypoint(
+				"lock-guard-blocked.ts",
+				buildEntrypointSource(`
+interface State { approved: boolean; reviewed: boolean }
+
+await runOrchestrator<State>({
+	name: ${JSON.stringify(orchestratorName)},
+	initial: "fanout",
+	initialState: { approved: false, reviewed: false },
+	resumeCommand: (runId: string) => \`bun \${import.meta.path} --run-id \${runId} --resume\`,
+	phases: {
+		fanout: definePhase<State>(async (_state, io) =>
+			io.delegatePrompt("review the code", "collect", { reviewed: false })
+		),
+		collect: definePhase<State>(async (_state, io) => {
+			const result = io.consumePendingResult(z.object({ approved: z.boolean() }));
+			return io.done({ approved: result.approved, reviewed: true });
+		}),
+	},
+});
+`),
+			);
+
+			// 2. Construct the run directory with state.json (v4) + .lock,
+			//    but NO turnlock.sqlite3.
+			const runDir = join(workspace.runDirRoot, orchestratorName, runId);
+			mkdirSync(runDir, { recursive: true });
+			mkdirSync(join(runDir, "delegations"), { recursive: true });
+			mkdirSync(join(runDir, "results"), { recursive: true });
+			mkdirSync(join(runDir, "artifacts", "sha256"), { recursive: true });
+			mkdirSync(join(runDir, "external-requests"), { recursive: true });
+			mkdirSync(join(runDir, "external-results"), { recursive: true });
+			mkdirSync(
+				join(runDir, "accepted-external-resolutions"),
+				{ recursive: true },
+			);
+
+			// Write a valid state.json (v4) with pending delegation.
+			const manifestContent = JSON.stringify({
+				kind: "delegation-manifest",
+				task: "review the code",
+			});
+			writeFileSync(
+				join(runDir, "delegations", "review-0.json"),
+				manifestContent,
+			);
+
+			// Create the manifest artifact blob so readStateSnapshot succeeds.
+			const manifestDigest = createHash("sha256")
+				.update(manifestContent)
+				.digest("hex");
+			const blobDir = join(
+				runDir,
+				"artifacts",
+				"sha256",
+				manifestDigest.slice(0, 2),
+			);
+			mkdirSync(blobDir, { recursive: true });
+			writeFileSync(
+				join(blobDir, `${manifestDigest.slice(2)}.json`),
+				manifestContent,
+			);
+
+			const stateV4 = {
+				schemaVersion: STATE_SCHEMA_VERSION,
+				runId,
+				orchestratorName,
+				startedAt: NOW_ISO,
+				startedAtEpochMs: NOW_EPOCH,
+				lastTransitionAt: NOW_ISO,
+				lastTransitionAtEpochMs: NOW_EPOCH,
+				currentPhase: "fanout",
+				phasesExecuted: 1,
+				accumulatedDurationMs: 100,
+				data: { approved: false, reviewed: false },
+				usedLabels: ["review"],
+				pendingDelegation: {
+					label: "review",
+					kind: "prompt",
+					resumeAt: "collect",
+					manifestArtifact: {
+						kind: "delegation-manifest",
+						digestAlgorithm: "sha256",
+						digest: `sha256:${manifestDigest}`,
+						relativePath: `artifacts/sha256/${manifestDigest.slice(0, 2)}/${manifestDigest.slice(2)}.json`,
+						mediaType: "application/json",
+						sizeBytes: manifestContent.length,
+					},
+					emittedAtEpochMs: NOW_EPOCH,
+					deadlineAtEpochMs: NOW_EPOCH + 600_000,
+					attempt: 0,
+					effectiveRetryPolicy: {
+						maxAttempts: 3,
+						backoffBaseMs: 1000,
+						maxBackoffMs: 30_000,
+					},
+				},
+			};
+			writeFileSync(
+				join(runDir, "state.json"),
+				JSON.stringify(stateV4),
+			);
+
+			// Create the legacy .lock file — this is what we're testing.
+			writeFileSync(join(runDir, ".lock"), "pid=99999\ntimestamp=1704067200000\n");
+
+			// Verify turnlock.sqlite3 does NOT exist.
+			const dbPath = join(runDir, "turnlock.sqlite3");
+			expect(existsSync(dbPath)).toBe(false);
+
+			// 3. Run the orchestrator in resume mode — MUST be blocked.
+			const result = await workspace.runEntrypoint(
+				entrypoint,
+				["--resume", "--run-id", runId],
+				{ timeoutMs: 15_000 },
+			);
+
+			// 4. Verify: process failure, single clean ERROR block.
+			expect(result.exitCode).toBe(1);
+			expect(countProtocolBlocks(result.stdout)).toBe(1);
+			const block = parseSingleProtocolBlock(result.stdout);
+			expect(block.action).toBe("ERROR");
+			expect(block.runId).toBe(runId);
+			expect(block.fields.errorKind).toBe("legacy_lock_migration_blocked");
+			expect(String(block.fields.message)).toContain("Legacy ownership lock");
+
+			// 5. Verify: turnlock.sqlite3 was NOT created.
+			expect(existsSync(dbPath)).toBe(false);
+
+			// 6. Verify: no protocol blocks on stderr.
+			expect(result.stderr).not.toContain("@@TURNLOCK@@");
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	test("legacy .lock absent + no DB → normal migration proceeds, SQLite ownership acquired", async () => {
+		const workspace = createE2EWorkspace("lock-guard-allowed-");
+		const orchestratorName = "e2e-lock-guard-ok";
+		const runId = "01HX000000000000000000K0K2";
+
+		try {
+			// 1. Write entrypoint.
+			const entrypoint = workspace.writeEntrypoint(
+				"lock-guard-ok.ts",
+				buildEntrypointSource(`
+interface State { approved: boolean; reviewed: boolean }
+
+await runOrchestrator<State>({
+	name: ${JSON.stringify(orchestratorName)},
+	initial: "fanout",
+	initialState: { approved: false, reviewed: false },
+	resumeCommand: (runId: string) => \`bun \${import.meta.path} --run-id \${runId} --resume\`,
+	phases: {
+		fanout: definePhase<State>(async (_state, io) =>
+			io.delegatePrompt("review the code", "collect", { reviewed: false })
+		),
+		collect: definePhase<State>(async (_state, io) => {
+			const result = io.consumePendingResult(z.object({ approved: z.boolean() }));
+			return io.done({ approved: result.approved, reviewed: true });
+		}),
+	},
+});
+`),
+			);
+
+			// 2. Construct the run directory with state.json (v4) but NO .lock
+			//    and NO turnlock.sqlite3.
+			const runDir = join(workspace.runDirRoot, orchestratorName, runId);
+			mkdirSync(runDir, { recursive: true });
+			mkdirSync(join(runDir, "delegations"), { recursive: true });
+			mkdirSync(join(runDir, "results"), { recursive: true });
+			mkdirSync(join(runDir, "artifacts", "sha256"), { recursive: true });
+			mkdirSync(join(runDir, "external-requests"), { recursive: true });
+			mkdirSync(join(runDir, "external-results"), { recursive: true });
+			mkdirSync(
+				join(runDir, "accepted-external-resolutions"),
+				{ recursive: true },
+			);
+
+			// Write manifest file.
+			const manifestContent = JSON.stringify({
+				kind: "delegation-manifest",
+				task: "review the code",
+			});
+			writeFileSync(
+				join(runDir, "delegations", "review-0.json"),
+				manifestContent,
+			);
+
+			// Write result file so runHandleResume can consume it.
+			writeFileSync(
+				join(runDir, "results", "review-0.json"),
+				JSON.stringify({ approved: true }),
+			);
+
+			// Create manifest artifact blob.
+			const manifestDigest = createHash("sha256")
+				.update(manifestContent)
+				.digest("hex");
+			const blobDir = join(
+				runDir,
+				"artifacts",
+				"sha256",
+				manifestDigest.slice(0, 2),
+			);
+			mkdirSync(blobDir, { recursive: true });
+			writeFileSync(
+				join(blobDir, `${manifestDigest.slice(2)}.json`),
+				manifestContent,
+			);
+
+			const stateV4 = {
+				schemaVersion: STATE_SCHEMA_VERSION,
+				runId,
+				orchestratorName,
+				startedAt: NOW_ISO,
+				startedAtEpochMs: NOW_EPOCH,
+				lastTransitionAt: NOW_ISO,
+				lastTransitionAtEpochMs: NOW_EPOCH,
+				currentPhase: "fanout",
+				phasesExecuted: 1,
+				accumulatedDurationMs: 100,
+				data: { approved: false, reviewed: false },
+				usedLabels: ["review"],
+				pendingDelegation: {
+					label: "review",
+					kind: "prompt",
+					resumeAt: "collect",
+					manifestArtifact: {
+						kind: "delegation-manifest",
+						digestAlgorithm: "sha256",
+						digest: `sha256:${manifestDigest}`,
+						relativePath: `artifacts/sha256/${manifestDigest.slice(0, 2)}/${manifestDigest.slice(2)}.json`,
+						mediaType: "application/json",
+						sizeBytes: manifestContent.length,
+					},
+					emittedAtEpochMs: NOW_EPOCH,
+					deadlineAtEpochMs: NOW_EPOCH + 600_000,
+					attempt: 0,
+					effectiveRetryPolicy: {
+						maxAttempts: 3,
+						backoffBaseMs: 1000,
+						maxBackoffMs: 30_000,
+					},
+				},
+			};
+			writeFileSync(
+				join(runDir, "state.json"),
+				JSON.stringify(stateV4),
+			);
+
+			// Explicitly verify .lock is absent.
+			const dbPath = join(runDir, "turnlock.sqlite3");
+			expect(existsSync(join(runDir, ".lock"))).toBe(false);
+			expect(existsSync(dbPath)).toBe(false);
+
+			// 3. Run the orchestrator in resume mode — MUST succeed.
+			const result = await workspace.runEntrypoint(
+				entrypoint,
+				["--resume", "--run-id", runId],
+				{ timeoutMs: 15_000 },
+			);
+
+			// 4. Verify: success, DONE protocol block.
+			expect(result.exitCode).toBe(0);
+			expect(countProtocolBlocks(result.stdout)).toBe(1);
+			const block = parseSingleProtocolBlock(result.stdout);
+			expect(block.action).toBe("DONE");
+			expect(block.runId).toBe(runId);
+			expect(block.fields.success).toBe(true);
+
+			// 5. Verify: turnlock.sqlite3 WAS created.
+			expect(existsSync(dbPath)).toBe(true);
+
+			// 6. Verify: state.json projected from SQLite.
+			const state = readJsonFile<Record<string, unknown>>(
+				join(runDir, "state.json"),
+			);
+			expect(state.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			expect(state.runId).toBe(runId);
+
+			// 7. Verify: DB ownership is released (FREE).
+			const checkDb = openRunDatabase({
+				driver: bunSqliteDriver,
+				dbPath,
+				busyTimeoutMs: 500,
+			});
+			try {
+				const ownRow = checkDb.connection
+					.prepare(
+						"SELECT ownership_status FROM run_ownership WHERE singleton = 1",
+					)
+					.get() as { ownership_status: string } | undefined;
+				expect(ownRow?.ownership_status ?? "FREE").toBe("FREE");
+			} finally {
+				checkDb.close();
+			}
+
+			// 8. Verify: no protocol blocks on stderr.
+			expect(result.stderr).not.toContain("@@TURNLOCK@@");
+		} finally {
+			workspace.cleanup();
+		}
+	});
 });
