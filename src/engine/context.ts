@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
-import type { LockHandle } from "../services/lock";
+import type { LockHandle } from "../persistence/sqlite/ownership";
+import type { RunDatabase } from "../persistence/sqlite/run-database";
 import type { InternalLogger } from "../services/logger";
 import type { OrchestratorConfig } from "../types/config";
 
@@ -7,13 +8,14 @@ export interface DispatchContext<S extends object> {
 	readonly config: OrchestratorConfig<S>;
 	readonly runId: string;
 	readonly runDir: string;
-	readonly lockPath: string;
+	readonly runDb: RunDatabase;
 	readonly handle: LockHandle;
 	readonly logger: InternalLogger;
 	readonly abortController: AbortController;
 	currentPhase: string | null;
 	phasesExecuted: number;
 	accumulatedDurationMs: number;
+	stateRevision: string;
 }
 
 export interface LoadedResults {

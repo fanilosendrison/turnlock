@@ -1,12 +1,12 @@
 import { PhaseError, ProtocolError } from "../errors/concrete";
 import { clock } from "../services/clock";
-import { refreshLock } from "../services/lock";
 import type { StateFile } from "../services/state-io";
 import type { PhaseResult } from "../types/phase";
 import type { DispatchContext, LoadedResults } from "./context";
 import { handleDelegate } from "./delegate-handler";
 import { handleExternalRequest } from "./external-request-handler";
 import { buildPhaseIO, type PhaseIOGuards } from "./phase-io";
+import { refreshOwnershipFromContext } from "./state-commit";
 import { emitFatalError, handleDone, handleFail } from "./terminal-handlers";
 
 function deepFreeze<T>(obj: T): T {
@@ -44,7 +44,7 @@ export async function runDispatchLoop<S extends object>(
 		});
 	}
 
-	refreshLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+	refreshOwnershipFromContext(ctx);
 
 	const guards: PhaseIOGuards = {
 		committed: { value: false },

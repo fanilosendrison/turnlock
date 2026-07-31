@@ -7,12 +7,7 @@ import {
 } from "../constants";
 import { InvalidConfigError, ProtocolError } from "../errors/concrete";
 import { clock } from "../services/clock";
-import { releaseLock } from "../services/lock";
-import {
-	type PendingDelegationRecord,
-	type StateFile,
-	writeStateAtomic,
-} from "../services/state-io";
+import type { PendingDelegationRecord, StateFile } from "../services/state-io";
 import type {
 	BatchDelegationRequest,
 	DelegationRequest,
@@ -20,6 +15,10 @@ import type {
 import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
 import { clearPendingYield } from "./pending-yield";
 import { selectBinding } from "./shared";
+import {
+	commitStateWithProjection,
+	releaseOwnershipFromContext,
+} from "./state-commit";
 
 export async function handleDelegate<S extends object>(
 	ctx: DispatchContext<S>,
@@ -148,7 +147,7 @@ export async function handleDelegate<S extends object>(
 		pendingDelegation,
 		usedLabels: [...state.usedLabels, label],
 	};
-	writeStateAtomic(ctx.runDir, newState, ctx.config.stateSchema);
+	commitStateWithProjection(ctx, newState);
 
 	ctx.logger.emit({
 		eventType: "delegation_emit",
@@ -165,6 +164,6 @@ export async function handleDelegate<S extends object>(
 	const block = binding.buildProtocolBlock(manifest, manifestPath, resumeCmd);
 	process.stdout.write(block);
 
-	releaseLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+	releaseOwnershipFromContext(ctx);
 	doExit(0);
 }

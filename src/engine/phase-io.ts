@@ -7,7 +7,6 @@ import {
 	ProtocolError,
 } from "../errors/concrete";
 import { clock } from "../services/clock";
-import { refreshLock } from "../services/lock";
 import type {
 	PendingDelegationRecord,
 	PendingExternalRequestRecord,
@@ -16,6 +15,7 @@ import { summarizeZodError, validateResult } from "../services/validator";
 import type { PhaseIO, PhaseResult } from "../types/phase";
 import type { DispatchContext, LoadedResults } from "./context";
 import { assertExternalRequest } from "./external-request-validation";
+import { refreshOwnershipFromContext } from "./state-commit";
 
 export interface PhaseIOGuards {
 	readonly committed: { value: boolean };
@@ -287,7 +287,7 @@ export function buildPhaseIO<S extends object>(args: {
 		},
 
 		refreshLock(): void {
-			refreshLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+			refreshOwnershipFromContext(ctx);
 		},
 	};
 }

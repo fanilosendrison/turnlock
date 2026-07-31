@@ -1,8 +1,8 @@
 import { AbortedError } from "../errors/concrete";
 import { clock } from "../services/clock";
-import { releaseLock } from "../services/lock";
 import { writeProtocolBlock } from "../services/protocol";
 import { type DispatchContext, doExit } from "./context";
+import { releaseOwnershipFromContext } from "./state-commit";
 
 export function installSignalHandlers<S extends object>(
 	ctx: DispatchContext<S>,
@@ -47,7 +47,7 @@ export function installSignalHandlers<S extends object>(
 			// silent
 		}
 		try {
-			releaseLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+			releaseOwnershipFromContext(ctx);
 		} catch {
 			// silent
 		}

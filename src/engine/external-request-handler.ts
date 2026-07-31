@@ -3,11 +3,9 @@ import { externalRequestBinding } from "../bindings/external-request";
 import { ProtocolError } from "../errors/concrete";
 import { clock } from "../services/clock";
 import { contentDigest } from "../services/content-digest";
-import { releaseLock } from "../services/lock";
-import {
-	type PendingExternalRequestRecord,
-	type StateFile,
-	writeStateAtomic,
+import type {
+	PendingExternalRequestRecord,
+	StateFile,
 } from "../services/state-io";
 import type { PhaseResult } from "../types/phase";
 import {
@@ -18,6 +16,10 @@ import {
 } from "./context";
 import { assertExternalRequest } from "./external-request-validation";
 import { clearPendingYield } from "./pending-yield";
+import {
+	commitStateWithProjection,
+	releaseOwnershipFromContext,
+} from "./state-commit";
 import { emitFatalError } from "./terminal-handlers";
 
 interface PreparedPublication {
@@ -111,7 +113,7 @@ export async function handleExternalRequest<S extends object>(
 			pendingExternalRequest,
 			usedLabels: [...state.usedLabels, request.label],
 		};
-		writeStateAtomic(ctx.runDir, newState, ctx.config.stateSchema);
+		commitStateWithProjection(ctx, newState);
 		durableState = newState;
 
 		if (!publication.ok) throw publication.error;
@@ -127,7 +129,7 @@ export async function handleExternalRequest<S extends object>(
 		});
 
 		process.stdout.write(publication.block);
-		releaseLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+		releaseOwnershipFromContext(ctx);
 		doExit(0);
 	} catch (error) {
 		if (isTestExitSignal(error)) throw error;

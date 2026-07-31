@@ -18,15 +18,17 @@ import {
 	installImmutableFileAtomic,
 	readRegularFileBytes,
 } from "../services/immutable-file";
-import { releaseLock } from "../services/lock";
-import {
-	type PendingExternalRequestRecord,
-	type StateFile,
-	writeStateAtomic,
+import type {
+	PendingExternalRequestRecord,
+	StateFile,
 } from "../services/state-io";
 import type { DispatchContext } from "./context";
 import { doExit } from "./context";
 import { runDispatchLoop } from "./dispatch-loop";
+import {
+	commitStateWithProjection,
+	releaseOwnershipFromContext,
+} from "./state-commit";
 import { emitFatalError } from "./terminal-handlers";
 
 function isMissingFileError(error: unknown): boolean {
@@ -222,7 +224,7 @@ async function reemitExternalRequest<S extends object>(
 		timestamp: clock.nowWallIso(),
 	});
 	process.stdout.write(block);
-	releaseLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+	releaseOwnershipFromContext(ctx);
 	doExit(0);
 }
 
@@ -435,11 +437,7 @@ export async function runExternalRequestResume<S extends object>(
 		pendingExternalRequest: acceptedPending,
 	};
 	try {
-		writeStateAtomic(
-			ctx.runDir,
-			stateWithAcceptedResolution,
-			ctx.config.stateSchema,
-		);
+		commitStateWithProjection(ctx, stateWithAcceptedResolution);
 	} catch (error) {
 		await emitFatalError(ctx, state, pending.resumeAt, error);
 		return undefined as never;

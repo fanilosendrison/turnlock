@@ -3,11 +3,14 @@ import { STATE_SCHEMA_VERSION } from "../constants";
 import { enrich, OrchestratorError } from "../errors/base";
 import { PhaseError } from "../errors/concrete";
 import { clock } from "../services/clock";
-import { releaseLock } from "../services/lock";
 import { writeProtocolBlock } from "../services/protocol";
-import { type StateFile, writeStateAtomic } from "../services/state-io";
+import type { StateFile } from "../services/state-io";
 import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
 import { clearPendingYield } from "./pending-yield";
+import {
+	commitStateWithProjection,
+	releaseOwnershipFromContext,
+} from "./state-commit";
 
 export async function emitFatalError<S extends object>(
 	ctx: DispatchContext<S>,
@@ -58,7 +61,7 @@ export async function emitFatalError<S extends object>(
 	});
 	process.stdout.write(block);
 
-	releaseLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+	releaseOwnershipFromContext(ctx);
 	doExit(1);
 }
 
@@ -107,7 +110,7 @@ export async function handleDone<S extends object>(
 		phasesExecuted: state.phasesExecuted + 1,
 		accumulatedDurationMs,
 	};
-	writeStateAtomic(ctx.runDir, newState, ctx.config.stateSchema);
+	commitStateWithProjection(ctx, newState);
 
 	const endedAt = clock.nowWallIso();
 	ctx.logger.emit({
@@ -130,7 +133,7 @@ export async function handleDone<S extends object>(
 	});
 	process.stdout.write(block);
 
-	releaseLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+	releaseOwnershipFromContext(ctx);
 	doExit(0);
 }
 
@@ -151,7 +154,7 @@ export async function handleFail<S extends object>(
 		phasesExecuted: state.phasesExecuted + 1,
 		accumulatedDurationMs,
 	};
-	writeStateAtomic(ctx.runDir, newState, ctx.config.stateSchema);
+	commitStateWithProjection(ctx, newState);
 
 	const nowIso = clock.nowWallIso();
 	ctx.logger.emit({
@@ -182,6 +185,6 @@ export async function handleFail<S extends object>(
 	});
 	process.stdout.write(block);
 
-	releaseLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+	releaseOwnershipFromContext(ctx);
 	doExit(1);
 }

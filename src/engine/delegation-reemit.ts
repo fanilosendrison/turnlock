@@ -5,15 +5,14 @@ import { MANIFEST_VERSION } from "../constants";
 import { AbortedError, ProtocolError } from "../errors/concrete";
 import { abortableSleep } from "../services/abortable-sleep";
 import { clock } from "../services/clock";
-import { releaseLock } from "../services/lock";
-import {
-	type PendingDelegationRecord,
-	type StateFile,
-	writeStateAtomic,
-} from "../services/state-io";
+import type { PendingDelegationRecord, StateFile } from "../services/state-io";
 import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
 import { clearPendingYield } from "./pending-yield";
 import { reconstructManifest, selectBinding } from "./shared";
+import {
+	commitStateWithProjection,
+	releaseOwnershipFromContext,
+} from "./state-commit";
 
 export async function reemitDelegationAttempt<S extends object>(
 	ctx: DispatchContext<S>,
@@ -89,7 +88,7 @@ export async function reemitDelegationAttempt<S extends object>(
 		lastTransitionAt: newEmittedAt,
 		lastTransitionAtEpochMs: newEmittedAtEpochMs,
 	};
-	writeStateAtomic(ctx.runDir, newState, ctx.config.stateSchema);
+	commitStateWithProjection(ctx, newState);
 
 	ctx.logger.emit({
 		eventType: "delegation_emit",
@@ -110,6 +109,6 @@ export async function reemitDelegationAttempt<S extends object>(
 	);
 	process.stdout.write(block);
 
-	releaseLock(ctx.lockPath, ctx.handle, clock, ctx.logger, ctx.runId);
+	releaseOwnershipFromContext(ctx);
 	doExit(0);
 }
