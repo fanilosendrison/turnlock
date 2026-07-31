@@ -20,8 +20,13 @@ import { clock } from "../services/clock";
 import { createLogger } from "../services/logger";
 import { cleanupOldRuns, resolveRunDir } from "../services/run-dir";
 import { generateRunId } from "../services/run-id";
-import { readStateSnapshot, type StateFile } from "../services/state-io";
+import {
+	migrateV3ToV4,
+	readStateSnapshot,
+	type StateFile,
+} from "../services/state-io";
 import { summarizeZodError, validateResult } from "../services/validator";
+import type { TerminalDoneRecord } from "../types/artifacts";
 import type { OrchestratorConfig } from "../types/config";
 import { type DispatchContext, doExit, isTestExitSignal } from "./context";
 import { runDispatchLoop } from "./dispatch-loop";
@@ -399,62 +404,65 @@ async function runResumeMode<S extends object>(
 		});
 	}
 
-	const state = stateRecordToStateFile(readResult.state, runDir);
-
-	// If the state was migrated from v3 to v4, persist the migration in SQLite
-	// so that subsequent resumes operate directly on v4 format.
-	const wasMigrated = readResult.state.schemaVersion !== state.schemaVersion;
+	// Attempt v3→v4 migration.  migrateV3ToV4 is all-or-nothing: it only
+	// bumps schemaVersion to 4 if every legacy field was converted.
+	let authoritativeRecord = readResult.state;
 	let authoritativeDigest = readResult.digest;
-	if (wasMigrated) {
-		const migratedRecord: StateRecord<S> = {
-			...readResult.state,
-			schemaVersion: state.schemaVersion,
-			pendingDelegation: state.pendingDelegation as unknown,
-			pendingExternalRequest: state.pendingExternalRequest as unknown,
-			...(state.terminalResult !== undefined
-				? { terminalResult: state.terminalResult }
-				: {}),
-		};
 
-		// Commit the migrated state through the same ownership handle.
-		// This is a schema migration, not a business transition — it must
-		// succeed against the same revision we read.
-		const { commitState } =
-			require("../persistence/sqlite/run-state-store") as {
-				commitState: typeof import("../persistence/sqlite/run-state-store").commitState;
+	if (readResult.state.schemaVersion === 3) {
+		const maybeMigrated = migrateV3ToV4(
+			readResult.state as unknown as Record<string, unknown>,
+			runDir,
+		);
+
+		if (maybeMigrated.schemaVersion === STATE_SCHEMA_VERSION) {
+			// All legacy fields were converted — commit the v4 state.
+			const migratedRecord: StateRecord<S> = {
+				...readResult.state,
+				schemaVersion: STATE_SCHEMA_VERSION,
+				pendingDelegation: maybeMigrated.pendingDelegation,
+				pendingExternalRequest: maybeMigrated.pendingExternalRequest,
+				...(maybeMigrated.terminalResult !== undefined
+					? {
+							terminalResult:
+								maybeMigrated.terminalResult as TerminalDoneRecord,
+						}
+					: {}),
 			};
-		const commitResult = commitState({
-			db: runDb.connection,
-			handle,
-			expectedRevision: readResult.state.stateRevision,
-			nextState: migratedRecord,
-			nowEpochMs: clock.nowEpochMs(),
-			nowIso: clock.nowWallIso(),
-		});
 
-		if (commitResult.kind !== "COMMITTED") {
-			runDb.close();
-			throw new ProtocolError(
-				`v3→v4 migration commit failed: ${commitResult.kind}`,
-				{ runId, orchestratorName: config.name },
-			);
+			const { commitState } =
+				require("../persistence/sqlite/run-state-store") as {
+					commitState: typeof import("../persistence/sqlite/run-state-store").commitState;
+				};
+			const commitResult = commitState({
+				db: runDb.connection,
+				handle,
+				expectedRevision: readResult.state.stateRevision,
+				nextState: migratedRecord,
+				nowEpochMs: clock.nowEpochMs(),
+				nowIso: clock.nowWallIso(),
+			});
+
+			if (commitResult.kind !== "COMMITTED") {
+				runDb.close();
+				throw new ProtocolError(
+					`v3→v4 migration commit failed: ${commitResult.kind}`,
+					{ runId, orchestratorName: config.name },
+				);
+			}
+
+			authoritativeRecord = commitResult.committed.state as StateRecord<S>;
+			authoritativeDigest = commitResult.committed.stateDigest;
 		}
-
-		authoritativeDigest = commitResult.committed.stateDigest;
+		// else: migration incomplete — state stays v3, no commit.
 	}
 
-	// Always project state.json after resume so direct readers see current state.
-	// Use the migrated state (which may have been converted from v3 to v4).
-	const projected: StateRecord<S> = {
-		...readResult.state,
-		schemaVersion: state.schemaVersion,
-		pendingDelegation: state.pendingDelegation,
-		pendingExternalRequest: state.pendingExternalRequest,
-		...(state.terminalResult !== undefined
-			? { terminalResult: state.terminalResult }
-			: {}),
-	};
-	projectStateJson(runDir, projected, authoritativeDigest ?? "");
+	// Build the in-memory StateFile from the authoritative record (which
+	// may now be v4 with the updated revision).
+	const state = stateRecordToStateFile(authoritativeRecord, runDir);
+
+	// Project state.json from the authoritative record.
+	projectStateJson(runDir, authoritativeRecord, authoritativeDigest ?? "");
 
 	if (state.runId !== runId) {
 		runDb.close();
@@ -494,7 +502,7 @@ async function runResumeMode<S extends object>(
 		currentPhase: state.currentPhase,
 		phasesExecuted: state.phasesExecuted,
 		accumulatedDurationMs: state.accumulatedDurationMs,
-		stateRevision: readResult.state.stateRevision,
+		stateRevision: authoritativeRecord.stateRevision,
 	};
 
 	installSignalHandlers(ctx);

@@ -369,7 +369,7 @@ describe("v3→v4 migration durability", () => {
 			// Migrate
 			const result = readState(dir);
 			expect(result).not.toBeNull();
-			expect(result!.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			expect(result!.schemaVersion).toBe(4);
 			expect(result!.pendingDelegation).toBeDefined();
 			expect(result!.pendingDelegation!.manifestArtifact).toBeDefined();
 
@@ -500,10 +500,10 @@ describe("v3→v4 migration durability", () => {
 				JSON.stringify(v3State),
 			);
 
-			// Migration should succeed but leave old fields (graceful degradation)
+			// Migration leaves schemaVersion at 3 (all-or-nothing: path escapes, conversion blocked)
 			const result = readState(dir);
 			expect(result).not.toBeNull();
-			expect(result!.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			expect((result as unknown as Record<string, unknown>).schemaVersion).toBe(STATE_SCHEMA_VERSION);
 			// The manifestArtifact should NOT be present since the path escapes
 			expect(
 				result!.pendingDelegation?.manifestArtifact,

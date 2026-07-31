@@ -11,6 +11,7 @@ import {
 	StateVersionMismatchError,
 } from "../errors/concrete";
 import type { ArtifactRef, TerminalDoneRecord } from "../types/artifacts";
+import { installPreparedArtifact } from "./artifact-store";
 import { contentDigest, isContentDigest } from "./content-digest";
 import { summarizeZodError } from "./validator";
 
@@ -594,21 +595,25 @@ function migrateV2ToV3(
  *  fields to manifestArtifact.  Reads the old manifest file from disk to
  *  compute the digest and derive the immutable blob path.
  *
- *  Best-effort: if a manifest file is unreadable, migration leaves the
- *  old fields intact so that downstream code can handle the error. */
+ *  All-or-nothing: if any legacy manifest cannot be fully converted, the
+ *  schema version stays at 3 and old fields remain intact.  Callers must
+ *  check schemaVersion to determine whether migration succeeded. */
 export function migrateV3ToV4(
 	parsed: Record<string, unknown>,
 	runDir: string,
 ): Record<string, unknown> {
 	const migrated: Record<string, unknown> = {
 		...parsed,
-		schemaVersion: STATE_SCHEMA_VERSION,
 	};
+
+	let allConverted = true;
+	let hasAnyLegacy = false;
 
 	// Convert pendingDelegation.manifestPath → manifestArtifact
 	if (migrated.pendingDelegation !== undefined) {
 		const pd = migrated.pendingDelegation as Record<string, unknown>;
 		if (pd.manifestPath !== undefined && pd.manifestArtifact === undefined) {
+			hasAnyLegacy = true;
 			const resolved = resolveManifestPath(runDir, String(pd.manifestPath));
 			if (resolved !== null) {
 				const bytes = tryReadManifestBytes(resolved);
@@ -622,7 +627,11 @@ export function migrateV3ToV4(
 					installArtifactBlob(runDir, ref, bytes);
 					pd.manifestArtifact = ref;
 					delete pd.manifestPath;
+				} else {
+					allConverted = false;
 				}
+			} else {
+				allConverted = false;
 			}
 		}
 	}
@@ -631,6 +640,7 @@ export function migrateV3ToV4(
 	if (migrated.pendingExternalRequest !== undefined) {
 		const per = migrated.pendingExternalRequest as Record<string, unknown>;
 		if (per.manifestPath !== undefined && per.manifestArtifact === undefined) {
+			hasAnyLegacy = true;
 			const resolved = resolveManifestPath(runDir, String(per.manifestPath));
 			if (resolved !== null) {
 				const bytes = tryReadManifestBytes(resolved);
@@ -654,9 +664,18 @@ export function migrateV3ToV4(
 					per.manifestArtifact = ref;
 					delete per.manifestPath;
 					delete per.manifestDigest;
+				} else {
+					allConverted = false;
 				}
+			} else {
+				allConverted = false;
 			}
 		}
+	}
+
+	// Only bump the version if all legacy fields were successfully converted.
+	if (hasAnyLegacy && allConverted) {
+		migrated.schemaVersion = STATE_SCHEMA_VERSION;
 	}
 
 	return migrated;
@@ -689,9 +708,12 @@ function resolveManifestPath(runDir: string, stored: string): string | null {
 	return candidate;
 }
 
-/** Try to read manifest bytes; return null if the file doesn't exist. */
+/** Try to read manifest bytes; return null if the file doesn't exist or is
+ *  a symlink.  Symlinks are rejected for migration safety. */
 function tryReadManifestBytes(filePath: string): Buffer | null {
 	try {
+		const stat = fs.lstatSync(filePath);
+		if (!stat.isFile()) return null; // reject symlinks, directories, etc.
 		return fs.readFileSync(filePath);
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -699,54 +721,14 @@ function tryReadManifestBytes(filePath: string): Buffer | null {
 	}
 }
 
-/** Install artifact bytes as an immutable blob.  Uses the same atomic
- *  create-if-absent protocol as installPreparedArtifact.  Idempotent. */
+/** Install artifact bytes as an immutable blob.  Delegates to the
+ *  canonical artifact-store primitive.  Idempotent. */
 function installArtifactBlob(
 	runDir: string,
 	ref: ArtifactRef,
 	bytes: Uint8Array,
 ): void {
-	const targetPath = path.join(runDir, ref.relativePath);
-	const parentDir = path.dirname(targetPath);
-	fs.mkdirSync(parentDir, { recursive: true });
-
-	// Atomic hard-link publication.
-	const tmpPath = `${targetPath}.tmp-${process.pid}-migrate`;
-	const fd = fs.openSync(
-		tmpPath,
-		fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
-		0o600,
-	);
-	try {
-		fs.writeFileSync(fd, bytes);
-		fs.fsyncSync(fd);
-	} finally {
-		fs.closeSync(fd);
-	}
-
-	try {
-		fs.linkSync(tmpPath, targetPath);
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-			// Already installed — verify integrity.
-			const existing = fs.readFileSync(targetPath);
-			const existingDigest = contentDigest(existing);
-			if (existingDigest !== ref.digest || existing.length !== ref.sizeBytes) {
-				throw new StateCorruptedError(
-					"v3→v4 migration: blob collision with different content",
-				);
-			}
-			// Idempotent success: blob already present with correct content.
-		} else {
-			throw err;
-		}
-	} finally {
-		try {
-			fs.unlinkSync(tmpPath);
-		} catch {
-			// best-effort
-		}
-	}
+	installPreparedArtifact(runDir, { ref, bytes });
 }
 
 /** Build an ArtifactRef from content bytes without performing I/O.
@@ -792,12 +774,15 @@ export function readStateSnapshot<S>(
 	if (version === LEGACY_STATE_SCHEMA_VERSION) {
 		validateCanonicalShape(parsed, LEGACY_STATE_SCHEMA_VERSION);
 		current = migrateV2ToV3(parsed);
-		// v2→v3→v4 chain migration
+		// v2→v3→v4 chain migration — always bump to v4 for the legacy
+		// state.json path, even if manifest conversion was incomplete.
 		current = migrateV3ToV4(current, runDir);
+		current.schemaVersion = STATE_SCHEMA_VERSION;
 		migratedFromVersion = LEGACY_STATE_SCHEMA_VERSION;
 	} else if (version === PREVIOUS_STATE_SCHEMA_VERSION) {
 		validateCanonicalShape(parsed, PREVIOUS_STATE_SCHEMA_VERSION);
 		current = migrateV3ToV4(parsed, runDir);
+		current.schemaVersion = STATE_SCHEMA_VERSION;
 		migratedFromVersion = PREVIOUS_STATE_SCHEMA_VERSION;
 	} else if (version === STATE_SCHEMA_VERSION) {
 		current = parsed;
