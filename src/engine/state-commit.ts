@@ -115,6 +115,9 @@ export function commitStateWithProjection<S extends object>(
 		runIncarnationId: ctx.handle.incarnationId,
 		stateRevision: ctx.stateRevision,
 		committedFenceToken: "0",
+		...(nextState.terminalResult !== undefined
+			? { terminalResult: nextState.terminalResult }
+			: {}),
 	};
 
 	const result = sqliteCommitState({
@@ -348,21 +351,35 @@ export function releaseOwnershipBestEffort(
 // projectCanonicalArtifactFenced — fenced canonical projection
 // ---------------------------------------------------------------------------
 
+/** Describes where in the authoritative state the ArtifactRef is expected. */
+export interface ExpectedArtifactPlacement {
+	/** JSON pointer path, e.g. "/terminalResult/outputArtifact" or
+	 *  "/pendingDelegation/manifestArtifact". */
+	readonly pointer: string;
+	readonly artifact: ArtifactRef;
+}
+
 /** Project an immutable artifact as a canonical file, but only if the caller
- *  still holds authority.  Uses a SQLite-level fence check to prevent stale
- *  publication after a successor has taken over.
+ *  still holds authority AND the current authoritative state still references
+ *  this exact artifact at the expected position.
  *
- *  Protocol:
- *    1. BEGIN IMMEDIATE (locks out concurrent ownership changes).
- *    2. Verify incarnationId + ownerToken + fenceToken match ctx.handle.
- *    3. Verify the current authoritative state still references the given
- *       artifactRef (its digest appears in the current state_json).
+ *  Protocol (all inside BEGIN IMMEDIATE):
+ *    1. Verify ownership row: status=HELD, matching incarnation/owner/fence,
+ *       AND lease_until_epoch_ms > now.
+ *    2. Read the current state_json from run_state.
+ *    3. Verify the field at expectedPlacement.pointer matches
+ *       expectedPlacement.artifact exactly (all fields).
  *    4. Read and verify the immutable blob.
  *    5. Write the canonical projection atomically (tmp + rename).
  *    6. COMMIT.
  *
- *  Guarantee: a stale owner whose lease expired and was taken over by a
- *  successor will be rejected at step 2 (fence token mismatch). */
+ *  Guarantees:
+ *    - A stale owner whose lease expired is rejected (EXPIRED_HANDLE).
+ *    - A successor with a higher fence token is rejected (STALE_HANDLE).
+ *    - An artifact superseded by a later revision of the same owner is
+ *      rejected (CANONICAL_PROJECTION_SUPERSEDED).
+ *    - If the blob itself was tampered with, ArtifactIntegrityError is thrown
+ *      before any file is written. */
 export function projectCanonicalArtifactFenced(
 	ctx: {
 		readonly runDb: RunDatabase;
@@ -372,10 +389,11 @@ export function projectCanonicalArtifactFenced(
 		readonly config?: { readonly name?: string };
 		readonly currentPhase?: string | null;
 	},
-	artifactRef: ArtifactRef,
+	expectedPlacement: ExpectedArtifactPlacement,
 	canonicalPath: string,
 ): void {
 	const db = ctx.runDb.connection;
+	const nowEpochMs = defaultClock.nowEpochMs();
 
 	try {
 		beginImmediate(db);
@@ -391,10 +409,11 @@ export function projectCanonicalArtifactFenced(
 	}
 
 	try {
-		// Verify ownership is still held by this handle.
+		// Step 1 — Verify ownership including lease expiration.
 		const ownershipRow = db
 			.prepare(
-				`SELECT ownership_status, incarnation_id, owner_token, fence_token
+				`SELECT ownership_status, incarnation_id, owner_token,
+				        fence_token, lease_until_epoch_ms
 				 FROM run_ownership WHERE singleton = 1`,
 			)
 			.get() as
@@ -403,6 +422,7 @@ export function projectCanonicalArtifactFenced(
 					incarnation_id: string;
 					owner_token: string;
 					fence_token: number | bigint;
+					lease_until_epoch_ms: number | null;
 			  }
 			| undefined;
 
@@ -470,22 +490,113 @@ export function projectCanonicalArtifactFenced(
 			);
 		}
 
-		// Verify the artifact blob exists and has the expected digest.
-		const bytes = readAndVerifyArtifact(ctx.runDir, artifactRef);
+		// Lease check — even if tokens match, expired lease means no authority.
+		if (
+			ownershipRow.lease_until_epoch_ms === null ||
+			nowEpochMs > ownershipRow.lease_until_epoch_ms
+		) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Canonical projection rejected: lease expired",
+				{
+					operation: "state_commit",
+					reason: "EXPIRED_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
 
-		// Write canonical projection atomically.
+		// Step 2 — Read the current authoritative state.
+		const stateRow = db
+			.prepare(
+				`SELECT state_json, state_revision
+				 FROM run_state WHERE singleton = 1`,
+			)
+			.get() as
+			| { state_json: string; state_revision: number | bigint }
+			| undefined;
+
+		if (stateRow === undefined) {
+			rollback(db);
+			throw new PersistenceFailureError(
+				"canonical projection: state row missing",
+				{
+					operation: "state_commit",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		// Step 3 — Verify the current state still references this exact artifact.
+		let parsedState: Record<string, unknown>;
+		try {
+			parsedState = JSON.parse(stateRow.state_json) as Record<string, unknown>;
+		} catch (err) {
+			rollback(db);
+			throw new PersistenceFailureError(
+				"canonical projection: state_json is not valid JSON",
+				{
+					operation: "state_commit",
+					cause: err,
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		// Navigate the JSON pointer to find the expected artifact.
+		const segments = expectedPlacement.pointer
+			.split("/")
+			.filter((s) => s.length > 0);
+		let current: unknown = parsedState;
+		for (const seg of segments) {
+			if (
+				typeof current !== "object" ||
+				current === null ||
+				Array.isArray(current)
+			) {
+				rollback(db);
+				throw new PersistenceFailureError(
+					`canonical projection: cannot navigate pointer ${expectedPlacement.pointer} at segment ${seg}`,
+					{
+						operation: "state_commit",
+						...errorOpts(ctx),
+					},
+				);
+			}
+			current = (current as Record<string, unknown>)[seg];
+		}
+
+		// Compare the artifact reference fields exactly.
+		if (!isArtifactRefEqual(current, expectedPlacement.artifact)) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Canonical projection rejected: state no longer references this artifact",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		// Step 4 — Read and verify the immutable blob.
+		const bytes = readAndVerifyArtifact(ctx.runDir, expectedPlacement.artifact);
+
+		// Step 5 — Write canonical projection atomically.
 		const parentDir = path.dirname(canonicalPath);
 		fs.mkdirSync(parentDir, { recursive: true });
 		const tmpPath = `${canonicalPath}.tmp-${process.pid}`;
 		fs.writeFileSync(tmpPath, bytes);
 		fs.renameSync(tmpPath, canonicalPath);
 
+		// Step 6 — COMMIT.
 		commit(db);
 	} catch (error) {
 		rollback(db);
 		if (
 			error instanceof AuthorityLostError ||
-			error instanceof ArtifactIntegrityError
+			error instanceof ArtifactIntegrityError ||
+			error instanceof PersistenceFailureError
 		) {
 			throw error;
 		}
@@ -498,4 +609,18 @@ export function projectCanonicalArtifactFenced(
 			},
 		);
 	}
+}
+
+/** Deep-equal two ArtifactRef values by comparing each field exactly. */
+function isArtifactRefEqual(a: unknown, b: ArtifactRef): boolean {
+	if (typeof a !== "object" || a === null) return false;
+	const ref = a as Record<string, unknown>;
+	return (
+		ref.kind === b.kind &&
+		ref.digestAlgorithm === b.digestAlgorithm &&
+		ref.digest === b.digest &&
+		ref.relativePath === b.relativePath &&
+		ref.mediaType === b.mediaType &&
+		ref.sizeBytes === b.sizeBytes
+	);
 }

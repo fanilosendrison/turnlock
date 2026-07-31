@@ -6,6 +6,7 @@ import {
 	DelegationTimeoutError,
 	ProtocolError,
 } from "../errors/concrete";
+import { readAndVerifyArtifact } from "../services/artifact-store";
 import { clock } from "../services/clock";
 import { writeProtocolBlock } from "../services/protocol";
 import { resolveRetryDecision } from "../services/retry-resolver";
@@ -117,9 +118,13 @@ async function recoverTerminalState<S extends object>(
 	let needReconstruct = false;
 	try {
 		const existing = fs.readFileSync(outputPath);
-		// Verify existing file matches the artifact ref (best-effort).
-		const ref = terminalResult.outputArtifact;
-		if (existing.length !== ref.sizeBytes) {
+		const authoritativeBytes = readAndVerifyArtifact(
+			ctx.runDir,
+			terminalResult.outputArtifact,
+		);
+		// Compare full content, not just size — same-size but different
+		// content must be treated as corruption.
+		if (!Buffer.from(authoritativeBytes).equals(existing)) {
 			needReconstruct = true;
 		}
 	} catch {
@@ -130,7 +135,10 @@ async function recoverTerminalState<S extends object>(
 		try {
 			projectCanonicalArtifactFenced(
 				ctx,
-				terminalResult.outputArtifact,
+				{
+					pointer: "/terminalResult/outputArtifact",
+					artifact: terminalResult.outputArtifact,
+				},
 				outputPath,
 			);
 		} catch (err) {

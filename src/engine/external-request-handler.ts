@@ -127,7 +127,17 @@ export async function handleExternalRequest<S extends object>(
 
 		if (!publication.ok) throw publication.error;
 
-		// 6. Events only after successful fenced commit.
+		// 6. Project canonical manifest (fenced) before events.
+		projectCanonicalArtifactFenced(
+			ctx,
+			{
+				pointer: "/pendingExternalRequest/manifestArtifact",
+				artifact: prepared.ref,
+			},
+			canonicalManifestPath,
+		);
+
+		// 7. Events only after successful commit AND projection.
 		ctx.logger.emit({
 			eventType: "external_request_emit",
 			runId: ctx.runId,
@@ -137,13 +147,6 @@ export async function handleExternalRequest<S extends object>(
 			requestType: request.requestType,
 			timestamp: emittedAt,
 		});
-
-		// 7. Optional canonical projection for backward compatibility.
-		try {
-			projectCanonicalArtifactFenced(ctx, prepared.ref, canonicalManifestPath);
-		} catch {
-			// Non-authoritative projection failure is not fatal.
-		}
 
 		// 8. Emit protocol block after commit + projection.
 		process.stdout.write(publication.block);

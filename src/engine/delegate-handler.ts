@@ -161,7 +161,23 @@ export async function handleDelegate<S extends object>(
 	// 4. Commit fenced.
 	commitStateWithProjection(ctx, newState);
 
-	// 5. Events + protocol only after successful commit.
+	// 5. Project canonical manifest (fenced).  Must happen before events
+	//    so a crash after commit but before projection is recoverable.
+	const canonicalManifestPath = path.join(
+		ctx.runDir,
+		"delegations",
+		`${label}-${attempt}.json`,
+	);
+	projectCanonicalArtifactFenced(
+		ctx,
+		{
+			pointer: "/pendingDelegation/manifestArtifact",
+			artifact: prepared.ref,
+		},
+		canonicalManifestPath,
+	);
+
+	// 6. Events + protocol only after successful commit AND projection.
 	ctx.logger.emit({
 		eventType: "delegation_emit",
 		runId: ctx.runId,
@@ -173,22 +189,7 @@ export async function handleDelegate<S extends object>(
 		timestamp: emittedAt,
 	});
 
-	// 6. Optional: project canonical manifest for backward compatibility.
-	// The projection path matches the old convention.
-	const canonicalManifestPath = path.join(
-		ctx.runDir,
-		"delegations",
-		`${label}-${attempt}.json`,
-	);
-	try {
-		projectCanonicalArtifactFenced(ctx, prepared.ref, canonicalManifestPath);
-	} catch {
-		// Canonical projection is non-authoritative; failure is logged implicitly
-		// by the error handler but not fatal (the commit already succeeded).
-	}
-
 	const resumeCmd = ctx.config.resumeCommand(ctx.runId);
-	// Use the canonical path in protocol block for backward compatibility.
 	const block = binding.buildProtocolBlock(
 		manifest,
 		canonicalManifestPath,

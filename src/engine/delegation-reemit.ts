@@ -113,7 +113,22 @@ export async function reemitDelegationAttempt<S extends object>(
 	// 4. Commit fenced.
 	commitStateWithProjection(ctx, newState);
 
-	// 5. Events + protocol only after successful commit.
+	// 5. Project canonical manifest (fenced) before announcing success.
+	const canonicalManifestPath = path.join(
+		ctx.runDir,
+		"delegations",
+		`${pd.label}-${newAttempt}.json`,
+	);
+	projectCanonicalArtifactFenced(
+		ctx,
+		{
+			pointer: "/pendingDelegation/manifestArtifact",
+			artifact: prepared.ref,
+		},
+		canonicalManifestPath,
+	);
+
+	// 6. Events + protocol only after successful commit AND projection.
 	ctx.logger.emit({
 		eventType: "delegation_emit",
 		runId: ctx.runId,
@@ -123,18 +138,6 @@ export async function reemitDelegationAttempt<S extends object>(
 		jobCount: pd.jobIds?.length ?? 1,
 		timestamp: newEmittedAt,
 	});
-
-	// 6. Optional canonical projection for backward compatibility.
-	const canonicalManifestPath = path.join(
-		ctx.runDir,
-		"delegations",
-		`${pd.label}-${newAttempt}.json`,
-	);
-	try {
-		projectCanonicalArtifactFenced(ctx, prepared.ref, canonicalManifestPath);
-	} catch {
-		// Non-authoritative projection failure is not fatal.
-	}
 
 	const resumeCmd = ctx.config.resumeCommand(ctx.runId);
 	const binding = selectBinding(pd.kind);

@@ -121,7 +121,20 @@ export async function handleDone<S extends object>(
 	};
 	commitStateWithProjection(ctx, newState);
 
-	// 4. Events and protocol output only after successful fenced commit.
+	// 4. Project canonical output.json (fenced) — must happen before
+	//    announcing success, so a crash after commit but before projection
+	//    does not emit a misleading success event.
+	const outputPath = path.join(ctx.runDir, "output.json");
+	projectCanonicalArtifactFenced(
+		ctx,
+		{
+			pointer: "/terminalResult/outputArtifact",
+			artifact: preparedOutput.ref,
+		},
+		outputPath,
+	);
+
+	// 5. Events only after both commit AND projection succeeded.
 	const endedAt = clock.nowWallIso();
 	ctx.logger.emit({
 		eventType: "orchestrator_end",
@@ -133,11 +146,8 @@ export async function handleDone<S extends object>(
 		timestamp: endedAt,
 	});
 
-	// 5. Project canonical output.json (fenced).
-	const outputPath = path.join(ctx.runDir, "output.json");
-	projectCanonicalArtifactFenced(ctx, preparedOutput.ref, outputPath);
-
-	// 6. Emit protocol block referencing the canonical path for compatibility.
+	// 6. Emit protocol block.  The canonical outputPath is guaranteed to
+	//    exist because the fenced projection succeeded above.
 	const block = writeProtocolBlock("DONE", {
 		runId: ctx.runId,
 		orchestrator: ctx.config.name,
