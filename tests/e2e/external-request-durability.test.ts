@@ -198,11 +198,16 @@ await runOrchestrator<State>({
 				requestId: `${RUN_IDS.resumeCommandFailure}/external-work`,
 				label: "external-work",
 				resumeAt: "consume",
-				manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+				/* manifestArtifact checked separately below */
 			});
+			// The immutable blob must exist even if the canonical projection doesn't.
+		const artifactRef = committed.pendingExternalRequest?.manifestArtifact;
+		expect(artifactRef).toBeDefined();
+		if (artifactRef?.relativePath) {
 			expect(
-				existsSync(join(runDir, "external-requests", "external-work.json")),
+				existsSync(join(runDir, artifactRef.relativePath)),
 			).toBe(true);
+		}
 
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
@@ -302,15 +307,15 @@ await runOrchestrator<State>({
 				}>(done.fields.output as string),
 			).toEqual({
 				value: "preserved",
-				schemaVersionAtResume: 3,
+				schemaVersionAtResume: 4,
 				lockHeldAtResume: true,
 			});
 			const finalState = readStateFile<{ stage: string }>(runDir);
-			expect(finalState.schemaVersion).toBe(3);
+			expect(finalState.schemaVersion).toBe(4);
 			expect(finalState).not.toHaveProperty("pendingDelegation");
 			expect(existsSync(join(runDir, "state.json.tmp"))).toBe(false);
 			expect(pendingBefore).toBeDefined();
-			expect(readFileSync(statePath, "utf-8")).toContain('"schemaVersion":3');
+			expect(readFileSync(statePath, "utf-8")).toContain('"schemaVersion":4');
 		} finally {
 			workspace.cleanup();
 		}
@@ -383,7 +388,7 @@ await runOrchestrator<State>({
 			);
 			expect(manifest.attempt).toBe(1);
 			const state = readStateFile<{ stage: string }>(runDir);
-			expect(state.schemaVersion).toBe(3);
+			expect(state.schemaVersion).toBe(4);
 			expect(state.pendingDelegation?.attempt).toBe(1);
 			expect(
 				readEvents(runDir).some(

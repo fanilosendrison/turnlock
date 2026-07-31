@@ -392,13 +392,22 @@ describe("external request manifest identity", () => {
 				"--run-id",
 				runId,
 			]);
-			const request = expectProtocol(initial.stdout, "REQUEST_EXTERNAL", runId);
+			expectProtocol(initial.stdout, "REQUEST_EXTERNAL", runId);
 			const runDir = workspace.runDir(orchestratorName, runId);
-			const manifestPath = request.fields.manifest as string;
-			const manifest = JSON.parse(
-				readFileSync(manifestPath, "utf-8"),
+
+			// Read state to find the immutable blob path.
+			const state = readStateFile<{ stage: string }>(runDir);
+			const artifactRef = state.pendingExternalRequest?.manifestArtifact;
+			if (!artifactRef) {
+				throw new Error("manifestArtifact missing from state");
+			}
+			const blobPath = join(runDir, artifactRef.relativePath);
+
+			// Tamper with the immutable blob, not the canonical projection.
+			const blob = JSON.parse(
+				readFileSync(blobPath, "utf-8"),
 			) as Record<string, unknown>;
-			writeFileSync(manifestPath, JSON.stringify(mutate(manifest)));
+			writeFileSync(blobPath, JSON.stringify(mutate(blob)));
 
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
@@ -407,7 +416,8 @@ describe("external request manifest identity", () => {
 			]);
 			expect(resumed.exitCode).toBe(1);
 			const error = expectProtocol(resumed.stdout, "ERROR", runId);
-			expect(error.fields.errorKind).toBe("state_corrupted");
+			// Tampering with the immutable blob causes an artifact integrity error.
+			expect(error.fields.errorKind).toBe("artifact_integrity");
 			const types = eventTypes(readEvents(runDir));
 			expect(types).not.toContain("external_request_reemit");
 			expect(types).not.toContain("external_resolution_read");
@@ -451,7 +461,7 @@ describe("external request manifest identity", () => {
 				"--run-id",
 				RUN_IDS.manifestMismatch,
 			]);
-			const request = expectProtocol(
+			expectProtocol(
 				initial.stdout,
 				"REQUEST_EXTERNAL",
 				RUN_IDS.manifestMismatch,
@@ -460,12 +470,18 @@ describe("external request manifest identity", () => {
 				"e2e-external-manifest-mismatch",
 				RUN_IDS.manifestMismatch,
 			);
-			const manifestPath = request.fields.manifest as string;
+			// Read state to find the immutable blob path.
+			const state = readStateFile<{ stage: string }>(runDir);
+			const artifactRef = state.pendingExternalRequest?.manifestArtifact;
+			if (!artifactRef) {
+				throw new Error("manifestArtifact missing from state");
+			}
+			const blobPath = join(runDir, artifactRef.relativePath);
 			const manifest = JSON.parse(
-				readFileSync(manifestPath, "utf-8"),
+				readFileSync(blobPath, "utf-8"),
 			) as Record<string, unknown>;
 			writeFileSync(
-				manifestPath,
+				blobPath,
 				JSON.stringify({ ...manifest, orchestratorName: "other-orchestrator" }),
 			);
 			writeExternalResolution(runDir, "external-work", { outcome: "OK" });
@@ -481,7 +497,7 @@ describe("external request manifest identity", () => {
 				"ERROR",
 				RUN_IDS.manifestMismatch,
 			);
-			expect(error.fields.errorKind).toBe("state_corrupted");
+			expect(error.fields.errorKind).toBe("artifact_integrity");
 			const types = eventTypes(readEvents(runDir));
 			expect(types).not.toContain("external_resolution_read");
 			expect(types).not.toContain("retry_scheduled");

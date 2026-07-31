@@ -13,6 +13,7 @@ import type {
 	PendingExternalRequestRecord,
 } from "../../src/services/state-io";
 import type { JsonValue } from "../../src/types/external-request";
+import { testArtifactRef } from "../helpers/state-builder";
 import { createMockLogger } from "../helpers/mock-logger";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 
@@ -36,9 +37,7 @@ function makePendingExternal(runDir: string): PendingExternalRequestRecord {
 		label: "push-repo",
 		requestType: "git.push",
 		resumeAt: "resume",
-		manifestPath: join(runDir, "external-requests", "push-repo.json"),
-		manifestDigest:
-			"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		manifestArtifact: testArtifactRef("external-request-manifest"),
 		resultPath: join(runDir, "external-results", "push-repo.json"),
 		emittedAt: "2026-04-19T12:00:00.000Z",
 		emittedAtEpochMs: 1_745_062_800_000,
@@ -50,7 +49,7 @@ function makePendingDelegation(): PendingDelegationRecord {
 		label: "review",
 		kind: "prompt",
 		resumeAt: "resume",
-		manifestPath: "/tmp/delegations/review-0.json",
+		manifestArtifact: testArtifactRef("delegation-manifest"),
 		emittedAtEpochMs: 1_745_062_800_000,
 		deadlineAtEpochMs: 1_745_063_400_000,
 		attempt: 0,

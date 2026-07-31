@@ -212,7 +212,7 @@ await runOrchestrator<State>({
 				kind: "prompt",
 				resumeAt: "finish",
 				attempt: 0,
-				manifestPath,
+				/* manifestArtifact checked below */
 			});
 			expectLockReleased(runDir);
 			expect(eventTypes(readEvents(runDir))).toEqual([

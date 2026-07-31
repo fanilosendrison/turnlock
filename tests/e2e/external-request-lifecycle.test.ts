@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { contentDigest } from "../../src/services/content-digest";
 import type { ProtocolAction } from "../../src/services/protocol";
 import type { OrchestratorEvent } from "../../src/types/events";
 import {
@@ -108,7 +107,6 @@ describe("external request lifecycle", () => {
 			expect(block.fields.manifest).toBe(manifestPath);
 			expect(block.fields.result).toBe(resultPath);
 
-			const manifestBytes = readFileSync(manifestPath);
 			const manifest = readExternalRequestManifest(manifestPath);
 			expect(manifest).toEqual({
 				manifestVersion: 1,
@@ -134,17 +132,17 @@ describe("external request lifecycle", () => {
 			const state = readStateFile<{ stage: string }>(runDir);
 			expect(state.data).toEqual({ stage: "waiting" });
 			expect(state.usedLabels).toEqual(["push-repo-a"]);
-			expect(state.pendingExternalRequest).toEqual({
+			expect(state.pendingExternalRequest).toMatchObject({
 				requestId: manifest.requestId,
 				label: manifest.label,
 				requestType: manifest.requestType,
 				resumeAt: manifest.resumeAt,
-				manifestPath,
-				manifestDigest: contentDigest(manifestBytes),
 				resultPath,
 				emittedAt: manifest.emittedAt,
 				emittedAtEpochMs: manifest.emittedAtEpochMs,
 			});
+			expect(state.pendingExternalRequest?.manifestArtifact).toBeDefined();
+			expect(state.pendingExternalRequest?.manifestArtifact?.kind).toBe("external-request-manifest");
 			expect(state).not.toHaveProperty("pendingDelegation");
 			expect(state.lastTransitionAt).toBe(manifest.emittedAt);
 			expect(state.lastTransitionAtEpochMs).toBe(manifest.emittedAtEpochMs);

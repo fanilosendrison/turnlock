@@ -133,7 +133,7 @@ describe("state v2 to v3 migration", () => {
 			const result = readStateSnapshot(dir);
 
 			expect(result.migratedFromVersion).toBe(2);
-			expect(result.state?.schemaVersion).toBe(3);
+			expect(result.state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
 			expect(result.state?.pendingDelegation).toEqual(
 				legacy.pendingDelegation as PendingDelegationRecord,
 			);
@@ -154,7 +154,7 @@ describe("state v2 to v3 migration", () => {
 			const result = readStateSnapshot(dir);
 
 			expect(result.migratedFromVersion).toBe(2);
-			expect(result.state?.schemaVersion).toBe(3);
+			expect(result.state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
 			expect(result.state).not.toHaveProperty("pendingDelegation");
 			expect(result.state).not.toHaveProperty("pendingExternalRequest");
 		} finally {

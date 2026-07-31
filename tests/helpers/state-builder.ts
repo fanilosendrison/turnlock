@@ -3,6 +3,7 @@ import type {
 	PendingDelegationRecord,
 	StateFile,
 } from "../../src/services/state-io";
+import type { ArtifactRef } from "../../src/types/artifacts";
 
 const DEFAULT_START = "2026-04-19T12:00:00.000Z";
 const DEFAULT_START_EPOCH = 1_745_062_800_000;
@@ -12,6 +13,23 @@ const defaultPolicy = {
 	backoffBaseMs: 1000,
 	maxBackoffMs: 30_000,
 } as const;
+
+/** Build a minimal ArtifactRef for test state construction. */
+export function testArtifactRef(
+	kind: ArtifactRef["kind"],
+	digest?: string,
+): ArtifactRef {
+	const d = digest ?? "sha256:0000000000000000000000000000000000000000000000000000000000000001";
+	const hex = d.slice(7);
+	return {
+		kind,
+		digestAlgorithm: "sha256",
+		digest: d,
+		relativePath: `artifacts/sha256/${hex.slice(0, 2)}/${hex.slice(2)}.json`,
+		mediaType: "application/json",
+		sizeBytes: 2,
+	};
+}
 
 export function buildInitialState<S extends object>(
 	overrides: Partial<StateFile<S>> & { data?: S } = {},
@@ -54,7 +72,7 @@ export function buildPendingPrompt<S extends object>(
 		label,
 		kind: "prompt",
 		resumeAt: "b",
-		manifestPath: `/tmp/delegations/${label}-${attempt}.json`,
+		manifestArtifact: testArtifactRef("delegation-manifest"),
 		emittedAtEpochMs: DEFAULT_START_EPOCH,
 		deadlineAtEpochMs: DEFAULT_START_EPOCH + 600_000,
 		attempt,
@@ -77,7 +95,7 @@ export function buildPendingBatch<S extends object>(
 		label,
 		kind: "batch",
 		resumeAt: "b",
-		manifestPath: `/tmp/delegations/${label}-${attempt}.json`,
+		manifestArtifact: testArtifactRef("delegation-manifest"),
 		emittedAtEpochMs: DEFAULT_START_EPOCH,
 		deadlineAtEpochMs: DEFAULT_START_EPOCH + 600_000,
 		attempt,

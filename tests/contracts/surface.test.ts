@@ -100,8 +100,8 @@ describe("[GREEN-L1] " + "constantes (C-GL-05..06)", () => {
 	test("C-GL-05 | PROTOCOL_VERSION === 3", () => {
 		expect(publicApi.PROTOCOL_VERSION).toBe(3);
 	});
-	test("C-GL-06 | STATE_SCHEMA_VERSION === 3", () => {
-		expect(publicApi.STATE_SCHEMA_VERSION).toBe(3);
+	test("C-GL-06 | STATE_SCHEMA_VERSION === 4", () => {
+		expect(publicApi.STATE_SCHEMA_VERSION).toBe(4);
 	});
 	test("package version is 0.10.0", () => {
 		expect(pkg.version).toBe("0.10.0");
@@ -231,9 +231,13 @@ describe("[GREEN-L1] " + "OrchestratorErrorKind fermé (C-GL-12..13)", () => {
 					operation: "state_commit",
 				}),
 		],
+		[
+			"artifact_integrity",
+			() => new publicApi.ArtifactIntegrityError("x"),
+		],
 	] as const;
-	test("C-GL-12 | 17 kind values", () => {
-		expect(errorCases).toHaveLength(17);
+	test("C-GL-12 | 18 kind values", () => {
+		expect(errorCases).toHaveLength(18);
 	});
 	test("C-GL-13 | each kind ↔ class mapping", () => {
 		for (const [kind, buildError] of errorCases) {
