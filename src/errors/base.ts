@@ -15,7 +15,8 @@ export type OrchestratorErrorKind =
 	| "run_locked"
 	| "authority_lost"
 	| "state_revision_conflict"
-	| "persistence_failure";
+	| "persistence_failure"
+	| "artifact_integrity";
 
 export interface OrchestratorErrorOptions {
 	readonly cause?: unknown;

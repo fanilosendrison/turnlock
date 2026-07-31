@@ -5,6 +5,7 @@ export type { OrchestratorErrorKind } from "./errors/base";
 export { OrchestratorError } from "./errors/base";
 export {
 	AbortedError,
+	ArtifactIntegrityError,
 	type AuthorityLossReason,
 	AuthorityLostError,
 	type AuthorityLostErrorOptions,
@@ -26,6 +27,12 @@ export {
 	StateRevisionConflictError,
 	StateVersionMismatchError,
 } from "./errors/concrete";
+export type {
+	ArtifactKind,
+	ArtifactRef,
+	PreparedArtifact,
+	TerminalDoneRecord,
+} from "./types/artifacts";
 export type { Clock, OrchestratorConfig } from "./types/config";
 export type {
 	BatchDelegationRequest,

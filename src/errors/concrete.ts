@@ -30,6 +30,10 @@ export class StateRevisionConflictError extends OrchestratorError {
 	readonly kind = "state_revision_conflict" as const;
 }
 
+export class ArtifactIntegrityError extends OrchestratorError {
+	readonly kind = "artifact_integrity" as const;
+}
+
 export interface PersistenceFailureErrorOptions
 	extends OrchestratorErrorOptions {
 	readonly operation: AuthorityOperation;

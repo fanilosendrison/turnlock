@@ -39,6 +39,7 @@ export function classify(err: unknown): ErrorCategory {
 		case "authority_lost":
 		case "state_revision_conflict":
 		case "persistence_failure":
+		case "artifact_integrity":
 			return "permanent";
 	}
 }
