@@ -9,7 +9,10 @@ import {
 	StateMissingError,
 } from "../errors/concrete";
 import { bunSqliteDriver } from "../persistence/sqlite/bun-sqlite-driver";
-import { acquireOwnership } from "../persistence/sqlite/ownership";
+import {
+	acquireOwnership,
+	releaseOwnership,
+} from "../persistence/sqlite/ownership";
 import { openRunDatabase } from "../persistence/sqlite/run-database";
 import {
 	ensureInitialStateRow,
@@ -466,19 +469,22 @@ async function runResumeMode<S extends object>(
 
 			authoritativeRecord = commitResult.committed.state as StateRecord<S>;
 			authoritativeDigest = commitResult.committed.stateDigest;
+		} else {
+			// Migration incomplete — state stays v3.  This is fatal:
+			// we cannot resume with a v3 state that cannot be migrated.
+			// Release ownership before closing so the next attempt
+			// can acquire immediately.
+			releaseOwnership({ db: runDb.connection, handle });
+			runDb.close();
+			throw new StateMigrationBlockedError(
+				"v3→v4 migration blocked: legacy manifest cannot be converted",
+				{
+					reason: "MANIFEST_MISSING",
+					runId,
+					orchestratorName: config.name,
+				},
+			);
 		}
-		// else: migration incomplete — state stays v3, no commit.
-		// This is fatal: we cannot resume with a v3 state that cannot
-		// be migrated.
-		runDb.close();
-		throw new StateMigrationBlockedError(
-			"v3→v4 migration blocked: legacy manifest cannot be converted",
-			{
-				reason: "MANIFEST_MISSING",
-				runId,
-				orchestratorName: config.name,
-			},
-		);
 	}
 
 	// Build the in-memory StateFile from the authoritative record (which
