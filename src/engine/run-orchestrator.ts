@@ -48,11 +48,14 @@ const DB_FILENAME = "turnlock.sqlite3";
 
 /** Seed a freshly created SQLite DB from a legacy state.json snapshot.
  *
- *  Opens the DB, acquires ownership at the **current wall-clock time**,
- *  writes the initial state row (timestamped at the historical
- *  `state.lastTransitionAt`), and projects state.json.  Does NOT close
- *  the connection — the caller receives the open runDb and active handle
- *  to continue the resume flow without a second open/acquire cycle.
+ *  Opens the DB, pre-creates `run_incarnation` with the **legacy
+ *  historical** `startedAt` (so the run's identity is preserved), then
+ *  acquires ownership at the **current wall-clock time** (so the lease
+ *  is valid), seeds the state row (timestamped at the legacy
+ *  `lastTransitionAt`), and returns the open connection + active handle.
+ *
+ *  Does NOT call `projectStateJson` — the caller projects from the
+ *  authoritative record re-read after this function returns.
  *
  *  On any failure after the DB is opened, the ownership is released
  *  (if acquired) and the DB is closed before rethrowing. */
@@ -71,16 +74,36 @@ function seedLegacyStateToSqlite<S extends object>(
 		busyTimeoutMs: 2000,
 	});
 
-	// Ownership must be acquired at the *current* time, not the historical
-	// state timestamp.  Otherwise a 3-hour-old state would get a lease that
-	// expired 2.5 hours ago, causing EXPIRED_HANDLE on the first fenced op.
-	const ownershipNowEpochMs = clock.nowEpochMs();
-	const ownershipNowIso = clock.nowWallIso();
-
 	let handle: import("../persistence/sqlite/ownership").LockHandle | null =
 		null;
 
 	try {
+		// Pre-create run_incarnation with legacy historical startedAt
+		// *before* acquireOwnership.  acquireOwnership → ensureIncarnation
+		// will find the existing row and preserve these timestamps instead
+		// of overwriting them with clock.now().
+		//
+		// Uses INSERT OR IGNORE — idempotent if incarnation already exists.
+		runDb.connection
+			.prepare(
+				`INSERT OR IGNORE INTO run_incarnation
+				 (singleton, run_id, incarnation_id, orchestrator_name,
+				  created_at_epoch_ms, created_at_iso)
+				 VALUES (1, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				runId,
+				state.runId, // incarnation_id derived from legacy runId
+				state.orchestratorName,
+				state.startedAtEpochMs,
+				state.startedAt,
+			);
+
+		// Ownership must be acquired at the *current* wall-clock time for a
+		// valid lease.  The incarnation timestamps are already set above.
+		const ownershipNowEpochMs = clock.nowEpochMs();
+		const ownershipNowIso = clock.nowWallIso();
+
 		const acquireResult = acquireOwnership({
 			db: runDb.connection,
 			runId,
@@ -110,15 +133,38 @@ function seedLegacyStateToSqlite<S extends object>(
 			state.lastTransitionAt,
 		);
 
-		// Project state.json for readers that haven't switched to SQLite.
-		projectStateJson(runDir, state as unknown as StateRecord<S>, "");
+		// Do NOT project state.json here.  The caller re-reads the
+		// authoritative record from SQLite and projects it with the
+		// correct stateDigest, runIncarnationId, stateRevision, etc.
 
 		return { runDb, handle };
 	} catch (err) {
-		// Release ownership if acquired, so the next attempt can
-		// acquire immediately.  Preserve the original error.
+		// Release ownership if acquired, so the next attempt can acquire
+		// immediately.  A DB_FAILURE result is attached to the error to
+		// prevent silent ownership leaks.
 		if (handle !== null) {
-			releaseOwnership({ db: runDb.connection, handle });
+			const releaseResult = releaseOwnership({
+				db: runDb.connection,
+				handle,
+			});
+			if (
+				releaseResult.kind !== "SUCCESS" &&
+				releaseResult.kind !== "STALE_HANDLE"
+			) {
+				// Wrap the original error so the caller can see both
+				// the seed failure and the release failure.
+				const wrapped = new StateMissingError(
+					`Legacy seed failed and ownership release also failed: ${releaseResult.kind}`,
+					{
+						runId,
+						orchestratorName: state.orchestratorName,
+						cause:
+							releaseResult.kind === "DB_FAILURE" ? releaseResult.cause : err,
+					},
+				);
+				runDb.close();
+				throw wrapped;
+			}
 		}
 		runDb.close();
 		throw err;
@@ -408,12 +454,29 @@ async function runResumeMode<S extends object>(
 				orchestratorName: config.name,
 			});
 		}
+
+		// Validate identity BEFORE creating the DB — a mismatched legacy
+		// state.json must not be silently reassigned to a different run.
+		if (snapshot.state.runId !== runId) {
+			throw new ProtocolError(
+				`RUN_DIR mismatch — state.runId=${snapshot.state.runId}, argv.runId=${runId}`,
+				{ runId, orchestratorName: config.name },
+			);
+		}
+		if (snapshot.state.orchestratorName !== config.name) {
+			throw new ProtocolError(
+				`orchestrator name mismatch — state.orchestratorName=${snapshot.state.orchestratorName}, config.name=${config.name}`,
+				{ runId, orchestratorName: config.name },
+			);
+		}
+
 		// snapshot.state.schemaVersion is guaranteed to be STATE_SCHEMA_VERSION
 		// because readStateSnapshot now throws on blocked migration.
 		//
-		// seedLegacyStateToSqlite opens the DB, acquires ownership, seeds the
-		// state, and returns the open connection + active handle.  We continue
-		// with the same connection — no double open/acquire cycle.
+		// seedLegacyStateToSqlite opens the DB, pre-creates the incarnation
+		// with the legacy startedAt, acquires ownership at the current time,
+		// seeds the state, and returns the open connection + active handle.
+		// We continue with the same connection — no double open/acquire cycle.
 		const seeded = seedLegacyStateToSqlite(runDir, runId, snapshot.state);
 		runDb = seeded.runDb;
 		handle = seeded.handle;
