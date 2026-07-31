@@ -5,6 +5,7 @@ import {
 	InvalidConfigError,
 	ProtocolError,
 	RunLockedError,
+	StateMigrationBlockedError,
 	StateMissingError,
 } from "../errors/concrete";
 import { bunSqliteDriver } from "../persistence/sqlite/bun-sqlite-driver";
@@ -342,6 +343,18 @@ async function runResumeMode<S extends object>(
 				orchestratorName: config.name,
 			});
 		}
+		// If the state is still v3 after migration, we cannot create a
+		// SQLite DB from an incomplete v4 state.
+		if (snapshot.state.schemaVersion !== STATE_SCHEMA_VERSION) {
+			throw new StateMigrationBlockedError(
+				"v3→v4 migration incomplete — cannot create authoritative SQLite DB from partial v4 state",
+				{
+					reason: "MANIFEST_MISSING",
+					runId,
+					orchestratorName: config.name,
+				},
+			);
+		}
 		migrateLegacyStateToSqlite(runDir, runId, snapshot.state);
 	}
 
@@ -455,6 +468,17 @@ async function runResumeMode<S extends object>(
 			authoritativeDigest = commitResult.committed.stateDigest;
 		}
 		// else: migration incomplete — state stays v3, no commit.
+		// This is fatal: we cannot resume with a v3 state that cannot
+		// be migrated.
+		runDb.close();
+		throw new StateMigrationBlockedError(
+			"v3→v4 migration blocked: legacy manifest cannot be converted",
+			{
+				reason: "MANIFEST_MISSING",
+				runId,
+				orchestratorName: config.name,
+			},
+		);
 	}
 
 	// Build the in-memory StateFile from the authoritative record (which
