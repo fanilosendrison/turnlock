@@ -332,6 +332,9 @@ export function readAuthoritativeState<S extends object>(
 		runIncarnationId: row.incarnation_id,
 		stateRevision: String(bigintFromRow(row.state_revision)),
 		committedFenceToken: String(bigintFromRow(row.committed_by_fence_token)),
+		...(parsed.terminalResult !== undefined
+			? { terminalResult: parsed.terminalResult as TerminalDoneRecord }
+			: {}),
 	};
 
 	return { state, digest: row.state_digest };

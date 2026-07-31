@@ -401,6 +401,48 @@ async function runResumeMode<S extends object>(
 
 	const state = stateRecordToStateFile(readResult.state, runDir);
 
+	// If the state was migrated from v3 to v4, persist the migration in SQLite
+	// so that subsequent resumes operate directly on v4 format.
+	const wasMigrated = readResult.state.schemaVersion !== state.schemaVersion;
+	let authoritativeDigest = readResult.digest;
+	if (wasMigrated) {
+		const migratedRecord: StateRecord<S> = {
+			...readResult.state,
+			schemaVersion: state.schemaVersion,
+			pendingDelegation: state.pendingDelegation as unknown,
+			pendingExternalRequest: state.pendingExternalRequest as unknown,
+			...(state.terminalResult !== undefined
+				? { terminalResult: state.terminalResult }
+				: {}),
+		};
+
+		// Commit the migrated state through the same ownership handle.
+		// This is a schema migration, not a business transition — it must
+		// succeed against the same revision we read.
+		const { commitState } =
+			require("../persistence/sqlite/run-state-store") as {
+				commitState: typeof import("../persistence/sqlite/run-state-store").commitState;
+			};
+		const commitResult = commitState({
+			db: runDb.connection,
+			handle,
+			expectedRevision: readResult.state.stateRevision,
+			nextState: migratedRecord,
+			nowEpochMs: clock.nowEpochMs(),
+			nowIso: clock.nowWallIso(),
+		});
+
+		if (commitResult.kind !== "COMMITTED") {
+			runDb.close();
+			throw new ProtocolError(
+				`v3→v4 migration commit failed: ${commitResult.kind}`,
+				{ runId, orchestratorName: config.name },
+			);
+		}
+
+		authoritativeDigest = commitResult.committed.stateDigest;
+	}
+
 	// Always project state.json after resume so direct readers see current state.
 	// Use the migrated state (which may have been converted from v3 to v4).
 	const projected: StateRecord<S> = {
@@ -412,7 +454,7 @@ async function runResumeMode<S extends object>(
 			? { terminalResult: state.terminalResult }
 			: {}),
 	};
-	projectStateJson(runDir, projected, readResult.digest ?? "");
+	projectStateJson(runDir, projected, authoritativeDigest ?? "");
 
 	if (state.runId !== runId) {
 		runDb.close();
