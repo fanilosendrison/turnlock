@@ -5,6 +5,7 @@
 // Does NOT go through runOrchestrator (which is a process-level entrypoint).
 
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { STATE_SCHEMA_VERSION } from "../../src/constants";
@@ -502,29 +503,67 @@ describe("v3→v4 SQLite migration (resume path)", () => {
 // ---------------------------------------------------------------------------
 //
 // These tests go through the real runOrchestrator process-level entrypoint
-// and exercise the complete chain:
+// and exercise the complete chain when the DB already exists with a v3 state:
 //
-//   v3 state.json (revision n)
+//   v3 authoritative state in SQLite (state_revision = 0)
 //   → runOrchestrator --resume
-//   → legacy seed → read → migrateV3ToV4 → commit v4 (revision n+1)
+//   → readAuthoritativeState → migrateV3ToV4 → commit v4 (state_revision = 1)
 //   → projection → identity checks → setup
 //   → runHandleResume → enterDispatchLoopWithResults
-//   → business / terminal transition (revision n+2)
+//   → business / terminal transition (state_revision = 2)
 //
-// They would have caught the double-release and error-classification bugs
-// that the unit-level migration tests (above) could not detect.
+// The legacy path (no DB → readStateSnapshot → seed → resume) is also
+// covered: the migration happens inside readStateSnapshot, which would
+// mask bugs in the hot migration path inside the try block.
+//
+// These tests would have caught the double-release and error-classification
+// bugs that the unit-level migration tests (above) could not detect.
 
 describe("v3→v4 migration via runOrchestrator --resume (E2E)", () => {
 	const NOW_EPOCH = 1_000_000_000_000;
 	const NOW_ISO = "2001-09-09T01:46:40.000Z";
+	const LEASE_MS = 30 * 60 * 1000;
+	const CONTENTION_DEADLINE_MS = 2000;
 
-	test("full chain: v3 delegation state → migration → resume → terminal → revision n+2", async () => {
+	/** Build a v3 state object (pending delegation with manifestPath). */
+	function v3DelegationState(runId: string, orchestratorName: string) {
+		return {
+			schemaVersion: 3,
+			runId,
+			orchestratorName,
+			startedAt: NOW_ISO,
+			startedAtEpochMs: NOW_EPOCH,
+			lastTransitionAt: NOW_ISO,
+			lastTransitionAtEpochMs: NOW_EPOCH,
+			currentPhase: "fanout",
+			phasesExecuted: 1,
+			accumulatedDurationMs: 100,
+			data: { approved: false, reviewed: false },
+			usedLabels: ["review"],
+			pendingDelegation: {
+				label: "review",
+				kind: "prompt",
+				resumeAt: "collect",
+				manifestPath: "delegations/review-0.json",
+				emittedAtEpochMs: NOW_EPOCH,
+				deadlineAtEpochMs: NOW_EPOCH + 600_000,
+				attempt: 0,
+				effectiveRetryPolicy: {
+					maxAttempts: 3,
+					backoffBaseMs: 1000,
+					maxBackoffMs: 30_000,
+				},
+			},
+		};
+	}
+
+	test("full chain via dbExists: v3 in SQLite → migration commit (rev 1) → terminal (rev 2)", async () => {
 		const workspace = createE2EWorkspace("v3v4-e2e-");
 		const orchestratorName = "e2e-v3v4";
 		const runId = "01HX0000000000000000000V3E";
 
 		try {
-			// 1. Write the entrypoint — defines the phases the v3 state references.
+			// 1. Write the entrypoint.
 			const entrypoint = workspace.writeEntrypoint(
 				"v3v4-e2e.ts",
 				buildEntrypointSource(`
@@ -548,8 +587,7 @@ await runOrchestrator<State>({
 `),
 			);
 
-			// 2. Manually construct the run directory with a v3 legacy state.
-			//    No SQLite DB — the legacy path in runResumeMode reads state.json.
+			// 2. Manually construct the run directory.
 			const runDir = join(workspace.runDirRoot, orchestratorName, runId);
 			mkdirSync(runDir, { recursive: true });
 			mkdirSync(join(runDir, "delegations"), { recursive: true });
@@ -557,9 +595,12 @@ await runOrchestrator<State>({
 			mkdirSync(join(runDir, "artifacts", "sha256"), { recursive: true });
 			mkdirSync(join(runDir, "external-requests"), { recursive: true });
 			mkdirSync(join(runDir, "external-results"), { recursive: true });
-			mkdirSync(join(runDir, "accepted-external-resolutions"), { recursive: true });
+			mkdirSync(
+				join(runDir, "accepted-external-resolutions"),
+				{ recursive: true },
+			);
 
-			// 3. Write the delegation manifest file (referenced by manifestPath).
+			// 3. Write the manifest file (referenced by manifestPath).
 			const manifestContent = JSON.stringify({
 				kind: "delegation-manifest",
 				task: "review the code",
@@ -575,37 +616,68 @@ await runOrchestrator<State>({
 				JSON.stringify({ approved: true }),
 			);
 
-			// 5. Write a v3 state.json with a pending delegation that uses
-			//    manifestPath (v3 format) instead of manifestArtifact (v4).
-			const v3State = {
-				schemaVersion: 3,
+			// 5. Pre-seed a SQLite DB containing a v3 authoritative state row.
+			//    This forces runResumeMode into the dbExists=true path, where
+			//    readAuthoritativeState returns v3 and migrateV3ToV4 + commitState
+			//    execute inside the big try block.
+			const dbPath = join(runDir, "turnlock.sqlite3");
+			const seedDb = openRunDatabase({
+				driver: bunSqliteDriver,
+				dbPath,
+				busyTimeoutMs: 500,
+			});
+
+			// Pre-create incarnation.
+			seedDb.connection
+				.prepare(
+					`INSERT INTO run_incarnation
+					 (singleton, run_id, incarnation_id, orchestrator_name,
+					  created_at_epoch_ms, created_at_iso)
+					 VALUES (1, ?, ?, ?, ?, ?)`,
+				)
+				.run(runId, runId, orchestratorName, NOW_EPOCH, NOW_ISO);
+
+			// Acquire ownership (needed for ensureInitialStateRow fence).
+			const acquireResult = acquireOwnership({
+				db: seedDb.connection,
 				runId,
 				orchestratorName,
-				startedAt: NOW_ISO,
-				startedAtEpochMs: NOW_EPOCH,
-				lastTransitionAt: NOW_ISO,
-				lastTransitionAtEpochMs: NOW_EPOCH,
-				currentPhase: "fanout",
-				phasesExecuted: 1,
-				accumulatedDurationMs: 100,
-				data: { approved: false, reviewed: false },
-				usedLabels: ["review"],
-				pendingDelegation: {
-					label: "review",
-					kind: "prompt",
-					resumeAt: "collect",
-					manifestPath: "delegations/review-0.json",
-					emittedAtEpochMs: NOW_EPOCH,
-					deadlineAtEpochMs: NOW_EPOCH + 600_000,
-					attempt: 0,
-					effectiveRetryPolicy: {
-						maxAttempts: 3,
-						backoffBaseMs: 1000,
-						maxBackoffMs: 30_000,
-					},
-				},
-			};
-			writeFileSync(join(runDir, "state.json"), JSON.stringify(v3State));
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+			});
+			expect(acquireResult.kind).toBe("ACQUIRED");
+			if (acquireResult.kind !== "ACQUIRED") return;
+
+			// Seed the v3 state directly into SQLite (NOT through
+			// seedLegacyStateToSqlite which would migrate first).
+			const v3State = v3DelegationState(runId, orchestratorName);
+			unsafeEnsureInitialStateRow(
+				seedDb.connection,
+				acquireResult.handle.incarnationId,
+				3, // v3 schema version
+				JSON.stringify(v3State),
+				NOW_EPOCH,
+				NOW_ISO,
+			);
+
+			// Verify the seeded state is v3.
+			const preCheck = readAuthoritativeState(seedDb.connection);
+			expect(preCheck.state).not.toBeNull();
+			expect(preCheck.state!.schemaVersion).toBe(3);
+			expect(preCheck.state!.stateRevision).toBe("0");
+
+			// Release ownership so the resume process can acquire.
+			releaseOwnership({
+				db: seedDb.connection,
+				handle: acquireResult.handle,
+			});
+
+			// Force a WAL checkpoint before close.
+			seedDb.connection.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+			seedDb.close();
 
 			// 6. Run the orchestrator in resume mode.
 			const result = await workspace.runEntrypoint(
@@ -622,31 +694,49 @@ await runOrchestrator<State>({
 			expect(block.runId).toBe(runId);
 			expect(block.fields.success).toBe(true);
 
-			// 8. Verify: state.json is now v4.
+			// 8. Verify: state.json (projected from SQLite) is v4.
 			const state = readJsonFile<Record<string, unknown>>(
 				join(runDir, "state.json"),
 			);
 			expect(state.schemaVersion).toBe(STATE_SCHEMA_VERSION);
 
-			// 9. Verify: manifestPath is gone, manifestArtifact is present
-			//    in the terminal result's output artifact chain.  Since the
-			//    run completed with io.done(), pendingDelegation has been
-			//    consumed — terminalResult carries the canonical output.
+			// 9. Verify: terminalResult present, pendingDelegation consumed.
 			const terminalResult = state.terminalResult as
 				| Record<string, unknown>
 				| undefined;
 			expect(terminalResult).toBeDefined();
 			expect(terminalResult?.outputArtifact).toBeDefined();
-
-			// No pending delegation should remain.
 			expect(state.pendingDelegation).toBeUndefined();
 
-			// 10. Verify: the immutable manifest blob exists on disk
-			//     (migrateV3ToV4 should have installed it).
-			const dbPath = join(runDir, "turnlock.sqlite3");
+			// 10. Verify: the immutable manifest blob exists on disk at the
+			//    expected relativePath derived from its SHA-256 digest.
+			//    migrateV3ToV4 calls installArtifactBlob which writes
+			//    artifacts/sha256/{hex[0:2]}/{hex[2:]}.json.
+			const manifestDigest = createHash("sha256")
+				.update(manifestContent)
+				.digest("hex");
+			const expectedBlobPath = join(
+				runDir,
+				"artifacts",
+				"sha256",
+				manifestDigest.slice(0, 2),
+				`${manifestDigest.slice(2)}.json`,
+			);
+			expect(existsSync(expectedBlobPath)).toBe(true);
+
+			// Also verify the SQLite DB exists.
 			expect(existsSync(dbPath)).toBe(true);
 
-			// 11. Verify: the SQLite state row has a v4 schema version.
+			// 11. Verify: stateRevision = "2" — the definitive proof that both
+			//     the migration commit AND the terminal transition committed.
+			//
+			//     Progression:
+			//       unsafeEnsureInitialStateRow  → state_revision = 0  (seed)
+			//       commitState (migration v3→v4) → state_revision = 1  (+1)
+			//       commitState (terminal done)    → state_revision = 2  (+1)
+			expect(state.stateRevision).toBe("2");
+
+			// 11a. Confirm the authoritative SQLite record agrees.
 			const checkDb = openRunDatabase({
 				driver: bunSqliteDriver,
 				dbPath,
@@ -656,8 +746,9 @@ await runOrchestrator<State>({
 				const authRead = readAuthoritativeState(checkDb.connection);
 				expect(authRead.state).not.toBeNull();
 				expect(authRead.state!.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+				expect(authRead.state!.stateRevision).toBe("2");
 
-				// 11a. Verify: ownership released (FREE).
+				// Ownership released (FREE).
 				const ownRow = checkDb.connection
 					.prepare(
 						"SELECT ownership_status FROM run_ownership WHERE singleton = 1",
@@ -668,7 +759,7 @@ await runOrchestrator<State>({
 				checkDb.close();
 			}
 
-			// 12. Verify: terminal output.json is correct.
+			// 12. Verify: terminal output correct.
 			const output = readJsonFile<{ approved: boolean; reviewed: boolean }>(
 				join(runDir, "output.json"),
 			);
@@ -676,6 +767,152 @@ await runOrchestrator<State>({
 			expect(output.reviewed).toBe(true);
 
 			// 13. Verify: no protocol blocks on stderr.
+			expect(result.stderr).not.toContain("@@TURNLOCK@@");
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	test("blocked migration via dbExists: v3 in SQLite + missing manifest → StateMigrationBlockedError", async () => {
+		const workspace = createE2EWorkspace("v3v4-e2e-blocked-");
+		const orchestratorName = "e2e-v3v4-blocked";
+		const runId = "01HX000000000000000000B1KD";
+
+		try {
+			// 1. Write the entrypoint (same phase definitions as success test).
+			const entrypoint = workspace.writeEntrypoint(
+				"v3v4-e2e-blocked.ts",
+				buildEntrypointSource(`
+interface State { approved: boolean; reviewed: boolean }
+
+await runOrchestrator<State>({
+	name: ${JSON.stringify(orchestratorName)},
+	initial: "fanout",
+	initialState: { approved: false, reviewed: false },
+	resumeCommand: (runId: string) => \`bun \${import.meta.path} --run-id \${runId} --resume\`,
+	phases: {
+		fanout: definePhase<State>(async (_state, io) =>
+			io.delegatePrompt("review the code", "collect", { reviewed: false })
+		),
+		collect: definePhase<State>(async (_state, io) => {
+			const result = io.consumePendingResult(z.object({ approved: z.boolean() }));
+			return io.done({ approved: result.approved, reviewed: true });
+		}),
+	},
+});
+`),
+			);
+
+			// 2. Construct the run directory — manifest file is intentionally
+			//    NOT created.  The v3 state references a manifestPath that
+			//    does not exist on disk.
+			const runDir = join(workspace.runDirRoot, orchestratorName, runId);
+			mkdirSync(runDir, { recursive: true });
+			mkdirSync(join(runDir, "delegations"), { recursive: true });
+			mkdirSync(join(runDir, "results"), { recursive: true });
+			mkdirSync(join(runDir, "artifacts", "sha256"), { recursive: true });
+			mkdirSync(join(runDir, "external-requests"), { recursive: true });
+			mkdirSync(join(runDir, "external-results"), { recursive: true });
+			mkdirSync(
+				join(runDir, "accepted-external-resolutions"),
+				{ recursive: true },
+			);
+
+			// 3. Pre-seed a SQLite DB containing a v3 state whose
+			//    manifestPath points nowhere.
+			const dbPath = join(runDir, "turnlock.sqlite3");
+			const seedDb = openRunDatabase({
+				driver: bunSqliteDriver,
+				dbPath,
+				busyTimeoutMs: 500,
+			});
+
+			seedDb.connection
+				.prepare(
+					`INSERT INTO run_incarnation
+					 (singleton, run_id, incarnation_id, orchestrator_name,
+					  created_at_epoch_ms, created_at_iso)
+					 VALUES (1, ?, ?, ?, ?, ?)`,
+				)
+				.run(runId, runId, orchestratorName, NOW_EPOCH, NOW_ISO);
+
+			const acquireResult = acquireOwnership({
+				db: seedDb.connection,
+				runId,
+				orchestratorName,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+			});
+			expect(acquireResult.kind).toBe("ACQUIRED");
+			if (acquireResult.kind !== "ACQUIRED") return;
+
+			// Seed v3 state with manifestPath pointing to a non-existent file.
+			const v3State = v3DelegationState(runId, orchestratorName);
+			(v3State.pendingDelegation as Record<string, unknown>).manifestPath =
+				"delegations/nonexistent.json";
+			unsafeEnsureInitialStateRow(
+				seedDb.connection,
+				acquireResult.handle.incarnationId,
+				3,
+				JSON.stringify(v3State),
+				NOW_EPOCH,
+				NOW_ISO,
+			);
+
+			releaseOwnership({
+				db: seedDb.connection,
+				handle: acquireResult.handle,
+			});
+
+			// Force a WAL checkpoint so the next process opening this DB
+			// does not hit SQLITE_BUSY.
+			seedDb.connection.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+			seedDb.close();
+
+			// 4. Run the orchestrator in resume mode — this MUST fail.
+			const result = await workspace.runEntrypoint(
+				entrypoint,
+				["--resume", "--run-id", runId],
+				{ timeoutMs: 15_000 },
+			);
+
+			// 5. Verify: process failure, single clean ERROR block.
+			expect(result.exitCode).toBe(1);
+			expect(countProtocolBlocks(result.stdout)).toBe(1);
+			const block = parseSingleProtocolBlock(result.stdout);
+			expect(block.action).toBe("ERROR");
+			expect(block.runId).toBe(runId);
+
+			// 6. Verify: error is correctly classified as migration blocked.
+			//    This is the assertion the old double-cleanup code would have
+			//    failed — it masked StateMigrationBlockedError behind
+			//    ProtocolError("Resume failed and ownership release also failed").
+			expect(block.fields.errorKind).toBe("state_migration_blocked");
+			expect(String(block.fields.message)).toContain("cannot be converted");
+
+			// 7. Verify: ownership was released — the single cleanup owner
+			//    in the catch block did its job.  No double-release, no
+			//    DB_FAILURE on a closed connection.
+			const checkDb = openRunDatabase({
+				driver: bunSqliteDriver,
+				dbPath,
+				busyTimeoutMs: 500,
+			});
+			try {
+				const ownRow = checkDb.connection
+					.prepare(
+						"SELECT ownership_status FROM run_ownership WHERE singleton = 1",
+					)
+					.get() as { ownership_status: string } | undefined;
+				expect(ownRow?.ownership_status ?? "FREE").toBe("FREE");
+			} finally {
+				checkDb.close();
+			}
+
+			// 8. Verify: no protocol blocks on stderr.
 			expect(result.stderr).not.toContain("@@TURNLOCK@@");
 		} finally {
 			workspace.cleanup();
