@@ -249,7 +249,7 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 
 	// Active owner check.
 	if (predecessor.status === "HELD" && predecessor.leaseUntilEpochMs !== null) {
-		if (nowEpochMs <= predecessor.leaseUntilEpochMs) {
+		if (nowEpochMs < predecessor.leaseUntilEpochMs) {
 			const ownerRow = db
 				.prepare("SELECT owner_pid FROM run_ownership WHERE singleton = 1")
 				.get() as { owner_pid: number } | undefined;
@@ -281,7 +281,7 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 		if (
 			currentPredecessor.status === "HELD" &&
 			currentPredecessor.leaseUntilEpochMs !== null &&
-			nowEpochMs <= currentPredecessor.leaseUntilEpochMs
+			nowEpochMs < currentPredecessor.leaseUntilEpochMs
 		) {
 			const ownerRow = db
 				.prepare("SELECT owner_pid FROM run_ownership WHERE singleton = 1")
@@ -422,7 +422,7 @@ export function refreshOwnership(
 				current.ownerToken === handle.ownerToken &&
 				current.fenceToken === handle.fenceToken &&
 				current.leaseUntilEpochMs !== null &&
-				nowEpochMs > current.leaseUntilEpochMs
+				nowEpochMs >= current.leaseUntilEpochMs
 			) {
 				return { kind: "EXPIRED_HANDLE" };
 			}

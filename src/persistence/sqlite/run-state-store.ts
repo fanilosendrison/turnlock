@@ -239,7 +239,7 @@ export function commitState<S extends object>(
 				return { kind: "STALE_HANDLE" };
 			}
 
-			if (nowEpochMs > ownershipRow.lease_until_epoch_ms) {
+			if (nowEpochMs >= ownershipRow.lease_until_epoch_ms) {
 				return { kind: "EXPIRED_HANDLE" };
 			}
 
