@@ -490,10 +490,10 @@ export function projectCanonicalArtifactFenced(
 			);
 		}
 
-		// Lease check — even if tokens match, expired lease means no authority.
+		// Lease check — lease is expired at the exact instant now >= leaseUntil.
 		if (
 			ownershipRow.lease_until_epoch_ms === null ||
-			nowEpochMs > ownershipRow.lease_until_epoch_ms
+			nowEpochMs >= ownershipRow.lease_until_epoch_ms
 		) {
 			rollback(db);
 			throw new AuthorityLostError(
