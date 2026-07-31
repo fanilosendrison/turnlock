@@ -14,7 +14,11 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { STATE_SCHEMA_VERSION } from "../../src/constants";
-import { ArtifactIntegrityError, StateCorruptedError } from "../../src/errors/concrete";
+import {
+	ArtifactIntegrityError,
+	StateCorruptedError,
+	StateMigrationBlockedError,
+} from "../../src/errors/concrete";
 import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
 import { acquireOwnership } from "../../src/persistence/sqlite/ownership";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
@@ -118,9 +122,9 @@ describe("terminalResult in authoritative state", () => {
 				expect(read.state).not.toBeNull();
 				expect(read.state!.terminalResult).toBeDefined();
 				expect(read.state!.terminalResult!.kind).toBe("done");
-				expect(
-					read.state!.terminalResult!.outputArtifact.kind,
-				).toBe("terminal-output");
+				expect(read.state!.terminalResult!.outputArtifact.kind).toBe(
+					"terminal-output",
+				);
 				expect(read.state!.terminalResult!.outputArtifact.digest).toBe(
 					prepared.ref.digest,
 				);
@@ -276,7 +280,8 @@ describe("artifact-store path confinement", () => {
 		const ref: ArtifactRef = {
 			kind: "terminal-output",
 			digestAlgorithm: "sha256",
-			digest: "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+			digest:
+				"sha256:0000000000000000000000000000000000000000000000000000000000000001",
 			relativePath: "artifacts/sha256/00/../outside.json",
 			mediaType: "application/json",
 			sizeBytes: 2,
@@ -290,7 +295,8 @@ describe("artifact-store path confinement", () => {
 		const ref: ArtifactRef = {
 			kind: "delegation-manifest",
 			digestAlgorithm: "sha256",
-			digest: "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+			digest:
+				"sha256:0000000000000000000000000000000000000000000000000000000000000001",
 			relativePath: "/etc/passwd",
 			mediaType: "application/json",
 			sizeBytes: 2,
@@ -304,7 +310,8 @@ describe("artifact-store path confinement", () => {
 		const ref: ArtifactRef = {
 			kind: "external-request-manifest",
 			digestAlgorithm: "sha256",
-			digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			digest:
+				"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			relativePath:
 				"artifacts/sha256/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json",
 			mediaType: "application/json",
@@ -361,10 +368,7 @@ describe("v3→v4 migration durability", () => {
 				},
 			};
 
-			fs.writeFileSync(
-				path.join(dir, "state.json"),
-				JSON.stringify(v3State),
-			);
+			fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(v3State));
 
 			// Migrate
 			const result = readState(dir);
@@ -434,10 +438,7 @@ describe("v3→v4 migration durability", () => {
 			};
 
 			// First migration
-			fs.writeFileSync(
-				path.join(dir, "state.json"),
-				JSON.stringify(v3State),
-			);
+			fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(v3State));
 			const first = readState(dir);
 			expect(first!.pendingDelegation!.manifestArtifact).toBeDefined();
 
@@ -495,19 +496,19 @@ describe("v3→v4 migration durability", () => {
 				},
 			};
 
-			fs.writeFileSync(
-				path.join(dir, "state.json"),
-				JSON.stringify(v3State),
-			);
+			fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(v3State));
 
-			// Migration leaves schemaVersion at 3 (all-or-nothing: path escapes, conversion blocked)
-			const result = readState(dir);
-			expect(result).not.toBeNull();
-			expect((result as unknown as Record<string, unknown>).schemaVersion).toBe(3);
-			// The manifestArtifact should NOT be present since the path escapes
-			expect(
-				result!.pendingDelegation?.manifestArtifact,
-			).toBeUndefined();
+			// Migration blocked: path escapes RUN_DIR, should throw
+			// StateMigrationBlockedError with MANIFEST_OUTSIDE_RUN_DIR.
+			expect(() => readState(dir)).toThrow(StateMigrationBlockedError);
+			try {
+				readState(dir);
+			} catch (err) {
+				expect(err).toBeInstanceOf(StateMigrationBlockedError);
+				expect((err as StateMigrationBlockedError).reason).toBe(
+					"MANIFEST_OUTSIDE_RUN_DIR",
+				);
+			}
 		} finally {
 			cleanupTempDir(dir);
 		}

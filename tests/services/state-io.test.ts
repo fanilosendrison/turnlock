@@ -1,15 +1,21 @@
 // NIB-T §6 — state-io (T-SI-01..12, P-SI-a/b/c)
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { STATE_SCHEMA_VERSION } from "../../src/constants";
 import {
 	StateCorruptedError,
+	StateMigrationBlockedError,
 	StateVersionMismatchError,
 } from "../../src/errors/concrete";
 import {
-	type PendingDelegationRecord,
 	readState,
 	readStateSnapshot,
 	type StateFile,
@@ -121,8 +127,8 @@ describe("readState (T-SI-01..07)", () => {
 	});
 });
 
-describe("state v2 to v3 migration", () => {
-	test("preserves a v2 pending delegation without modification", () => {
+describe("state v2 to v4 migration", () => {
+	test("blocks a v2 state whose manifestPath is outside RUN_DIR", () => {
 		const dir = makeTempDir();
 		try {
 			const legacy = JSON.parse(
@@ -130,21 +136,21 @@ describe("state v2 to v3 migration", () => {
 			) as Record<string, unknown>;
 			writeFileSync(join(dir, "state.json"), JSON.stringify(legacy));
 
-			const result = readStateSnapshot(dir);
-
-			expect(result.migratedFromVersion).toBe(2);
-			expect(result.state?.schemaVersion).toBeGreaterThanOrEqual(3);
-			expect(result.state?.pendingDelegation).toEqual(
-				legacy.pendingDelegation as PendingDelegationRecord,
-			);
-			expect(result.state?.usedLabels).toEqual(["rev"]);
-			expect(result.state).not.toHaveProperty("pendingExternalRequest");
+			expect(() => readStateSnapshot(dir)).toThrow(StateMigrationBlockedError);
+			try {
+				readStateSnapshot(dir);
+			} catch (err) {
+				expect(err).toBeInstanceOf(StateMigrationBlockedError);
+				expect((err as StateMigrationBlockedError).reason).toBe(
+					"MANIFEST_OUTSIDE_RUN_DIR",
+				);
+			}
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
 
-	test("migrates a v2 state without any pending record", () => {
+	test("migrates a v2 state without any pending record (no-op)", () => {
 		const dir = makeTempDir();
 		try {
 			writeFileSync(
@@ -154,9 +160,24 @@ describe("state v2 to v3 migration", () => {
 			const result = readStateSnapshot(dir);
 
 			expect(result.migratedFromVersion).toBe(2);
-			expect(result.state?.schemaVersion).toBeGreaterThanOrEqual(3);
+			expect(result.state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
 			expect(result.state).not.toHaveProperty("pendingDelegation");
 			expect(result.state).not.toHaveProperty("pendingExternalRequest");
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("migrates a v2 initial-empty state to v4 (no-op)", () => {
+		const dir = makeTempDir();
+		try {
+			writeFileSync(
+				join(dir, "state.json"),
+				loadFixture("states/initial-empty.json"),
+			);
+			const state = readState(dir);
+			expect(state).not.toBeNull();
+			expect(state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -220,6 +241,254 @@ describe("state v2 to v3 migration", () => {
 			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
 
 			expect(() => readState(dir)).toThrow(StateCorruptedError);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+});
+
+describe("v3 to v4 migration", () => {
+	test("no-op: v3 with no pending records migrates to v4", () => {
+		const dir = makeTempDir();
+		try {
+			// A v3 state that has neither pendingDelegation nor pendingExternalRequest.
+			// This is a clean state with no legacy manifest fields.
+			const v3State = {
+				...buildState({ count: 1 }),
+				schemaVersion: 3,
+			};
+			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
+
+			const result = readStateSnapshot(dir);
+			expect(result.migratedFromVersion).toBe(3);
+			expect(result.state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			expect(result.state?.data).toEqual({ count: 1 });
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("blocked: MANIFEST_MISSING when file does not exist inside run dir", () => {
+		const dir = makeTempDir();
+		try {
+			const v3State = {
+				...buildState({ count: 1 }),
+				schemaVersion: 3,
+				pendingDelegation: {
+					label: "rev",
+					kind: "prompt",
+					resumeAt: "b",
+					manifestPath: "delegations/missing.json",
+					emittedAtEpochMs: 1,
+					deadlineAtEpochMs: 2,
+					attempt: 0,
+					effectiveRetryPolicy: {
+						maxAttempts: 3,
+						backoffBaseMs: 1000,
+						maxBackoffMs: 30_000,
+					},
+				},
+				usedLabels: ["rev"],
+			};
+			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
+
+			expect(() => readStateSnapshot(dir)).toThrow(StateMigrationBlockedError);
+			try {
+				readStateSnapshot(dir);
+			} catch (err) {
+				expect(err).toBeInstanceOf(StateMigrationBlockedError);
+				expect((err as StateMigrationBlockedError).reason).toBe(
+					"MANIFEST_MISSING",
+				);
+			}
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("blocked: MANIFEST_SYMLINK when manifest is a symbolic link", () => {
+		const dir = makeTempDir();
+		try {
+			// Create delegations directory
+			mkdirSync(join(dir, "delegations"), { recursive: true });
+			// Create a real file targeted by the manifest path
+			const realFile = join(dir, "delegations", "real.json");
+			writeFileSync(realFile, JSON.stringify({ kind: "delegation-manifest" }));
+			// Create a symlink at the manifest path pointing to the real file
+			const symlinkPath = join(dir, "delegations", "rev-0.json");
+			symlinkSync(realFile, symlinkPath);
+
+			const v3State = {
+				...buildState({ count: 1 }),
+				schemaVersion: 3,
+				pendingDelegation: {
+					label: "rev",
+					kind: "prompt",
+					resumeAt: "b",
+					manifestPath: "delegations/rev-0.json",
+					emittedAtEpochMs: 1,
+					deadlineAtEpochMs: 2,
+					attempt: 0,
+					effectiveRetryPolicy: {
+						maxAttempts: 3,
+						backoffBaseMs: 1000,
+						maxBackoffMs: 30_000,
+					},
+				},
+				usedLabels: ["rev"],
+			};
+			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
+
+			expect(() => readStateSnapshot(dir)).toThrow(StateMigrationBlockedError);
+			try {
+				readStateSnapshot(dir);
+			} catch (err) {
+				expect(err).toBeInstanceOf(StateMigrationBlockedError);
+				expect((err as StateMigrationBlockedError).reason).toBe(
+					"MANIFEST_SYMLINK",
+				);
+			}
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("blocked: MANIFEST_NOT_REGULAR when manifest is a directory", () => {
+		const dir = makeTempDir();
+		try {
+			// Create a directory at the manifest path instead of a file
+			const manifestDir = join(dir, "delegations", "rev-0.json");
+			mkdirSync(manifestDir, { recursive: true });
+
+			const v3State = {
+				...buildState({ count: 1 }),
+				schemaVersion: 3,
+				pendingDelegation: {
+					label: "rev",
+					kind: "prompt",
+					resumeAt: "b",
+					manifestPath: "delegations/rev-0.json",
+					emittedAtEpochMs: 1,
+					deadlineAtEpochMs: 2,
+					attempt: 0,
+					effectiveRetryPolicy: {
+						maxAttempts: 3,
+						backoffBaseMs: 1000,
+						maxBackoffMs: 30_000,
+					},
+				},
+				usedLabels: ["rev"],
+			};
+			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
+
+			expect(() => readStateSnapshot(dir)).toThrow(StateMigrationBlockedError);
+			try {
+				readStateSnapshot(dir);
+			} catch (err) {
+				expect(err).toBeInstanceOf(StateMigrationBlockedError);
+				expect((err as StateMigrationBlockedError).reason).toBe(
+					"MANIFEST_NOT_REGULAR",
+				);
+			}
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("blocked: MANIFEST_DIGEST_MISMATCH for external request", () => {
+		const dir = makeTempDir();
+		try {
+			// Create a valid external request manifest with known content
+			mkdirSync(join(dir, "external-requests"), { recursive: true });
+			const manifestPath = join(dir, "external-requests", "push-repo.json");
+			const manifestContent = JSON.stringify({
+				kind: "external-request-manifest",
+			});
+			writeFileSync(manifestPath, manifestContent);
+
+			const v3State = {
+				...buildState({ count: 1 }),
+				schemaVersion: 3,
+				pendingExternalRequest: {
+					requestId: "01HX0000000000000000000001/push-repo",
+					label: "push-repo",
+					requestType: "git.push",
+					resumeAt: "resume",
+					manifestPath: "external-requests/push-repo.json",
+					manifestDigest:
+						"sha256:0000000000000000000000000000000000000000000000000000000000000000",
+					resultPath: "external-results/push-repo.json",
+					emittedAt: "2026-04-19T12:00:00.000Z",
+					emittedAtEpochMs: 1,
+				},
+				usedLabels: ["push-repo"],
+			};
+			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
+
+			expect(() => readStateSnapshot(dir)).toThrow(StateMigrationBlockedError);
+			try {
+				readStateSnapshot(dir);
+			} catch (err) {
+				expect(err).toBeInstanceOf(StateMigrationBlockedError);
+				expect((err as StateMigrationBlockedError).reason).toBe(
+					"MANIFEST_DIGEST_MISMATCH",
+				);
+			}
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("successful: v3 delegation manifestPath converted to manifestArtifact", () => {
+		const dir = makeTempDir();
+		try {
+			// Create a real manifest file inside the run dir
+			mkdirSync(join(dir, "delegations"), { recursive: true });
+			const manifestContent = JSON.stringify({
+				kind: "delegation-manifest",
+				skill: "test",
+			});
+			writeFileSync(join(dir, "delegations", "rev-0.json"), manifestContent);
+
+			const v3State = {
+				...buildState({ count: 1 }),
+				schemaVersion: 3,
+				pendingDelegation: {
+					label: "rev",
+					kind: "prompt",
+					resumeAt: "b",
+					manifestPath: "delegations/rev-0.json",
+					emittedAtEpochMs: 1,
+					deadlineAtEpochMs: 2,
+					attempt: 0,
+					effectiveRetryPolicy: {
+						maxAttempts: 3,
+						backoffBaseMs: 1000,
+						maxBackoffMs: 30_000,
+					},
+				},
+				usedLabels: ["rev"],
+			};
+			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
+
+			const result = readStateSnapshot(dir);
+			expect(result.migratedFromVersion).toBe(3);
+			expect(result.state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			// Verify manifestArtifact was created and manifestPath removed
+			const pd = (result.state as unknown as Record<string, unknown>)
+				.pendingDelegation as Record<string, unknown>;
+			expect(pd).not.toHaveProperty("manifestPath");
+			expect(pd.manifestArtifact).toBeDefined();
+			const artifact = pd.manifestArtifact as Record<string, unknown>;
+			expect(artifact.kind).toBe("delegation-manifest");
+			expect(artifact.digestAlgorithm).toBe("sha256");
+			expect(typeof artifact.digest).toBe("string");
+			expect(artifact.mediaType).toBe("application/json");
+			expect(artifact.relativePath).toContain("artifacts/sha256/");
+			expect(artifact.sizeBytes).toBe(Buffer.byteLength(manifestContent));
+
+			// Verify the immutable blob was installed
+			expect(existsSync(join(dir, artifact.relativePath as string))).toBe(true);
 		} finally {
 			cleanupTempDir(dir);
 		}
