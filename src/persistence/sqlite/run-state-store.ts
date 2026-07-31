@@ -174,6 +174,12 @@ WHERE rs.singleton = 1
 // Public API
 // ---------------------------------------------------------------------------
 
+/** @deprecated Use {@link initializeStateUnderFence} instead.
+ *
+ *  Legacy blind INSERT OR IGNORE — does NOT fence on the current
+ *  ownership lease.  Writes fake metadata (empty owner_token,
+ *  fence_token = 0).  Kept only for test fixtures that predate
+ *  the fenced initialization protocol. */
 export function ensureInitialStateRow(
 	db: SqliteConnection,
 	incarnationId: string,
