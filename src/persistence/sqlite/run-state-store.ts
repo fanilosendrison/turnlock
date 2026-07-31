@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { STATE_SCHEMA_VERSION } from "../../constants";
 import type { TerminalDoneRecord } from "../../types/artifacts";
 import { DbIntegrityError } from "./errors";
 import { beginImmediate, commit, type LockHandle, rollback } from "./ownership";
@@ -63,6 +64,33 @@ export type CommitStateResult =
 	| { readonly kind: "EXPIRED_HANDLE" }
 	| { readonly kind: "REVISION_CONFLICT" }
 	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
+
+// ---------------------------------------------------------------------------
+// Fenced initial state establishment (replaces ensureInitialStateRow)
+// ---------------------------------------------------------------------------
+
+/** Result of a fenced initial state establishment. */
+export type InitializeStateResult =
+	| {
+			readonly kind: "INITIALIZED";
+			readonly committed: CommittedState<object>;
+	  }
+	| {
+			readonly kind: "ALREADY_INITIALIZED";
+			readonly state: StateRecord<object>;
+			readonly digest: string;
+	  }
+	| { readonly kind: "STALE_HANDLE" }
+	| { readonly kind: "EXPIRED_HANDLE" }
+	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
+
+export interface InitializeStateParams {
+	readonly db: SqliteConnection;
+	readonly handle: LockHandle;
+	readonly initialState: Record<string, unknown>;
+	readonly nowEpochMs: number;
+	readonly nowIso: string;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -163,6 +191,205 @@ export function ensureInitialStateRow(
 		":now_epoch": nowEpochMs,
 		":now_iso": nowIso,
 	});
+}
+
+// ---------------------------------------------------------------------------
+// Fenced initial state establishment
+// ---------------------------------------------------------------------------
+
+const INITIALIZE_STATE_SQL = `
+INSERT INTO run_state (
+    singleton,
+    incarnation_id,
+    state_revision,
+    state_schema_version,
+    state_json,
+    state_digest,
+    committed_by_owner_token,
+    committed_by_fence_token,
+    committed_at_epoch_ms,
+    committed_at_iso
+)
+SELECT
+    1,
+    :incarnation_id,
+    0,
+    :schema_version,
+    :state_json,
+    :state_digest,
+    :owner_token,
+    :fence_token,
+    :now_epoch,
+    :now_iso
+WHERE EXISTS (
+    SELECT 1
+    FROM run_ownership
+    WHERE singleton = 1
+      AND incarnation_id = :incarnation_id
+      AND ownership_status = 'HELD'
+      AND owner_token = :owner_token
+      AND fence_token = :fence_token
+      AND lease_until_epoch_ms > :now_epoch
+)
+  AND NOT EXISTS (
+    SELECT 1 FROM run_state WHERE singleton = 1
+  )
+RETURNING
+    state_revision,
+    state_json,
+    state_digest,
+    committed_by_fence_token
+`;
+
+/** Establish the initial authoritative state row under the current fence.
+ *
+ *  Unlike the legacy `ensureInitialStateRow` (which used a blind
+ *  INSERT OR IGNORE with fake metadata), this primitive gates the
+ *  insertion on the caller still holding a valid ownership lease.  A
+ *  stale or expired handle cannot establish initial authority.
+ *
+ *  Returns `INITIALIZED` with the authoritative `CommittedState`
+ *  (containing the real `owner_token`, `fence_token`, and digest),
+ *  or `ALREADY_INITIALIZED` if a state row already exists (the
+ *  existing row is re-read and returned so the caller can distinguish
+ *  this from a fencing failure). */
+export function initializeStateUnderFence(
+	params: InitializeStateParams,
+): InitializeStateResult {
+	const { db, handle, initialState, nowEpochMs, nowIso } = params;
+
+	const schemaVersion =
+		(initialState.schemaVersion as number) ?? STATE_SCHEMA_VERSION;
+	const jsonStr = JSON.stringify(initialState);
+	const digest = computeDigest(jsonStr);
+
+	try {
+		beginImmediate(db);
+	} catch (error) {
+		return { kind: "DB_FAILURE", cause: error };
+	}
+
+	try {
+		const row = db.prepare(INITIALIZE_STATE_SQL).get({
+			":incarnation_id": handle.incarnationId,
+			":schema_version": schemaVersion,
+			":state_json": jsonStr,
+			":state_digest": digest,
+			":owner_token": handle.ownerToken,
+			":fence_token": handle.fenceToken,
+			":now_epoch": nowEpochMs,
+			":now_iso": nowIso,
+		}) as
+			| {
+					state_revision: number | bigint;
+					state_json: string;
+					state_digest: string;
+					committed_by_fence_token: number | bigint;
+			  }
+			| undefined;
+
+		if (row !== undefined) {
+			// Insert succeeded — commit and return the authoritative state.
+			try {
+				commit(db);
+			} catch (error) {
+				rollback(db);
+				return { kind: "DB_FAILURE", cause: error };
+			}
+
+			const revision = String(bigintFromRow(row.state_revision));
+			return {
+				kind: "INITIALIZED",
+				committed: {
+					state: {
+						...(initialState as unknown as StateRecord<object>),
+						runIncarnationId: handle.incarnationId,
+						stateRevision: revision,
+						committedFenceToken: String(
+							bigintFromRow(row.committed_by_fence_token),
+						),
+					},
+					stateDigest: row.state_digest,
+				},
+			};
+		}
+
+		// Insert returned no row.  Diagnose why.
+		rollback(db);
+
+		// Check if the state row already exists.
+		const existing = db
+			.prepare("SELECT 1 FROM run_state WHERE singleton = 1")
+			.get();
+		if (existing !== undefined) {
+			const read = readAuthoritativeState(db);
+			if (read.state !== null) {
+				return {
+					kind: "ALREADY_INITIALIZED",
+					state: read.state,
+					digest: read.digest ?? "",
+				};
+			}
+			return {
+				kind: "DB_FAILURE",
+				cause: new DbIntegrityError(
+					"run_state row exists but could not be read",
+				),
+			};
+		}
+
+		// State row does not exist — the ownership check must have failed.
+		const ownershipRow = db
+			.prepare(
+				`SELECT ownership_status, owner_token, fence_token,
+				        lease_until_epoch_ms
+				 FROM run_ownership WHERE singleton = 1`,
+			)
+			.get() as
+			| {
+					ownership_status: string;
+					owner_token: string | null;
+					fence_token: number | bigint;
+					lease_until_epoch_ms: number | null;
+			  }
+			| undefined;
+
+		if (ownershipRow === undefined) {
+			return {
+				kind: "DB_FAILURE",
+				cause: new DbIntegrityError(
+					"ownership row missing during initialization",
+				),
+			};
+		}
+
+		if (ownershipRow.ownership_status !== "HELD") {
+			return { kind: "STALE_HANDLE" };
+		}
+
+		if (ownershipRow.owner_token !== handle.ownerToken) {
+			return { kind: "STALE_HANDLE" };
+		}
+
+		if (bigintFromRow(ownershipRow.fence_token) !== handle.fenceToken) {
+			return { kind: "STALE_HANDLE" };
+		}
+
+		if (
+			ownershipRow.lease_until_epoch_ms !== null &&
+			nowEpochMs >= ownershipRow.lease_until_epoch_ms
+		) {
+			return { kind: "EXPIRED_HANDLE" };
+		}
+
+		return {
+			kind: "DB_FAILURE",
+			cause: new DbIntegrityError("initialize state failed for unknown reason"),
+		};
+	} catch (error) {
+		rollback(db);
+		return { kind: "DB_FAILURE", cause: error };
+	}
 }
 
 export function commitState<S extends object>(

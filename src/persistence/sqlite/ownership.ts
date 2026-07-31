@@ -99,11 +99,28 @@ function ensureIncarnation(
 	nowEpochMs: number,
 	nowIso: string,
 ): string {
+	// Read the full identity row — not just incarnation_id.
+	// An existing incarnation whose run_id or orchestrator_name
+	// does not match means the DB was placed in the wrong RUN_DIR.
 	const existing = db
-		.prepare("SELECT incarnation_id FROM run_incarnation WHERE singleton = 1")
-		.get() as { incarnation_id?: string } | undefined;
+		.prepare(
+			"SELECT run_id, incarnation_id, orchestrator_name FROM run_incarnation WHERE singleton = 1",
+		)
+		.get() as
+		| { run_id: string; incarnation_id: string; orchestrator_name: string }
+		| undefined;
 
-	if (existing?.incarnation_id !== undefined) {
+	if (existing !== undefined) {
+		if (existing.run_id !== runId) {
+			throw new DbIntegrityError(
+				`run_incarnation run_id mismatch: expected ${runId}, got ${existing.run_id}`,
+			);
+		}
+		if (existing.orchestrator_name !== orchestratorName) {
+			throw new DbIntegrityError(
+				`run_incarnation orchestrator_name mismatch: expected ${orchestratorName}, got ${existing.orchestrator_name}`,
+			);
+		}
 		return existing.incarnation_id;
 	}
 
@@ -115,11 +132,30 @@ function ensureIncarnation(
 		 VALUES (1, ?, ?, ?, ?, ?)`,
 	).run(runId, incarnationId, orchestratorName, nowEpochMs, nowIso);
 
-	// Re-read in case another process inserted first.
+	// Re-read in case another process inserted first — and validate.
 	const inserted = db
-		.prepare("SELECT incarnation_id FROM run_incarnation WHERE singleton = 1")
-		.get() as { incarnation_id: string } | undefined;
-	return inserted?.incarnation_id ?? incarnationId;
+		.prepare(
+			"SELECT run_id, incarnation_id, orchestrator_name FROM run_incarnation WHERE singleton = 1",
+		)
+		.get() as
+		| { run_id: string; incarnation_id: string; orchestrator_name: string }
+		| undefined;
+
+	if (inserted !== undefined) {
+		if (inserted.run_id !== runId) {
+			throw new DbIntegrityError(
+				`run_incarnation run_id mismatch after race: expected ${runId}, got ${inserted.run_id}`,
+			);
+		}
+		if (inserted.orchestrator_name !== orchestratorName) {
+			throw new DbIntegrityError(
+				`run_incarnation orchestrator_name mismatch after race: expected ${orchestratorName}, got ${inserted.orchestrator_name}`,
+			);
+		}
+		return inserted.incarnation_id;
+	}
+
+	return incarnationId;
 }
 
 function ensureOwnershipRow(db: SqliteConnection, incarnationId: string): void {

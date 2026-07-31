@@ -15,7 +15,7 @@ import {
 } from "../persistence/sqlite/ownership";
 import { openRunDatabase } from "../persistence/sqlite/run-database";
 import {
-	ensureInitialStateRow,
+	initializeStateUnderFence,
 	projectStateJson,
 	readAuthoritativeState,
 	type StateRecord,
@@ -124,14 +124,46 @@ function seedLegacyStateToSqlite<S extends object>(
 
 		handle = acquireResult.handle;
 
-		ensureInitialStateRow(
-			runDb.connection,
-			handle.incarnationId,
-			state.schemaVersion,
-			JSON.stringify(state),
-			state.lastTransitionAtEpochMs,
-			state.lastTransitionAt,
-		);
+		// Use the fenced initialization primitive so the initial state
+		// is only established if the caller still holds a valid lease.
+		// committed_at will be the current wall-clock time (bootstrap
+		// moment), not the legacy lastTransitionAt.
+		const initResult = initializeStateUnderFence({
+			db: runDb.connection,
+			handle,
+			initialState: state as unknown as Record<string, unknown>,
+			nowEpochMs: ownershipNowEpochMs,
+			nowIso: ownershipNowIso,
+		});
+
+		if (initResult.kind === "STALE_HANDLE") {
+			throw new StateMissingError(
+				"Ownership became stale before initial state could be established",
+				{ runId, orchestratorName: state.orchestratorName },
+			);
+		}
+		if (initResult.kind === "EXPIRED_HANDLE") {
+			throw new StateMissingError(
+				"Ownership expired before initial state could be established",
+				{ runId, orchestratorName: state.orchestratorName },
+			);
+		}
+		if (initResult.kind === "DB_FAILURE") {
+			throw new StateMissingError(
+				"DB failure during initial state establishment",
+				{
+					runId,
+					orchestratorName: state.orchestratorName,
+					cause: initResult.cause,
+				},
+			);
+		}
+		if (initResult.kind === "ALREADY_INITIALIZED") {
+			throw new StateMissingError(
+				"State row already exists in DB — cannot seed from legacy state.json",
+				{ runId, orchestratorName: state.orchestratorName },
+			);
+		}
 
 		// Do NOT project state.json here.  The caller re-reads the
 		// authoritative record from SQLite and projects it with the
@@ -356,16 +388,30 @@ async function runInitialMode<S extends object>(
 		usedLabels: [],
 	};
 
-	// Write initial state row in SQLite and project state.json.
-	ensureInitialStateRow(
-		runDb.connection,
-		handle.incarnationId,
-		STATE_SCHEMA_VERSION,
-		JSON.stringify(initialState),
-		nowEpoch,
+	// Establish the initial authoritative state under the current fence.
+	const initResult = initializeStateUnderFence({
+		db: runDb.connection,
+		handle,
+		initialState: initialState as unknown as Record<string, unknown>,
+		nowEpochMs: nowEpoch,
 		nowIso,
+	});
+
+	if (initResult.kind !== "INITIALIZED") {
+		runDb.close();
+		throw new ProtocolError(
+			`Failed to establish initial state: ${initResult.kind}`,
+			{ runId, orchestratorName: config.name },
+		);
+	}
+
+	// Project state.json from the authoritative record (with correct
+	// runIncarnationId, stateRevision, committedFenceToken, and digest).
+	projectStateJson(
+		runDir,
+		initResult.committed.state,
+		initResult.committed.stateDigest,
 	);
-	projectStateJson(runDir, initialState as unknown as StateRecord<S>, "");
 
 	logger.enableDiskEmit(path.join(runDir, "events.ndjson"));
 
@@ -389,7 +435,7 @@ async function runInitialMode<S extends object>(
 		currentPhase: config.initial,
 		phasesExecuted: 0,
 		accumulatedDurationMs: 0,
-		stateRevision: "0",
+		stateRevision: initResult.committed.state.stateRevision,
 	};
 
 	installSignalHandlers(ctx);
@@ -499,6 +545,24 @@ async function runResumeMode<S extends object>(
 		const preRead = readAuthoritativeState<S>(runDb.connection);
 
 		if (preRead.state !== null) {
+			// Validate identity BEFORE acquiring ownership — a DB placed
+			// in the wrong RUN_DIR must be rejected before we take the
+			// lock and before we project state.json.
+			if (preRead.state.runId !== runId) {
+				runDb.close();
+				throw new ProtocolError(
+					`DB identity mismatch — incarnation runId=${preRead.state.runId}, argv.runId=${runId}`,
+					{ runId, orchestratorName: config.name },
+				);
+			}
+			if (preRead.state.orchestratorName !== config.name) {
+				runDb.close();
+				throw new ProtocolError(
+					`DB identity mismatch — incarnation orchestratorName=${preRead.state.orchestratorName}, config.name=${config.name}`,
+					{ runId, orchestratorName: config.name },
+				);
+			}
+
 			// Fully bootstrapped — acquire ownership normally.
 			const nowEpoch = clock.nowEpochMs();
 			const nowIso = clock.nowWallIso();
@@ -739,6 +803,7 @@ async function runResumeMode<S extends object>(
 	projectStateJson(runDir, authoritativeRecord, authoritativeDigest ?? "");
 
 	if (state.runId !== runId) {
+		releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
 		throw new ProtocolError(
 			`RUN_DIR mismatch with argv — state.runId=${state.runId}, argv.runId=${runId}`,
@@ -746,6 +811,7 @@ async function runResumeMode<S extends object>(
 		);
 	}
 	if (state.orchestratorName !== config.name) {
+		releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
 		throw new ProtocolError(
 			`orchestrator name mismatch — state.orchestratorName=${state.orchestratorName}, config.name=${config.name}`,
