@@ -915,9 +915,13 @@ await runOrchestrator<State>({
 				if (row) {
 					const parsed = JSON.parse(row.state_json);
 					delete parsed.terminalResult;
-					db.run("UPDATE run_state SET state_json = ? WHERE singleton = 1", [
-						JSON.stringify(parsed),
-					]);
+					const newJson = JSON.stringify(parsed);
+					const { createHash } = await import("node:crypto");
+					const newDigest = `sha256:${createHash("sha256").update(newJson).digest("hex")}`;
+					db.run(
+						"UPDATE run_state SET state_json = ?, state_digest = ? WHERE singleton = 1",
+						[newJson, newDigest],
+					);
 				}
 			} finally {
 				db.close();

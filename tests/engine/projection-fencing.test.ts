@@ -598,10 +598,21 @@ describe("canonical projection monotonicity", () => {
 			expect(c1.kind).toBe("COMMITTED");
 			if (c1.kind !== "COMMITTED") return;
 
-			// Bump revision via raw SQL.
-			ctx.runDb.connection.exec(
-				"UPDATE run_state SET state_revision = 99, state_digest = 'sha256:modified' WHERE singleton = 1",
-			);
+			// Bump revision via raw SQL (also update state_json to keep
+			// digest consistent — the integrity check now catches mismatches).
+			const newState = makeRecord({
+				currentPhase: "phase-99",
+				phasesExecuted: 99,
+				stateRevision: "99",
+			});
+			const { createHash } = require("node:crypto");
+			const newJson = JSON.stringify(newState);
+			const newDigest = `sha256:${createHash("sha256").update(newJson).digest("hex")}`;
+			ctx.runDb.connection
+				.prepare(
+					"UPDATE run_state SET state_revision = 99, state_json = ?, state_digest = ? WHERE singleton = 1",
+				)
+				.run(newJson, newDigest);
 
 			// Read current state to get the real digest (modified by the raw SQL).
 			const read = readAuthoritativeState(ctx.runDb.connection);

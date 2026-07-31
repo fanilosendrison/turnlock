@@ -54,6 +54,7 @@ function acquire(runDb: ReturnType<typeof openRunDatabase>) {
 		nowIso: NOW_ISO,
 		leaseDurationMs: LEASE_MS,
 		contentionDeadlineMs: 2000,
+		leaseClockEpochMs: () => NOW_EPOCH,
 	});
 }
 

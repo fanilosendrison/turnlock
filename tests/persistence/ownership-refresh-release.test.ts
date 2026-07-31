@@ -49,6 +49,7 @@ function acquire(
 		nowIso: NOW_ISO,
 		leaseDurationMs: LEASE_MS,
 		contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		leaseClockEpochMs: () => nowEpoch,
 	});
 }
 

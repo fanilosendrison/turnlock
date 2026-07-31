@@ -545,9 +545,13 @@ describe("external request path confinement", () => {
 						unknown
 					>;
 					pending.resultPath = outsidePath;
-					db.run("UPDATE run_state SET state_json = ? WHERE singleton = 1", [
-						JSON.stringify(parsed),
-					]);
+					const newJson = JSON.stringify(parsed);
+					const { createHash } = require("node:crypto");
+					const newDigest = `sha256:${createHash("sha256").update(newJson).digest("hex")}`;
+					db.run(
+						"UPDATE run_state SET state_json = ?, state_digest = ? WHERE singleton = 1",
+						[newJson, newDigest],
+					);
 				}
 			} finally {
 				db.close();

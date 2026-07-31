@@ -60,6 +60,9 @@ export interface CommitStateParams<S extends object> {
 	readonly nextState: StateRecord<S>;
 	readonly nowEpochMs: number;
 	readonly nowIso: string;
+	/** Optional clock for lease-critical timestamp capture after
+	 *  BEGIN IMMEDIATE.  Defaults to `Date.now`. */
+	readonly leaseClockEpochMs?: () => number;
 }
 
 export type CommitStateResult =
@@ -94,6 +97,9 @@ export interface InitializeStateParams {
 	readonly initialState: Record<string, unknown>;
 	readonly nowEpochMs: number;
 	readonly nowIso: string;
+	/** Optional clock for lease-critical timestamp capture after
+	 *  BEGIN IMMEDIATE.  Defaults to `Date.now`. */
+	readonly leaseClockEpochMs?: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +231,13 @@ RETURNING
 export function initializeStateUnderFence(
 	params: InitializeStateParams,
 ): InitializeStateResult {
-	const { db, handle, initialState, nowEpochMs, nowIso } = params;
+	const {
+		db,
+		handle,
+		initialState,
+		nowEpochMs: _nowEpochMs,
+		nowIso: _nowIso,
+	} = params;
 
 	const schemaVersion =
 		(initialState.schemaVersion as number) ?? STATE_SCHEMA_VERSION;
@@ -238,6 +250,13 @@ export function initializeStateUnderFence(
 		return { kind: "DB_FAILURE", cause: error };
 	}
 
+	// Capture clock AFTER lock acquisition — the wait for
+	// BEGIN IMMEDIATE (governed by busy_timeout) must not
+	// produce a stale lease check.  Use the provided lease
+	// clock if available, otherwise the real clock.
+	const lockEpochMs = (params.leaseClockEpochMs ?? (() => params.nowEpochMs))();
+	const lockIso = new Date(lockEpochMs).toISOString();
+
 	try {
 		const row = db.prepare(INITIALIZE_STATE_SQL).get({
 			":incarnation_id": handle.incarnationId,
@@ -246,8 +265,8 @@ export function initializeStateUnderFence(
 			":state_digest": digest,
 			":owner_token": handle.ownerToken,
 			":fence_token": handle.fenceToken,
-			":now_epoch": nowEpochMs,
-			":now_iso": nowIso,
+			":now_epoch": lockEpochMs,
+			":now_iso": lockIso,
 		}) as
 			| {
 					state_revision: number | bigint;
@@ -330,7 +349,7 @@ export function initializeStateUnderFence(
 
 		if (
 			ownershipRow.lease_until_epoch_ms !== null &&
-			nowEpochMs >= ownershipRow.lease_until_epoch_ms
+			lockEpochMs >= ownershipRow.lease_until_epoch_ms
 		) {
 			return { kind: "EXPIRED_HANDLE" };
 		}
@@ -371,8 +390,14 @@ export function initializeStateUnderFence(
 export function commitState<S extends object>(
 	params: CommitStateParams<S>,
 ): CommitStateResult {
-	const { db, handle, expectedRevision, nextState, nowEpochMs, nowIso } =
-		params;
+	const {
+		db,
+		handle,
+		expectedRevision,
+		nextState,
+		nowEpochMs: _nowEpochMs,
+		nowIso: _nowIso,
+	} = params;
 
 	const expectedRevisionBigInt = BigInt(expectedRevision);
 
@@ -385,6 +410,13 @@ export function commitState<S extends object>(
 		return { kind: "DB_FAILURE", cause: error };
 	}
 
+	// Capture clock AFTER lock acquisition — the wait for
+	// BEGIN IMMEDIATE (governed by busy_timeout) must not
+	// produce a stale lease check.  Use the provided lease
+	// clock if available, otherwise the real clock.
+	const lockEpochMs = (params.leaseClockEpochMs ?? (() => params.nowEpochMs))();
+	const lockIso = new Date(lockEpochMs).toISOString();
+
 	try {
 		const row = db.prepare(COMMIT_STATE_SQL).get({
 			":schema_version": nextState.schemaVersion,
@@ -392,8 +424,8 @@ export function commitState<S extends object>(
 			":state_digest": digest,
 			":owner_token": handle.ownerToken,
 			":fence_token": handle.fenceToken,
-			":now_epoch": nowEpochMs,
-			":now_iso": nowIso,
+			":now_epoch": lockEpochMs,
+			":now_iso": lockIso,
 			":incarnation_id": handle.incarnationId,
 			":expected_revision": expectedRevisionBigInt,
 		}) as
@@ -442,7 +474,7 @@ export function commitState<S extends object>(
 				return { kind: "STALE_HANDLE" };
 			}
 
-			if (nowEpochMs >= ownershipRow.lease_until_epoch_ms) {
+			if (lockEpochMs >= ownershipRow.lease_until_epoch_ms) {
 				return { kind: "EXPIRED_HANDLE" };
 			}
 
@@ -515,6 +547,16 @@ export function readAuthoritativeState<S extends object>(
 		| undefined;
 
 	if (row === undefined) return { state: null, digest: null };
+
+	// Verify the stored digest matches the stored JSON.
+	// A corrupt state_json with a stale digest must not be
+	// silently accepted.
+	const actualDigest = computeDigest(row.state_json);
+	if (actualDigest !== row.state_digest) {
+		throw new DbIntegrityError(
+			`run_state digest mismatch: stored=${row.state_digest}, actual=${actualDigest}`,
+		);
+	}
 
 	const parsed = JSON.parse(row.state_json) as Record<string, unknown>;
 	const state: StateRecord<S> = {
@@ -630,6 +672,7 @@ export function projectAuthoritativeStateFenced(
 	runDir: string,
 	expectedRevision: string,
 	expectedDigest: string,
+	leaseClockEpochMs?: () => number,
 ): void {
 	try {
 		beginImmediate(db);
@@ -642,7 +685,8 @@ export function projectAuthoritativeStateFenced(
 
 	// Clock captured AFTER lock acquisition — the wait for BEGIN IMMEDIATE
 	// (governed by busy_timeout) must not produce a stale clock reading.
-	const nowEpochMs = Date.now();
+	// Use the provided lease clock if available, otherwise the real clock.
+	const nowEpochMs = (leaseClockEpochMs ?? Date.now)();
 
 	try {
 		// Step 1 — Verify ownership including lease expiration.

@@ -51,6 +51,9 @@ export interface AcquireParams {
 	readonly nowIso: string;
 	readonly leaseDurationMs: number;
 	readonly contentionDeadlineMs: number;
+	/** Optional clock for lease-critical timestamp capture after
+	 *  BEGIN IMMEDIATE.  Defaults to `Date.now`. */
+	readonly leaseClockEpochMs?: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +340,14 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 			return { kind: "DB_FAILURE", cause: error };
 		}
 
+		// Capture clock AFTER lock acquisition — the wait for
+		// BEGIN IMMEDIATE (governed by busy_timeout) must not
+		// produce a stale lease computation.  Use the provided
+		// lease clock if available, otherwise the real clock.
+		const lockEpochMs = (
+			params.leaseClockEpochMs ?? (() => params.nowEpochMs)
+		)();
+
 		let casRow: CasRow | null;
 		try {
 			casRow = attemptCas(
@@ -345,7 +356,7 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 				currentPredecessor,
 				ownerToken,
 				ownerPid,
-				nowEpochMs,
+				lockEpochMs,
 				leaseDurationMs,
 			);
 		} catch (error) {
@@ -420,12 +431,15 @@ export interface RefreshParams {
 	readonly handle: LockHandle;
 	readonly nowEpochMs: number;
 	readonly leaseDurationMs: number;
+	/** Optional clock for lease-critical timestamp capture after
+	 *  BEGIN IMMEDIATE.  Defaults to `Date.now`. */
+	readonly leaseClockEpochMs?: () => number;
 }
 
 export function refreshOwnership(
 	params: RefreshParams,
 ): OwnershipOperationResult {
-	const { db, handle, nowEpochMs, leaseDurationMs } = params;
+	const { db, handle, nowEpochMs: _nowEpochMs, leaseDurationMs } = params;
 
 	try {
 		beginImmediate(db);
@@ -433,13 +447,19 @@ export function refreshOwnership(
 		return { kind: "DB_FAILURE", cause: error };
 	}
 
+	// Capture clock AFTER lock acquisition — the wait for
+	// BEGIN IMMEDIATE (governed by busy_timeout) must not
+	// produce a stale lease check.  Use the provided lease
+	// clock if available, otherwise the real clock.
+	const lockEpochMs = (params.leaseClockEpochMs ?? (() => params.nowEpochMs))();
+
 	try {
 		const row = db.prepare(REFRESH_SQL).get({
-			":new_lease": nowEpochMs + leaseDurationMs,
+			":new_lease": lockEpochMs + leaseDurationMs,
 			":incarnation_id": handle.incarnationId,
 			":owner_token": handle.ownerToken,
 			":fence_token": handle.fenceToken,
-			":now_epoch": nowEpochMs,
+			":now_epoch": lockEpochMs,
 		}) as CasRow | undefined;
 
 		if (row === undefined) {
@@ -458,7 +478,7 @@ export function refreshOwnership(
 				current.ownerToken === handle.ownerToken &&
 				current.fenceToken === handle.fenceToken &&
 				current.leaseUntilEpochMs !== null &&
-				nowEpochMs >= current.leaseUntilEpochMs
+				lockEpochMs >= current.leaseUntilEpochMs
 			) {
 				return { kind: "EXPIRED_HANDLE" };
 			}

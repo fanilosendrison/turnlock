@@ -51,6 +51,7 @@ function acquire(params: {
 		nowIso: NOW_ISO,
 		leaseDurationMs: LEASE_MS,
 		contentionDeadlineMs: params.deadlineMs ?? CONTENTION_DEADLINE_MS,
+		leaseClockEpochMs: () => params.nowEpochMs ?? NOW_EPOCH,
 	});
 }
 
