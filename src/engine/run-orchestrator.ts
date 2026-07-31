@@ -16,7 +16,6 @@ import {
 import { openRunDatabase } from "../persistence/sqlite/run-database";
 import {
 	initializeStateUnderFence,
-	projectStateJson,
 	readAuthoritativeState,
 	type StateRecord,
 } from "../persistence/sqlite/run-state-store";
@@ -43,6 +42,7 @@ import {
 	validateExternalRunId,
 } from "./preflight";
 import { installSignalHandlers } from "./signal-handlers";
+import { projectStateJsonFenced } from "./state-commit";
 
 const DB_FILENAME = "turnlock.sqlite3";
 
@@ -433,13 +433,20 @@ async function runInitialMode<S extends object>(
 		);
 	}
 
-	// Project state.json from the authoritative record (with correct
-	// runIncarnationId, stateRevision, committedFenceToken, and digest).
+	// Project state.json from the authoritative record under fence
+	// (with correct runIncarnationId, stateRevision, committedFenceToken,
+	// and digest).
 	// Wrap in try/catch — if projection fails after the state is already
 	// authoritative, we must release ownership before throwing.
 	try {
-		projectStateJson(
-			runDir,
+		projectStateJsonFenced(
+			{
+				runDb,
+				handle,
+				runDir,
+				runId,
+				config,
+			},
 			initResult.committed.state,
 			initResult.committed.stateDigest,
 		);
@@ -456,8 +463,33 @@ async function runInitialMode<S extends object>(
 	} catch (projectionErr) {
 		// State is already committed in SQLite.  Release ownership so the
 		// next --resume can acquire immediately.
-		releaseOwnership({ db: runDb.connection, handle });
+		const releaseResult = releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
+
+		// If release also failed, surface both errors so the ownership
+		// leak is observable.
+		if (
+			releaseResult.kind !== "SUCCESS" &&
+			releaseResult.kind !== "STALE_HANDLE"
+		) {
+			throw new ProtocolError(
+				"Initial projection failed and ownership release also failed",
+				{
+					runId,
+					orchestratorName: config.name,
+					cause: new AggregateError(
+						[
+							projectionErr,
+							releaseResult.kind === "DB_FAILURE"
+								? releaseResult.cause
+								: new Error(releaseResult.kind),
+						],
+						"projection and release both failed",
+					),
+				},
+			);
+		}
+
 		throw projectionErr;
 	}
 
@@ -573,7 +605,7 @@ async function runResumeMode<S extends object>(
 		// DB file exists — open it first to determine whether the bootstrap
 		// completed or was interrupted by a crash.  The DB file can exist
 		// without an authoritative state row if the previous process crashed
-		// between schema creation and ensureInitialStateRow.
+		// between schema creation and the fenced initial state establishment.
 		runDb = openRunDatabase({
 			driver: bunSqliteDriver,
 			dbPath,
@@ -648,8 +680,8 @@ async function runResumeMode<S extends object>(
 			// authoritative state row.  Close this connection and recover
 			// via the legacy seed path, which is idempotent: the incarnation
 			// pre-creation uses INSERT OR IGNORE, acquireOwnership handles
-			// existing ownership rows via CAS, and ensureInitialStateRow
-			// uses INSERT OR IGNORE.
+			// existing ownership rows via CAS, and seedLegacyStateToSqlite
+			// is idempotent (INSERT OR IGNORE).
 			runDb.close();
 
 			const legacyStatePath = path.join(runDir, "state.json");
@@ -837,8 +869,18 @@ async function runResumeMode<S extends object>(
 	// may now be v4 with the updated revision).
 	const state = stateRecordToStateFile(authoritativeRecord, runDir);
 
-	// Project state.json from the authoritative record.
-	projectStateJson(runDir, authoritativeRecord, authoritativeDigest ?? "");
+	// Project state.json from the authoritative record under fence.
+	projectStateJsonFenced(
+		{
+			runDb,
+			handle,
+			runDir,
+			runId,
+			config,
+		},
+		authoritativeRecord,
+		authoritativeDigest ?? "",
+	);
 
 	if (state.runId !== runId) {
 		releaseOwnership({ db: runDb.connection, handle });

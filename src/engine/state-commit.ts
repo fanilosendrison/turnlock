@@ -77,8 +77,229 @@ function assertNever(value: never): never {
 // commitStateWithProjection — strict, orThrow
 // ---------------------------------------------------------------------------
 
+/** Project state.json only if the caller still holds authority and the
+ *  authoritative state is still at the expected revision.
+ *
+ *  Protocol (all inside BEGIN IMMEDIATE):
+ *    1. Verify ownership row: status=HELD, matching incarnation/owner/fence,
+ *       AND lease_until_epoch_ms > now.
+ *    2. Read current state_revision and state_digest from run_state.
+ *    3. Verify they match the expected values.
+ *    4. Write state.json atomically (tmp + rename).
+ *    5. COMMIT.
+ *
+ *  Guarantees:
+ *    - A stale owner whose lease expired is rejected (EXPIRED_HANDLE).
+ *    - A successor with a higher fence token is rejected (STALE_HANDLE).
+ *    - A projection superseded by a later revision is rejected.
+ *
+ *  Throws:
+ *    - AuthorityLostError  on ownership or revision mismatch
+ *    - PersistenceFailureError on DB or I/O failure
+ */
+export function projectStateJsonFenced(
+	ctx: {
+		readonly runDb: RunDatabase;
+		readonly handle: LockHandle;
+		readonly runDir: string;
+		readonly runId: string;
+		readonly config?: { readonly name?: string };
+		readonly currentPhase?: string | null;
+	},
+	state: StateRecord<object>,
+	expectedDigest: string,
+): void {
+	const db = ctx.runDb.connection;
+	const nowEpochMs = defaultClock.nowEpochMs();
+
+	try {
+		beginImmediate(db);
+	} catch (error) {
+		throw new PersistenceFailureError(
+			"fenced state.json projection: BEGIN IMMEDIATE failed",
+			{
+				operation: "state_commit",
+				cause: error,
+				...errorOpts(ctx),
+			},
+		);
+	}
+
+	try {
+		// Step 1 — Verify ownership including lease expiration.
+		const ownershipRow = db
+			.prepare(
+				`SELECT ownership_status, incarnation_id, owner_token,
+				        fence_token, lease_until_epoch_ms
+				 FROM run_ownership WHERE singleton = 1`,
+			)
+			.get() as
+			| {
+					ownership_status: string;
+					incarnation_id: string;
+					owner_token: string;
+					fence_token: number | bigint;
+					lease_until_epoch_ms: number | null;
+			  }
+			| undefined;
+
+		if (ownershipRow === undefined) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: ownership row missing",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		if (ownershipRow.ownership_status !== "HELD") {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: ownership not held",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		if (ownershipRow.incarnation_id !== ctx.handle.incarnationId) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: incarnation mismatch",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		if (ownershipRow.owner_token !== ctx.handle.ownerToken) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: owner token mismatch",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		const rowFence =
+			typeof ownershipRow.fence_token === "bigint"
+				? ownershipRow.fence_token
+				: BigInt(ownershipRow.fence_token);
+		if (rowFence !== ctx.handle.fenceToken) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: fence token mismatch",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		// Lease check — lease is expired at the exact instant now >= leaseUntil.
+		if (
+			ownershipRow.lease_until_epoch_ms === null ||
+			nowEpochMs >= ownershipRow.lease_until_epoch_ms
+		) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Fenced state.json projection rejected: lease expired",
+				{
+					operation: "state_commit",
+					reason: "EXPIRED_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		// Step 2 — Read current authoritative state revision and digest.
+		const stateRow = db
+			.prepare(
+				`SELECT state_revision, state_digest
+				 FROM run_state WHERE singleton = 1`,
+			)
+			.get() as
+			| { state_revision: number | bigint; state_digest: string }
+			| undefined;
+
+		if (stateRow === undefined) {
+			rollback(db);
+			throw new PersistenceFailureError(
+				"fenced state.json projection: state row missing",
+				{
+					operation: "state_commit",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		// Step 3 — Verify expected revision and digest.
+		const currentRevision = String(
+			typeof stateRow.state_revision === "bigint"
+				? stateRow.state_revision
+				: BigInt(stateRow.state_revision),
+		);
+
+		if (currentRevision !== state.stateRevision) {
+			rollback(db);
+			throw new AuthorityLostError(
+				`Fenced state.json projection rejected: revision mismatch (expected ${state.stateRevision}, got ${currentRevision})`,
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		if (stateRow.state_digest !== expectedDigest) {
+			rollback(db);
+			throw new PersistenceFailureError(
+				"fenced state.json projection: digest mismatch",
+				{
+					operation: "state_commit",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		// Step 4 — Write projection atomically.
+		projectStateJson(ctx.runDir, state, expectedDigest);
+
+		// Step 5 — COMMIT.
+		commit(db);
+	} catch (error) {
+		rollback(db);
+		if (
+			error instanceof AuthorityLostError ||
+			error instanceof PersistenceFailureError
+		) {
+			throw error;
+		}
+		throw new PersistenceFailureError(
+			`fenced state.json projection failed: ${error instanceof Error ? error.message : String(error)}`,
+			{
+				operation: "state_commit",
+				cause: error,
+				...errorOpts(ctx),
+			},
+		);
+	}
+}
+
 /** Commit a state transition through the authoritative SQLite store,
- *  then project state.json.  Updates ctx.stateRevision on success.
+ *  then project state.json under fence.  Updates ctx.stateRevision on success.
  *
  *  Throws:
  *    - AuthorityLostError  on STALE_HANDLE / EXPIRED_HANDLE
@@ -132,8 +353,8 @@ export function commitStateWithProjection<S extends object>(
 	switch (result.kind) {
 		case "COMMITTED": {
 			ctx.stateRevision = result.committed.state.stateRevision;
-			projectStateJson(
-				ctx.runDir,
+			projectStateJsonFenced(
+				ctx,
 				result.committed.state,
 				result.committed.stateDigest,
 			);
