@@ -892,11 +892,37 @@ await runOrchestrator<State>({
 			failureEntrypoint("e2e-resume-without-pending"),
 		);
 		try {
+			// Run an initial DONE to create the run directory.
 			const initial = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
 				RUN_IDS.resumeWithoutPending,
 			]);
 			expect(initial.exitCode).toBe(0);
+
+			// Corrupt the SQLite state: remove terminalResult so that
+			// resume finds neither a pending delegation nor a terminal result.
+			const runDir = workspace.runDir(
+				"e2e-resume-without-pending",
+				RUN_IDS.resumeWithoutPending,
+			);
+			const dbPath = join(runDir, "turnlock.sqlite3");
+			const { Database } = await import("bun:sqlite");
+			const db = new Database(dbPath);
+			try {
+				const row = db
+					.query("SELECT state_json FROM run_state WHERE singleton = 1")
+					.get() as { state_json: string } | null;
+				if (row) {
+					const parsed = JSON.parse(row.state_json);
+					delete parsed.terminalResult;
+					db.run("UPDATE run_state SET state_json = ? WHERE singleton = 1", [
+						JSON.stringify(parsed),
+					]);
+				}
+			} finally {
+				db.close();
+			}
+
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
