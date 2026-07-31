@@ -1,11 +1,11 @@
 // TL-F-001 point 1 — Engine-level state commit wrapper tests.
 //
 // Covers: commit with stale handle, expired handle, revision conflict,
-// DB failure; refresh stale/expired; release stale strict/best-effort;
-// continuation prevention after rejected commit.
+// DB failure; refresh stale/expired/DB_FAILURE; release stale strict/best-effort;
+// state.json non-projection assertion.
 
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { STATE_SCHEMA_VERSION } from "../../src/constants";
 import {
@@ -16,6 +16,7 @@ import {
 } from "../../src/engine/state-commit";
 import {
 	AuthorityLostError,
+	PersistenceFailureError,
 	StateRevisionConflictError,
 } from "../../src/errors/concrete";
 import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
@@ -59,7 +60,7 @@ function setup() {
 const RUN_ID = "01HX0000000000000000000001";
 
 // ---------------------------------------------------------------------------
-// 10.1 — Commit with stale handle
+// 10.1 — Commit with stale handle (+ state.json non-projection assertion)
 // ---------------------------------------------------------------------------
 
 describe("commitStateWithProjection — strict orThrow", () => {
@@ -110,9 +111,10 @@ describe("commitStateWithProjection — strict orThrow", () => {
 			});
 			expect(acquiredB.kind).toBe("ACQUIRED");
 
-			// Try to commit with stale handle A.
+			// Write a known state.json before the attempt.
 			const stateJsonPath = join(ctx.dir, "state.json");
-			writeFileSync(stateJsonPath, "{}");
+			const KNOWN_CONTENT = "{}";
+			writeFileSync(stateJsonPath, KNOWN_CONTENT);
 
 			const stateRevisionBefore = "0";
 			const commitCtx = {
@@ -148,6 +150,9 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				// stateRevision must NOT have been updated.
 				expect(commitCtx.stateRevision).toBe(stateRevisionBefore);
 			}
+
+			// state.json must NOT have been overwritten.
+			expect(readFileSync(stateJsonPath, "utf-8")).toBe(KNOWN_CONTENT);
 		} finally {
 			ctx.cleanup();
 		}
@@ -286,6 +291,211 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				const sErr = err as StateRevisionConflictError;
 				expect(sErr.kind).toBe("state_revision_conflict");
 			}
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// 10.4a — DB_FAILURE during commit
+	// -----------------------------------------------------------------------
+
+	test("DB_FAILURE during commit throws PersistenceFailureError with preserved cause", () => {
+		const ctx = setup();
+		try {
+			const { epoch, iso } = now();
+
+			const acquired = acquireOwnership({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: "test",
+				nowEpochMs: epoch,
+				nowIso: iso,
+				leaseDurationMs: LEASE_MS,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+			expect(acquired.kind).toBe("ACQUIRED");
+			if (acquired.kind !== "ACQUIRED") return;
+			const handle = acquired.handle;
+
+			ensureInitialStateRow(
+				ctx.runDb.connection,
+				handle.incarnationId,
+				STATE_SCHEMA_VERSION,
+				JSON.stringify({ schemaVersion: STATE_SCHEMA_VERSION, runId: RUN_ID }),
+				epoch,
+				iso,
+			);
+
+			// Close the db to trigger DB_FAILURE.
+			ctx.runDb.close();
+
+			const commitCtx = {
+				runDb: ctx.runDb,
+				handle,
+				runDir: ctx.dir,
+				runId: RUN_ID,
+				stateRevision: "0",
+			};
+
+			try {
+				commitStateWithProjection(commitCtx, {
+					schemaVersion: STATE_SCHEMA_VERSION,
+					runId: RUN_ID,
+					orchestratorName: "test",
+					startedAt: iso,
+					startedAtEpochMs: epoch,
+					lastTransitionAt: iso,
+					lastTransitionAtEpochMs: epoch,
+					currentPhase: "test-phase",
+					phasesExecuted: 1,
+					accumulatedDurationMs: 100,
+					data: { ok: true },
+					usedLabels: [],
+				});
+				expect.unreachable("should have thrown");
+			} catch (err) {
+				expect(err).toBeInstanceOf(PersistenceFailureError);
+				const pErr = err as PersistenceFailureError;
+				expect(pErr.kind).toBe("persistence_failure");
+				expect(pErr.operation).toBe("state_commit");
+				expect(pErr.cause).toBeDefined();
+			}
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// 10.4b — DB_FAILURE during refresh
+	// -----------------------------------------------------------------------
+
+	test("DB_FAILURE during refresh throws PersistenceFailureError", () => {
+		const ctx = setup();
+		try {
+			const { epoch, iso } = now();
+
+			const acquired = acquireOwnership({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: "test",
+				nowEpochMs: epoch,
+				nowIso: iso,
+				leaseDurationMs: LEASE_MS,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+			expect(acquired.kind).toBe("ACQUIRED");
+			if (acquired.kind !== "ACQUIRED") return;
+
+			// Close the db to trigger DB_FAILURE on refresh.
+			ctx.runDb.close();
+
+			const refreshCtx = {
+				runDb: ctx.runDb,
+				handle: acquired.handle,
+				runId: RUN_ID,
+			};
+
+			try {
+				refreshOwnershipFromContext(refreshCtx);
+				expect.unreachable("should have thrown");
+			} catch (err) {
+				expect(err).toBeInstanceOf(PersistenceFailureError);
+				const pErr = err as PersistenceFailureError;
+				expect(pErr.kind).toBe("persistence_failure");
+				expect(pErr.operation).toBe("refresh");
+				expect(pErr.cause).toBeDefined();
+			}
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// 10.4c — DB_FAILURE during strict release
+	// -----------------------------------------------------------------------
+
+	test("DB_FAILURE during strict release throws PersistenceFailureError", () => {
+		const ctx = setup();
+		try {
+			const { epoch, iso } = now();
+
+			const acquired = acquireOwnership({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: "test",
+				nowEpochMs: epoch,
+				nowIso: iso,
+				leaseDurationMs: LEASE_MS,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+			expect(acquired.kind).toBe("ACQUIRED");
+			if (acquired.kind !== "ACQUIRED") return;
+
+			// Close the db to trigger DB_FAILURE on release.
+			ctx.runDb.close();
+
+			const releaseCtx = {
+				runDb: ctx.runDb,
+				handle: acquired.handle,
+				runId: RUN_ID,
+			};
+
+			try {
+				releaseOwnershipFromContext(releaseCtx);
+				expect.unreachable("should have thrown");
+			} catch (err) {
+				expect(err).toBeInstanceOf(PersistenceFailureError);
+				const pErr = err as PersistenceFailureError;
+				expect(pErr.kind).toBe("persistence_failure");
+				expect(pErr.operation).toBe("release");
+				expect(pErr.cause).toBeDefined();
+			}
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// 10.4d — DB_FAILURE during best-effort release (no throw)
+	// -----------------------------------------------------------------------
+
+	test("DB_FAILURE during best-effort release does not throw", () => {
+		const ctx = setup();
+		try {
+			const { epoch, iso } = now();
+
+			const acquired = acquireOwnership({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: "test",
+				nowEpochMs: epoch,
+				nowIso: iso,
+				leaseDurationMs: LEASE_MS,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+			expect(acquired.kind).toBe("ACQUIRED");
+			if (acquired.kind !== "ACQUIRED") return;
+
+			// Close the db to trigger DB_FAILURE on release.
+			ctx.runDb.close();
+
+			const logger = createMockLogger();
+
+			expect(() =>
+				releaseOwnershipBestEffort({
+					runDb: ctx.runDb,
+					handle: acquired.handle,
+					runId: RUN_ID,
+					logger,
+				}),
+			).not.toThrow();
+
+			// Should have emitted a diagnostic.
+			const failedEvents = logger.findAll("ownership_release_failed");
+			expect(failedEvents.length).toBe(1);
+			const ev = failedEvents[0] as { reason?: string };
+			expect(ev.reason).toBe("DB_FAILURE");
 		} finally {
 			ctx.cleanup();
 		}
