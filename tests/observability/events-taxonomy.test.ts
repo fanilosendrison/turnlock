@@ -88,6 +88,7 @@ const requiredFields: Record<string, string[]> = {
 		"phasesExecuted",
 		"timestamp",
 	],
+	ownership_release_failed: ["runId", "timestamp"],
 };
 
 function sampleEvents(): Record<string, OrchestratorEvent> {
@@ -226,6 +227,12 @@ function sampleEvents(): Record<string, OrchestratorEvent> {
 			phasesExecuted: 1,
 			timestamp: "2026-04-19T12:00:00.100Z",
 		},
+		ownership_release_failed: {
+			eventType: "ownership_release_failed",
+			runId: "01HX",
+			reason: "STALE_HANDLE",
+			timestamp: "2026-04-19T12:00:00.100Z",
+		},
 	};
 }
 
@@ -244,7 +251,7 @@ describe("[GREEN-L1] events taxonomy", () => {
 });
 
 describe("[GREEN-L1] events closed taxonomy (T-OB-12..13)", () => {
-	test("T-OB-12 | eventType belongs to the 16-value taxonomy", () => {
+	test("T-OB-12 | eventType belongs to the 17-value taxonomy", () => {
 		const allowed = new Set(Object.keys(requiredFields));
 		for (const type of Object.keys(sampleEvents())) {
 			expect(allowed.has(type)).toBe(true);

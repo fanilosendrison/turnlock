@@ -43,6 +43,9 @@ const EXPECTED_EXPORTS = new Set([
 	"ProtocolError",
 	"AbortedError",
 	"RunLockedError",
+	"AuthorityLostError",
+	"PersistenceFailureError",
+	"StateRevisionConflictError",
 	"PROTOCOL_VERSION",
 	"STATE_SCHEMA_VERSION",
 ]);
@@ -209,9 +212,28 @@ describe("[GREEN-L1] " + "OrchestratorErrorKind fermé (C-GL-12..13)", () => {
 					leaseUntilEpochMs: 1,
 				}),
 		],
+		[
+			"authority_lost",
+			() =>
+				new publicApi.AuthorityLostError("x", {
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+				}),
+		],
+		[
+			"state_revision_conflict",
+			() => new publicApi.StateRevisionConflictError("x"),
+		],
+		[
+			"persistence_failure",
+			() =>
+				new publicApi.PersistenceFailureError("x", {
+					operation: "state_commit",
+				}),
+		],
 	] as const;
-	test("C-GL-12 | 14 kind values", () => {
-		expect(errorCases).toHaveLength(14);
+	test("C-GL-12 | 17 kind values", () => {
+		expect(errorCases).toHaveLength(17);
 	});
 	test("C-GL-13 | each kind ↔ class mapping", () => {
 		for (const [kind, buildError] of errorCases) {
