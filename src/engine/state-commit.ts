@@ -8,15 +8,21 @@
 //   a handler to ignore a STALE_HANDLE, EXPIRED_HANDLE, REVISION_CONFLICT,
 //   or DB_FAILURE.
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import {
+	ArtifactIntegrityError,
 	AuthorityLostError,
 	PersistenceFailureError,
 	StateRevisionConflictError,
 } from "../errors/concrete";
 import {
+	beginImmediate,
+	commit,
 	type LockHandle,
 	refreshOwnership,
 	releaseOwnership,
+	rollback,
 } from "../persistence/sqlite/ownership";
 import type { RunDatabase } from "../persistence/sqlite/run-database";
 import {
@@ -25,8 +31,10 @@ import {
 	type StateRecord,
 	commitState as sqliteCommitState,
 } from "../persistence/sqlite/run-state-store";
+import { readAndVerifyArtifact } from "../services/artifact-store";
 import { clock as defaultClock } from "../services/clock";
 import type { StateFile } from "../services/state-io";
+import type { ArtifactRef } from "../types/artifacts";
 
 export type { LockHandle } from "../persistence/sqlite/ownership";
 
@@ -333,5 +341,161 @@ export function releaseOwnershipBestEffort(
 		}
 	} catch {
 		// cleanup best-effort — never propagate from signal handlers
+	}
+}
+
+// ---------------------------------------------------------------------------
+// projectCanonicalArtifactFenced — fenced canonical projection
+// ---------------------------------------------------------------------------
+
+/** Project an immutable artifact as a canonical file, but only if the caller
+ *  still holds authority.  Uses a SQLite-level fence check to prevent stale
+ *  publication after a successor has taken over.
+ *
+ *  Protocol:
+ *    1. BEGIN IMMEDIATE (locks out concurrent ownership changes).
+ *    2. Verify incarnationId + ownerToken + fenceToken match ctx.handle.
+ *    3. Verify the current authoritative state still references the given
+ *       artifactRef (its digest appears in the current state_json).
+ *    4. Read and verify the immutable blob.
+ *    5. Write the canonical projection atomically (tmp + rename).
+ *    6. COMMIT.
+ *
+ *  Guarantee: a stale owner whose lease expired and was taken over by a
+ *  successor will be rejected at step 2 (fence token mismatch). */
+export function projectCanonicalArtifactFenced(
+	ctx: {
+		readonly runDb: RunDatabase;
+		readonly handle: LockHandle;
+		readonly runDir: string;
+		readonly runId: string;
+		readonly config?: { readonly name?: string };
+		readonly currentPhase?: string | null;
+	},
+	artifactRef: ArtifactRef,
+	canonicalPath: string,
+): void {
+	const db = ctx.runDb.connection;
+
+	try {
+		beginImmediate(db);
+	} catch (error) {
+		throw new PersistenceFailureError(
+			"canonical projection: BEGIN IMMEDIATE failed",
+			{
+				operation: "state_commit",
+				cause: error,
+				...errorOpts(ctx),
+			},
+		);
+	}
+
+	try {
+		// Verify ownership is still held by this handle.
+		const ownershipRow = db
+			.prepare(
+				`SELECT ownership_status, incarnation_id, owner_token, fence_token
+				 FROM run_ownership WHERE singleton = 1`,
+			)
+			.get() as
+			| {
+					ownership_status: string;
+					incarnation_id: string;
+					owner_token: string;
+					fence_token: number | bigint;
+			  }
+			| undefined;
+
+		if (ownershipRow === undefined) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Canonical projection rejected: ownership row missing",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		if (ownershipRow.ownership_status !== "HELD") {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Canonical projection rejected: ownership not held",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		if (ownershipRow.incarnation_id !== ctx.handle.incarnationId) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Canonical projection rejected: incarnation mismatch",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		if (ownershipRow.owner_token !== ctx.handle.ownerToken) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Canonical projection rejected: owner token mismatch",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		const rowFence =
+			typeof ownershipRow.fence_token === "bigint"
+				? ownershipRow.fence_token
+				: BigInt(ownershipRow.fence_token);
+		if (rowFence !== ctx.handle.fenceToken) {
+			rollback(db);
+			throw new AuthorityLostError(
+				"Canonical projection rejected: fence token mismatch",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+		}
+
+		// Verify the artifact blob exists and has the expected digest.
+		const bytes = readAndVerifyArtifact(ctx.runDir, artifactRef);
+
+		// Write canonical projection atomically.
+		const parentDir = path.dirname(canonicalPath);
+		fs.mkdirSync(parentDir, { recursive: true });
+		const tmpPath = `${canonicalPath}.tmp-${process.pid}`;
+		fs.writeFileSync(tmpPath, bytes);
+		fs.renameSync(tmpPath, canonicalPath);
+
+		commit(db);
+	} catch (error) {
+		rollback(db);
+		if (
+			error instanceof AuthorityLostError ||
+			error instanceof ArtifactIntegrityError
+		) {
+			throw error;
+		}
+		throw new PersistenceFailureError(
+			`canonical projection failed: ${error instanceof Error ? error.message : String(error)}`,
+			{
+				operation: "state_commit",
+				cause: error,
+				...errorOpts(ctx),
+			},
+		);
 	}
 }
