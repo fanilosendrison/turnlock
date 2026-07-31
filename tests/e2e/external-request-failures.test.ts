@@ -508,22 +508,32 @@ describe("external request path confinement", () => {
 				"e2e-external-path-escape",
 				RUN_IDS.pathEscape,
 			);
-			const statePath = join(runDir, "state.json");
-			const state = JSON.parse(readFileSync(statePath, "utf-8")) as {
-				pendingExternalRequest: Record<string, unknown>;
-			};
+
 			const outsidePath = join(workspace.root, "outside-resolution.json");
 			writeFileSync(outsidePath, '{"outcome":"OK","secret":"outside"}');
-			writeFileSync(
-				statePath,
-				JSON.stringify({
-					...state,
-					pendingExternalRequest: {
-						...state.pendingExternalRequest,
-						resultPath: outsidePath,
-					},
-				}),
-			);
+
+			// Tamper with the SQLite authoritative state, not state.json.
+			const { Database } = await import("bun:sqlite");
+			const dbPath = join(runDir, "turnlock.sqlite3");
+			const db = new Database(dbPath);
+			try {
+				const row = db
+					.query("SELECT state_json FROM run_state WHERE singleton = 1")
+					.get() as { state_json: string } | undefined;
+				if (row) {
+					const parsed = JSON.parse(row.state_json) as Record<string, unknown>;
+					const pending = parsed.pendingExternalRequest as Record<
+						string,
+						unknown
+					>;
+					pending.resultPath = outsidePath;
+					db.run("UPDATE run_state SET state_json = ? WHERE singleton = 1", [
+						JSON.stringify(parsed),
+					]);
+				}
+			} finally {
+				db.close();
+			}
 
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",

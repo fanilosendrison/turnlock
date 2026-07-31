@@ -84,13 +84,19 @@ function buildIO(options: {
 		},
 		runId: RUN_ID,
 		runDir: options.runDir,
-		lockPath: join(options.runDir, ".lock"),
-		handle: { ownerToken: "owner", lockPath: join(options.runDir, ".lock") },
+		runDb: null as unknown as DispatchContext<TestState>["runDb"],
+		handle: {
+			ownerToken: "owner",
+			incarnationId: "01HXINCARNATION0000000000000",
+			fenceToken: 1n,
+			leaseUntilEpochMs: 9_999_999_999_999,
+		},
 		logger,
 		abortController: new AbortController(),
 		currentPhase: "resume",
 		phasesExecuted: 0,
 		accumulatedDurationMs: 0,
+		stateRevision: "0",
 	};
 	const guards = options.guards ?? makeGuards();
 	const io = buildPhaseIO({

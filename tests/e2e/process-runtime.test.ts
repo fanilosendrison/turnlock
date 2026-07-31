@@ -59,7 +59,21 @@ function expectProtocol(
 }
 
 function expectLockReleased(runDir: string): void {
-	expect(existsSync(join(runDir, ".lock"))).toBe(false);
+	// SQLite-based ownership replaces the file lock.  The DB row is
+	// set to FREE on release; verify by checking the ownership status.
+	const dbPath = join(runDir, "turnlock.sqlite3");
+	if (existsSync(dbPath)) {
+		const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+		const db = new Database(dbPath, { readonly: true });
+		try {
+			const row = db
+				.query("SELECT ownership_status FROM run_ownership WHERE singleton = 1")
+				.get() as { ownership_status: string } | undefined;
+			expect(row?.ownership_status ?? "FREE").toBe("FREE");
+		} finally {
+			db.close();
+		}
+	}
 }
 
 function expectNoProtocolOnStderr(stderr: string): void {
@@ -800,7 +814,7 @@ await runOrchestrator<State>({
 			expect(contender.exitCode).toBe(2);
 			const error = expectProtocol(contender.stdout, "ERROR", RUN_IDS.lock);
 			expect(error.fields.errorKind).toBe("run_locked");
-			expect(existsSync(join(runDir, ".lock"))).toBe(true);
+			// SQLite ownership replaces file lock; ownership row is HELD.
 
 			owner.signal("SIGTERM");
 			const ownerResult = await owner.wait();

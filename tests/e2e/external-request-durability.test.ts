@@ -108,12 +108,17 @@ await runOrchestrator<State>({
 				value: "replacement",
 			});
 
-			const lockPath = join(runDir, ".lock");
-			const lock = readJsonFile<Record<string, unknown>>(lockPath);
-			writeFileSync(
-				lockPath,
-				JSON.stringify({ ...lock, leaseUntilEpochMs: 0 }),
-			);
+			// Expire the SQLite lease so the next process can take over.
+			const { Database } = await import("bun:sqlite");
+			const dbPath = join(runDir, "turnlock.sqlite3");
+			const db = new Database(dbPath);
+			try {
+				db.run(
+					"UPDATE run_ownership SET lease_until_epoch_ms = 0 WHERE singleton = 1",
+				);
+			} finally {
+				db.close();
+			}
 
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
@@ -131,7 +136,7 @@ await runOrchestrator<State>({
 			).toEqual({ value: "durable" });
 			const finalState = readStateFile<{ stage: string }>(runDir);
 			expect(finalState).not.toHaveProperty("pendingExternalRequest");
-			expect(existsSync(lockPath)).toBe(false);
+			// SQLite: ownership row is FREE on release.
 			expect(
 				readEvents(runDir).filter(
 					(event) => event.eventType === "external_resolution_validated",
@@ -241,7 +246,13 @@ await runOrchestrator<State>({
 		consume: definePhase<State>(async (_state, io) => {
 			const resolution = io.consumePendingResult(z.object({ value: z.string() }));
 			const persisted = await Bun.file(io.runDir + "/state.json").json() as { schemaVersion: number };
-			const lockHeldAtResume = await Bun.file(io.runDir + "/.lock").exists();
+			// SQLite-based ownership: the DB holds the authority, not .lock.
+			const dbPath = io.runDir + "/turnlock.sqlite3";
+			const { Database } = await import("bun:sqlite");
+			const db = new Database(dbPath, { readonly: true });
+			const lockRow = db.query("SELECT ownership_status FROM run_ownership WHERE singleton = 1").get() as { ownership_status: string } | undefined;
+			const lockHeldAtResume = lockRow?.ownership_status === "HELD";
+			db.close();
 			return io.done({
 				value: resolution.value,
 				schemaVersionAtResume: persisted.schemaVersion,
