@@ -254,7 +254,7 @@ export function initializeStateUnderFence(
 	// BEGIN IMMEDIATE (governed by busy_timeout) must not
 	// produce a stale lease check.  Use the provided lease
 	// clock if available, otherwise the real clock.
-	const lockEpochMs = (params.leaseClockEpochMs ?? (() => params.nowEpochMs))();
+	const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
 	const lockIso = new Date(lockEpochMs).toISOString();
 
 	try {
@@ -414,7 +414,7 @@ export function commitState<S extends object>(
 	// BEGIN IMMEDIATE (governed by busy_timeout) must not
 	// produce a stale lease check.  Use the provided lease
 	// clock if available, otherwise the real clock.
-	const lockEpochMs = (params.leaseClockEpochMs ?? (() => params.nowEpochMs))();
+	const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
 	const lockIso = new Date(lockEpochMs).toISOString();
 
 	try {

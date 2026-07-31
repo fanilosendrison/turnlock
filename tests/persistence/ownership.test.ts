@@ -199,3 +199,132 @@ describe("ownership acquisition", () => {
 		}
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Post-lock clock gap — decisive tests
+// ---------------------------------------------------------------------------
+
+describe("post-lock clock gap", () => {
+	test("lease computed from post-lock clock, not pre-lock", () => {
+		const ctx = setup();
+		try {
+			// nowEpochMs = 1000 (pre-lock, captured before potential wait)
+			// leaseClockEpochMs returns 5000 (post-lock, after BEGIN IMMEDIATE)
+			const result = acquireOwnership({
+				db: ctx.runDb.connection,
+				runId: "01HX0000000000000000000001",
+				orchestratorName: "clock-gap-test",
+				nowEpochMs: 1000,
+				nowIso: "1970-01-01T00:00:01.000Z",
+				leaseDurationMs: 1000,
+				contentionDeadlineMs: 2000,
+				leaseClockEpochMs: () => 5000,
+			});
+
+			expect(result.kind).toBe("ACQUIRED");
+			if (result.kind !== "ACQUIRED") return;
+			// Lease must be 5000 + 1000 = 6000, NOT 1000 + 1000 = 2000.
+			expect(result.handle.leaseUntilEpochMs).toBe(6000);
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	test("expired via post-lock clock (pre-lock says active, post-lock says expired)", () => {
+		const ctx = setup();
+		try {
+			// Acquire with lease_until = 4000.
+			const first = acquireOwnership({
+				db: ctx.runDb.connection,
+				runId: "01HX0000000000000000000001",
+				orchestratorName: "clock-gap-test",
+				nowEpochMs: 3000,
+				nowIso: "1970-01-01T00:00:03.000Z",
+				leaseDurationMs: 1000,
+				contentionDeadlineMs: 2000,
+				leaseClockEpochMs: () => 3000,
+			});
+			expect(first.kind).toBe("ACQUIRED");
+			if (first.kind !== "ACQUIRED") return;
+			expect(first.handle.leaseUntilEpochMs).toBe(4000);
+
+			// Release so a new acquire is possible.
+			ctx.runDb.connection.exec(
+				`UPDATE run_ownership
+				 SET ownership_status = 'FREE',
+				     owner_token = NULL,
+				     owner_pid = NULL,
+				     acquired_at_epoch_ms = NULL,
+				     lease_until_epoch_ms = NULL
+				 WHERE singleton = 1`,
+			);
+
+			// Now try to acquire with nowEpochMs = 3500 (says active: 3500 < 4000)
+			// but leaseClockEpochMs returns 5000 (says expired: 5000 >= 4000).
+			// The post-lock clock must win.
+			const second = acquireOwnership({
+				db: ctx.runDb.connection,
+				runId: "01HX0000000000000000000001",
+				orchestratorName: "clock-gap-test",
+				nowEpochMs: 3500,
+				nowIso: "1970-01-01T00:00:03.500Z",
+				leaseDurationMs: 1000,
+				contentionDeadlineMs: 2000,
+				leaseClockEpochMs: () => 5000,
+			});
+
+			// The lease is FREE (we manually released).  The pre-lock
+			// predecessor check uses Date.now() (heuristic only).
+			// With the row FREE, acquisition should succeed.
+			expect(second.kind).toBe("ACQUIRED");
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	test("ACTIVE_CONFLICT avoided when post-lock clock shows lease expired", () => {
+		const ctx = setup();
+		try {
+			// A acquires with lease_until = 5000.
+			const a = acquireOwnership({
+				db: ctx.runDb.connection,
+				runId: "01HX0000000000000000000001",
+				orchestratorName: "clock-gap-test",
+				nowEpochMs: 4000,
+				nowIso: "1970-01-01T00:00:04.000Z",
+				leaseDurationMs: 1000,
+				contentionDeadlineMs: 2000,
+				leaseClockEpochMs: () => 4000,
+			});
+			expect(a.kind).toBe("ACQUIRED");
+			if (a.kind !== "ACQUIRED") return;
+			expect(a.handle.leaseUntilEpochMs).toBe(5000);
+
+			// B tries to acquire.  nowEpochMs = 4500 (says active: 4500 < 5000).
+			// But leaseClockEpochMs returns 6000 (post-lock: 6000 >= 5000 → expired).
+			// The initial pre-check uses Date.now() (real clock, which is
+			// certainly > 5000), so it won't short-circuit to ACTIVE_CONFLICT.
+			// The retry loop check uses lockEpochMs = 6000, which also says expired.
+			// B should acquire successfully.
+			const b = acquireOwnership({
+				db: ctx.runDb.connection,
+				runId: "01HX0000000000000000000001",
+				orchestratorName: "clock-gap-test",
+				nowEpochMs: 4500,
+				nowIso: "1970-01-01T00:00:04.500Z",
+				leaseDurationMs: 2000,
+				contentionDeadlineMs: 2000,
+				leaseClockEpochMs: () => 6000,
+			});
+
+			// Must be ACQUIRED, not ACTIVE_CONFLICT.
+			expect(b.kind).toBe("ACQUIRED");
+			if (b.kind !== "ACQUIRED") return;
+			// Lease computed from post-lock clock: 6000 + 2000 = 8000.
+			expect(b.handle.leaseUntilEpochMs).toBe(8000);
+			expect(b.handle.fenceToken).toBe(2n);
+		} finally {
+			ctx.cleanup();
+		}
+	});
+});

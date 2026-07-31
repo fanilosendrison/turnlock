@@ -127,6 +127,7 @@ export function commitStateWithProjection<S extends object>(
 		nextState: stateRecord,
 		nowEpochMs: defaultClock.nowEpochMs(),
 		nowIso: defaultClock.nowWallIso(),
+		leaseClockEpochMs: () => defaultClock.nowEpochMs(),
 	});
 
 	switch (result.kind) {
@@ -203,6 +204,7 @@ export function refreshOwnershipFromContext(ctx: {
 		handle: ctx.handle,
 		nowEpochMs: now,
 		leaseDurationMs: 30 * 60 * 1000, // DEFAULT_IDLE_LEASE_MS
+		leaseClockEpochMs: () => defaultClock.nowEpochMs(),
 	});
 
 	switch (result.kind) {

@@ -66,6 +66,7 @@ describe("ownership refresh", () => {
 				db: ctx.runDb.connection,
 				handle,
 				nowEpochMs: NOW_EPOCH + 10_000,
+				leaseClockEpochMs: () => NOW_EPOCH + 10_000,
 				leaseDurationMs: LEASE_MS,
 			});
 			expect(refreshResult.kind).toBe("SUCCESS");
@@ -102,6 +103,7 @@ describe("ownership refresh", () => {
 				db: ctx.runDb.connection,
 				handle: result.handle,
 				nowEpochMs: NOW_EPOCH,
+				leaseClockEpochMs: () => NOW_EPOCH,
 				leaseDurationMs: LEASE_MS,
 			});
 			expect(refreshResult.kind).toBe("STALE_HANDLE");
@@ -122,6 +124,7 @@ describe("ownership refresh", () => {
 				db: ctx.runDb.connection,
 				handle: result.handle,
 				nowEpochMs: NOW_EPOCH,
+				leaseClockEpochMs: () => NOW_EPOCH,
 				leaseDurationMs: LEASE_MS,
 			});
 			expect(refreshResult.kind).toBe("EXPIRED_HANDLE");

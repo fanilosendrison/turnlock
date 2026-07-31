@@ -206,6 +206,7 @@ describe("v3→v4 SQLite migration (resume path)", () => {
 				nextState: migratedRecord,
 				nowEpochMs: NOW_EPOCH + 1000,
 				nowIso: "2001-09-09T01:46:41.000Z",
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 
 			expect(commitResult.kind).toBe("COMMITTED");
@@ -283,6 +284,7 @@ describe("v3→v4 SQLite migration (resume path)", () => {
 				nextState: migratedRecord,
 				nowEpochMs: NOW_EPOCH + 1000,
 				nowIso: "2001-09-09T01:46:41.000Z",
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 
 			expect(commitResult.kind).toBe("COMMITTED");

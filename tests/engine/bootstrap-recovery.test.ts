@@ -151,6 +151,7 @@ function createOwnedNoStateDb(
 		orchestratorName,
 		nowEpochMs: NOW_EPOCH,
 		nowIso: NOW_ISO,
+		leaseClockEpochMs: () => NOW_EPOCH,
 		leaseDurationMs: LEASE_MS,
 		contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 	});
@@ -220,6 +221,7 @@ describe("bootstrap crash recovery", () => {
 			orchestratorName: ctx.orchestratorName,
 			nowEpochMs: NOW_EPOCH,
 			nowIso: NOW_ISO,
+			leaseClockEpochMs: () => NOW_EPOCH,
 			leaseDurationMs: LEASE_MS,
 			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 		});
@@ -279,6 +281,7 @@ describe("bootstrap crash recovery", () => {
 			orchestratorName: ctx.orchestratorName,
 			nowEpochMs: NOW_EPOCH + 100_000, // different from legacy
 			nowIso: "2024-01-01T00:01:40.000Z", // different from legacy
+			leaseClockEpochMs: () => NOW_EPOCH + 100_000, // different from legacy,
 			leaseDurationMs: LEASE_MS,
 			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 		});
@@ -363,6 +366,7 @@ describe("bootstrap crash recovery", () => {
 			orchestratorName: ctx.orchestratorName,
 			nowEpochMs: NOW_EPOCH + 1000, // lease not yet expired
 			nowIso: NOW_ISO,
+			leaseClockEpochMs: () => NOW_EPOCH + 1000, // lease not yet expired,
 			leaseDurationMs: LEASE_MS,
 			contentionDeadlineMs: 500,
 		});
@@ -375,6 +379,7 @@ describe("bootstrap crash recovery", () => {
 			orchestratorName: ctx.orchestratorName,
 			nowEpochMs: futureEpoch,
 			nowIso: futureIso,
+			leaseClockEpochMs: () => futureEpoch,
 			leaseDurationMs: LEASE_MS,
 			contentionDeadlineMs: 2000,
 		});
@@ -469,6 +474,7 @@ describe("bootstrap crash recovery", () => {
 			orchestratorName: ctx.orchestratorName,
 			nowEpochMs: NOW_EPOCH,
 			nowIso: NOW_ISO,
+			leaseClockEpochMs: () => NOW_EPOCH,
 			leaseDurationMs: LEASE_MS,
 			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 		});
@@ -518,6 +524,7 @@ describe("bootstrap crash recovery", () => {
 			orchestratorName: ctx.orchestratorName,
 			nowEpochMs: NOW_EPOCH,
 			nowIso: NOW_ISO,
+			leaseClockEpochMs: () => NOW_EPOCH,
 			leaseDurationMs: LEASE_MS,
 			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 		});
@@ -570,6 +577,7 @@ describe("bootstrap crash recovery", () => {
 			orchestratorName: ctx.orchestratorName,
 			nowEpochMs: NOW_EPOCH + 1000,
 			nowIso: NOW_ISO,
+			leaseClockEpochMs: () => NOW_EPOCH + 1000,
 			leaseDurationMs: LEASE_MS,
 			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 		});
@@ -622,6 +630,7 @@ describe("bootstrap crash recovery", () => {
 			orchestratorName: ctx.orchestratorName,
 			nowEpochMs: NOW_EPOCH,
 			nowIso: NOW_ISO,
+			leaseClockEpochMs: () => NOW_EPOCH,
 			leaseDurationMs: LEASE_MS,
 			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 		});

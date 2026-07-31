@@ -138,6 +138,7 @@ describe("run-state-store", () => {
 				nextState: next,
 				nowEpochMs: NOW_EPOCH,
 				nowIso: NOW_ISO,
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 			expect(commitResult.kind).toBe("COMMITTED");
 			if (commitResult.kind !== "COMMITTED") return;
@@ -175,6 +176,7 @@ describe("run-state-store", () => {
 				nextState: { ...initial, currentPhase: "first" },
 				nowEpochMs: NOW_EPOCH,
 				nowIso: NOW_ISO,
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 			expect(first.kind).toBe("COMMITTED");
 
@@ -186,6 +188,7 @@ describe("run-state-store", () => {
 				nextState: { ...initial, currentPhase: "second" },
 				nowEpochMs: NOW_EPOCH,
 				nowIso: NOW_ISO,
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 			expect(second.kind).toBe("REVISION_CONFLICT");
 		} finally {
@@ -226,6 +229,7 @@ describe("run-state-store", () => {
 				nextState: { ...initial, currentPhase: "next" },
 				nowEpochMs: NOW_EPOCH,
 				nowIso: NOW_ISO,
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 			expect(commitResult.kind).toBe("STALE_HANDLE");
 		} finally {
@@ -264,6 +268,7 @@ describe("run-state-store", () => {
 				nextState: next,
 				nowEpochMs: NOW_EPOCH,
 				nowIso: NOW_ISO,
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 			expect(commitResult.kind).toBe("COMMITTED");
 			if (commitResult.kind !== "COMMITTED") return;
@@ -322,6 +327,7 @@ describe("run-state-store", () => {
 					nextState: current,
 					nowEpochMs: NOW_EPOCH,
 					nowIso: NOW_ISO,
+					leaseClockEpochMs: () => NOW_EPOCH,
 				});
 				expect(cr.kind).toBe("COMMITTED");
 				if (cr.kind === "COMMITTED") {

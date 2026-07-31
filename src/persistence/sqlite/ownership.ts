@@ -286,9 +286,11 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 		};
 	}
 
-	// Active owner check.
+	// Active owner check — advisory heuristic only.  Uses the real clock,
+	// not the caller-supplied timestamp, to avoid false ACTIVE_CONFLICT
+	// when the caller's clock was captured before a potential wait.
 	if (predecessor.status === "HELD" && predecessor.leaseUntilEpochMs !== null) {
-		if (nowEpochMs < predecessor.leaseUntilEpochMs) {
+		if (Date.now() < predecessor.leaseUntilEpochMs) {
 			const ownerRow = db
 				.prepare("SELECT owner_pid FROM run_ownership WHERE singleton = 1")
 				.get() as { owner_pid: number } | undefined;
@@ -316,22 +318,6 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 			};
 		}
 
-		// Re-check active owner (another contender may have won).
-		if (
-			currentPredecessor.status === "HELD" &&
-			currentPredecessor.leaseUntilEpochMs !== null &&
-			nowEpochMs < currentPredecessor.leaseUntilEpochMs
-		) {
-			const ownerRow = db
-				.prepare("SELECT owner_pid FROM run_ownership WHERE singleton = 1")
-				.get() as { owner_pid: number } | undefined;
-			return {
-				kind: "ACTIVE_CONFLICT",
-				ownerPid: ownerRow?.owner_pid ?? 0,
-				leaseUntilEpochMs: currentPredecessor.leaseUntilEpochMs,
-			};
-		}
-
 		try {
 			beginImmediate(db);
 		} catch (error) {
@@ -344,9 +330,26 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 		// BEGIN IMMEDIATE (governed by busy_timeout) must not
 		// produce a stale lease computation.  Use the provided
 		// lease clock if available, otherwise the real clock.
-		const lockEpochMs = (
-			params.leaseClockEpochMs ?? (() => params.nowEpochMs)
-		)();
+		const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
+
+		// Active-owner check AFTER lock acquisition with fresh clock.
+		// The pre-lock predecessor observation may be stale; the
+		// authoritative decision uses lockEpochMs captured above.
+		if (
+			currentPredecessor.status === "HELD" &&
+			currentPredecessor.leaseUntilEpochMs !== null &&
+			lockEpochMs < currentPredecessor.leaseUntilEpochMs
+		) {
+			rollback(db);
+			const ownerRow = db
+				.prepare("SELECT owner_pid FROM run_ownership WHERE singleton = 1")
+				.get() as { owner_pid: number } | undefined;
+			return {
+				kind: "ACTIVE_CONFLICT",
+				ownerPid: ownerRow?.owner_pid ?? 0,
+				leaseUntilEpochMs: currentPredecessor.leaseUntilEpochMs,
+			};
+		}
 
 		let casRow: CasRow | null;
 		try {
@@ -451,7 +454,7 @@ export function refreshOwnership(
 	// BEGIN IMMEDIATE (governed by busy_timeout) must not
 	// produce a stale lease check.  Use the provided lease
 	// clock if available, otherwise the real clock.
-	const lockEpochMs = (params.leaseClockEpochMs ?? (() => params.nowEpochMs))();
+	const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
 
 	try {
 		const row = db.prepare(REFRESH_SQL).get({

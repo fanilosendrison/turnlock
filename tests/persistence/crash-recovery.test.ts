@@ -142,6 +142,7 @@ describe("crash recovery", () => {
 				nextState: { ...initialState, currentPhase: "after-commit" },
 				nowEpochMs: NOW_EPOCH,
 				nowIso: NOW_ISO,
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 			expect(cr.kind).toBe("COMMITTED");
 
@@ -208,6 +209,7 @@ describe("crash recovery", () => {
 				nextState: initial,
 				nowEpochMs: NOW_EPOCH,
 				nowIso: NOW_ISO,
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 			expect(cr.kind).toBe("COMMITTED");
 			if (cr.kind !== "COMMITTED") return;

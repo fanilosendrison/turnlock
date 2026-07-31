@@ -76,6 +76,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -106,6 +107,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch + 1000,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch + 1000,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -172,6 +174,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: 0,
 				nowIso: "1970-01-01T00:00:00.000Z",
+				leaseClockEpochMs: () => 0,
 				leaseDurationMs: 1000,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -240,6 +243,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -311,6 +315,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -381,6 +386,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -426,6 +432,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -471,6 +478,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -516,6 +524,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -563,6 +572,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: 0,
 				nowIso: "1970-01-01T00:00:00.000Z",
+				leaseClockEpochMs: () => 0,
 				leaseDurationMs: 1000,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -604,6 +614,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -648,6 +659,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -695,6 +707,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
@@ -744,6 +757,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
+				leaseClockEpochMs: () => epoch,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});

@@ -93,6 +93,7 @@ function acquire(
 		nowIso: overrides.nowIso ?? NOW_ISO,
 		leaseDurationMs: overrides.leaseDurationMs ?? LEASE_MS,
 		contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		leaseClockEpochMs: () => overrides.nowEpochMs ?? NOW_EPOCH,
 	});
 }
 
@@ -156,6 +157,7 @@ describe("initializeStateUnderFence adversarial", () => {
 				initialState: makeRecord() as unknown as Record<string, unknown>,
 				nowEpochMs: 2000,
 				nowIso: "1970-01-01T00:00:02.000Z",
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 
 			expect(initResult.kind).toBe("EXPIRED_HANDLE");
@@ -191,6 +193,7 @@ describe("initializeStateUnderFence adversarial", () => {
 				initialState: makeRecord() as unknown as Record<string, unknown>,
 				nowEpochMs: 2000,
 				nowIso: "1970-01-01T00:00:02.000Z",
+				leaseClockEpochMs: () => 2000,
 			});
 			expect(bInit.kind).toBe("INITIALIZED");
 
@@ -200,6 +203,7 @@ describe("initializeStateUnderFence adversarial", () => {
 				initialState: makeRecord() as unknown as Record<string, unknown>,
 				nowEpochMs: 2000,
 				nowIso: "1970-01-01T00:00:02.000Z",
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 
 			expect(aInit.kind).toBe("STALE_HANDLE");
@@ -223,6 +227,7 @@ describe("initializeStateUnderFence adversarial", () => {
 				initialState: makeRecord() as unknown as Record<string, unknown>,
 				nowEpochMs: NOW_EPOCH,
 				nowIso: NOW_ISO,
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 			expect(first.kind).toBe("INITIALIZED");
 
@@ -234,6 +239,7 @@ describe("initializeStateUnderFence adversarial", () => {
 				}) as unknown as Record<string, unknown>,
 				nowEpochMs: NOW_EPOCH,
 				nowIso: NOW_ISO,
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 
 			expect(second.kind).toBe("ALREADY_INITIALIZED");
@@ -580,6 +586,7 @@ describe("canonical projection monotonicity", () => {
 				initialState: makeRecord() as unknown as Record<string, unknown>,
 				nowEpochMs: NOW_EPOCH,
 				nowIso: NOW_ISO,
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 			expect(aInit.kind).toBe("INITIALIZED");
 			if (aInit.kind !== "INITIALIZED") return;
@@ -659,6 +666,7 @@ describe("fenced projection ownership guard", () => {
 				initialState: makeRecord() as unknown as Record<string, unknown>,
 				nowEpochMs: NOW_EPOCH,
 				nowIso: NOW_ISO,
+				leaseClockEpochMs: () => NOW_EPOCH,
 			});
 			expect(aInit.kind).toBe("INITIALIZED");
 			if (aInit.kind !== "INITIALIZED") return;
