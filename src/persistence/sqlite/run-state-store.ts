@@ -110,18 +110,6 @@ function computeDigest(jsonStr: string): string {
 // SQL
 // ---------------------------------------------------------------------------
 
-const ENSURE_STATE_ROW_SQL = `
-INSERT OR IGNORE INTO run_state
-    (singleton, incarnation_id, state_schema_version,
-     state_json, state_digest,
-     committed_by_owner_token, committed_by_fence_token,
-     committed_at_epoch_ms, committed_at_iso)
-VALUES (1, :incarnation_id, :schema_version,
-        :state_json, :state_digest,
-        '', 0,
-        :now_epoch, :now_iso)
-`;
-
 const COMMIT_STATE_SQL = `
 UPDATE run_state
 SET
@@ -172,35 +160,6 @@ WHERE rs.singleton = 1
 
 // ---------------------------------------------------------------------------
 // Public API
-// ---------------------------------------------------------------------------
-
-/** @deprecated Use {@link initializeStateUnderFence} instead.
- *
- *  Legacy blind INSERT OR IGNORE — does NOT fence on the current
- *  ownership lease.  Writes fake metadata (empty owner_token,
- *  fence_token = 0).  Kept only for test fixtures that predate
- *  the fenced initialization protocol. */
-export function ensureInitialStateRow(
-	db: SqliteConnection,
-	incarnationId: string,
-	schemaVersion: number,
-	initialJson: string,
-	nowEpochMs: number,
-	nowIso: string,
-): void {
-	const digest = computeDigest(initialJson);
-	db.prepare(ENSURE_STATE_ROW_SQL).run({
-		":incarnation_id": incarnationId,
-		":schema_version": schemaVersion,
-		":state_json": initialJson,
-		":state_digest": digest,
-		":now_epoch": nowEpochMs,
-		":now_iso": nowIso,
-	});
-}
-
-// ---------------------------------------------------------------------------
-// Fenced initial state establishment
 // ---------------------------------------------------------------------------
 
 const INITIALIZE_STATE_SQL = `

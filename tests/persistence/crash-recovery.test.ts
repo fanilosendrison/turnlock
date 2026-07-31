@@ -15,12 +15,12 @@ import {
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
 import {
 	commitState,
-	ensureInitialStateRow,
 	projectStateJson,
 	readAuthoritativeState,
 	type StateRecord,
 } from "../../src/persistence/sqlite/run-state-store";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
 
 const LEASE_MS = 30 * 60 * 1000;
 const NOW_EPOCH = 1_000_000_000_000;
@@ -124,7 +124,7 @@ describe("crash recovery", () => {
 				committedFenceToken: String(result.handle.fenceToken),
 			};
 
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				result.handle.incarnationId,
 				4,
@@ -191,7 +191,7 @@ describe("crash recovery", () => {
 				committedFenceToken: String(result.handle.fenceToken),
 			};
 
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				result.handle.incarnationId,
 				4,

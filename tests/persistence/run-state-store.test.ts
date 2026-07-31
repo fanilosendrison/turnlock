@@ -11,12 +11,12 @@ import { acquireOwnership } from "../../src/persistence/sqlite/ownership";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
 import {
 	commitState,
-	ensureInitialStateRow,
 	projectStateJson,
 	readAuthoritativeState,
 	type StateRecord,
 } from "../../src/persistence/sqlite/run-state-store";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
 
 const LEASE_MS = 30 * 60 * 1000;
 const NOW_EPOCH = 1_000_000_000_000;
@@ -86,7 +86,7 @@ describe("run-state-store", () => {
 			expect(result.kind).toBe("ACQUIRED");
 			if (result.kind !== "ACQUIRED") return;
 
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				result.handle.incarnationId,
 				4,
@@ -114,7 +114,7 @@ describe("run-state-store", () => {
 			if (result.kind !== "ACQUIRED") return;
 
 			const initial = makeInitialState();
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				result.handle.incarnationId,
 				4,
@@ -158,7 +158,7 @@ describe("run-state-store", () => {
 			if (result.kind !== "ACQUIRED") return;
 
 			const initial = makeInitialState();
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				result.handle.incarnationId,
 				4,
@@ -200,7 +200,7 @@ describe("run-state-store", () => {
 			if (result.kind !== "ACQUIRED") return;
 
 			const initial = makeInitialState();
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				result.handle.incarnationId,
 				4,
@@ -240,7 +240,7 @@ describe("run-state-store", () => {
 			if (result.kind !== "ACQUIRED") return;
 
 			const initial = makeInitialState();
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				result.handle.incarnationId,
 				4,
@@ -295,7 +295,7 @@ describe("run-state-store", () => {
 			if (result.kind !== "ACQUIRED") return;
 
 			const initial = makeInitialState();
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				result.handle.incarnationId,
 				4,

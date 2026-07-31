@@ -22,10 +22,7 @@ import {
 import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
 import { acquireOwnership } from "../../src/persistence/sqlite/ownership";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
-import {
-	ensureInitialStateRow,
-	readAuthoritativeState,
-} from "../../src/persistence/sqlite/run-state-store";
+import { readAuthoritativeState } from "../../src/persistence/sqlite/run-state-store";
 import {
 	installPreparedArtifact,
 	prepareJsonArtifact,
@@ -36,6 +33,7 @@ import { contentDigest } from "../../src/services/content-digest";
 import { readState } from "../../src/services/state-io";
 import type { ArtifactRef } from "../../src/types/artifacts";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -106,7 +104,7 @@ describe("terminalResult in authoritative state", () => {
 				};
 
 				const stateJson = JSON.stringify(stateRecord);
-				ensureInitialStateRow(
+				unsafeEnsureInitialStateRow(
 					runDb.connection,
 					acquireResult.handle.incarnationId,
 					STATE_SCHEMA_VERSION,

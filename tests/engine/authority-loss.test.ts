@@ -24,10 +24,10 @@ import {
 	releaseOwnership as sqliteReleaseOwnership,
 } from "../../src/persistence/sqlite/ownership";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
-import { ensureInitialStateRow } from "../../src/persistence/sqlite/run-state-store";
 import type { StateFile } from "../../src/services/state-io";
 import { createMockLogger } from "../helpers/mock-logger";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
 
 const LEASE_MS = 30 * 60 * 1000;
 const CONTENTION_DEADLINE_MS = 2000;
@@ -134,7 +134,7 @@ describe("authority loss — real handleDone continuation prevention", () => {
 			if (acquired.kind !== "ACQUIRED") return;
 			const handleA = acquired.handle;
 
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				handleA.incarnationId,
 				STATE_SCHEMA_VERSION,
@@ -223,7 +223,7 @@ describe("authority loss — real handleDone continuation prevention", () => {
 			expect(acquired.kind).toBe("ACQUIRED");
 			if (acquired.kind !== "ACQUIRED") return;
 
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				acquired.handle.incarnationId,
 				STATE_SCHEMA_VERSION,

@@ -16,12 +16,12 @@ import {
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
 import {
 	commitState,
-	ensureInitialStateRow,
 	readAuthoritativeState,
 	type StateRecord,
 } from "../../src/persistence/sqlite/run-state-store";
 import { migrateV3ToV4 } from "../../src/services/state-io";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
 
 const LEASE_MS = 30 * 60 * 1000;
 const NOW_EPOCH = 1_000_000_000_000;
@@ -115,7 +115,7 @@ function seedV3State(
 	incarnationId: string,
 	v3StateJson: string,
 ) {
-	ensureInitialStateRow(
+	unsafeEnsureInitialStateRow(
 		runDb.connection,
 		incarnationId,
 		3, // v3

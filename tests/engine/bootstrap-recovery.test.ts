@@ -15,12 +15,10 @@ import {
 	releaseOwnership,
 } from "../../src/persistence/sqlite/ownership";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
-import {
-	ensureInitialStateRow,
-	readAuthoritativeState,
-} from "../../src/persistence/sqlite/run-state-store";
+import { readAuthoritativeState } from "../../src/persistence/sqlite/run-state-store";
 import { readStateSnapshot } from "../../src/services/state-io";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -229,7 +227,7 @@ describe("bootstrap crash recovery", () => {
 		if (acquireResult.kind !== "ACQUIRED") return;
 
 		// Seed the state row.
-		ensureInitialStateRow(
+		unsafeEnsureInitialStateRow(
 			recoveryDb.connection,
 			acquireResult.handle.incarnationId,
 			STATE_SCHEMA_VERSION,
@@ -288,7 +286,7 @@ describe("bootstrap crash recovery", () => {
 		if (acquireResult.kind !== "ACQUIRED") return;
 
 		// Seed the state row.
-		ensureInitialStateRow(
+		unsafeEnsureInitialStateRow(
 			recoveryDb.connection,
 			acquireResult.handle.incarnationId,
 			STATE_SCHEMA_VERSION,
@@ -384,7 +382,7 @@ describe("bootstrap crash recovery", () => {
 		if (reacquired.kind !== "ACQUIRED") return;
 
 		// Seed the state row (idempotent — INSERT OR IGNORE).
-		ensureInitialStateRow(
+		unsafeEnsureInitialStateRow(
 			recoveryDb.connection,
 			reacquired.handle.incarnationId,
 			STATE_SCHEMA_VERSION,
@@ -477,7 +475,7 @@ describe("bootstrap crash recovery", () => {
 		expect(acquireResult.kind).toBe("ACQUIRED");
 		if (acquireResult.kind !== "ACQUIRED") return;
 
-		ensureInitialStateRow(
+		unsafeEnsureInitialStateRow(
 			seedDb.connection,
 			acquireResult.handle.incarnationId,
 			STATE_SCHEMA_VERSION,
@@ -526,7 +524,7 @@ describe("bootstrap crash recovery", () => {
 		expect(acquireResult.kind).toBe("ACQUIRED");
 		if (acquireResult.kind !== "ACQUIRED") return;
 
-		ensureInitialStateRow(
+		unsafeEnsureInitialStateRow(
 			runDb.connection,
 			acquireResult.handle.incarnationId,
 			STATE_SCHEMA_VERSION,
@@ -630,7 +628,7 @@ describe("bootstrap crash recovery", () => {
 		expect(first.kind).toBe("ACQUIRED");
 		if (first.kind !== "ACQUIRED") return;
 
-		ensureInitialStateRow(
+		unsafeEnsureInitialStateRow(
 			runDb.connection,
 			first.handle.incarnationId,
 			STATE_SCHEMA_VERSION,
@@ -677,7 +675,7 @@ describe("bootstrap crash recovery", () => {
 			...ctx.legacyState,
 			currentPhase: "should-not-overwrite",
 		};
-		ensureInitialStateRow(
+		unsafeEnsureInitialStateRow(
 			runDb.connection,
 			first.handle.incarnationId,
 			STATE_SCHEMA_VERSION,

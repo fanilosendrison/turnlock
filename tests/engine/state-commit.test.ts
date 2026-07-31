@@ -25,9 +25,9 @@ import {
 	releaseOwnership as sqliteReleaseOwnership,
 } from "../../src/persistence/sqlite/ownership";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
-import { ensureInitialStateRow } from "../../src/persistence/sqlite/run-state-store";
 import { createMockLogger } from "../helpers/mock-logger";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
 
 const LEASE_MS = 30 * 60 * 1000;
 const CONTENTION_DEADLINE_MS = 2000;
@@ -84,7 +84,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 			const handleA = acquired.handle;
 
 			// Seed initial state row.
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				handleA.incarnationId,
 				STATE_SCHEMA_VERSION,
@@ -179,7 +179,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 			if (acquired.kind !== "ACQUIRED") return;
 			const handle = acquired.handle;
 
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				handle.incarnationId,
 				STATE_SCHEMA_VERSION,
@@ -247,7 +247,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 			if (acquired.kind !== "ACQUIRED") return;
 			const handle = acquired.handle;
 
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				handle.incarnationId,
 				STATE_SCHEMA_VERSION,
@@ -318,7 +318,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 			if (acquired.kind !== "ACQUIRED") return;
 			const handle = acquired.handle;
 
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				handle.incarnationId,
 				STATE_SCHEMA_VERSION,
@@ -751,7 +751,7 @@ describe("commitStateWithProjection — strict orThrow", () => {
 			if (acquired.kind !== "ACQUIRED") return;
 			const handle = acquired.handle;
 
-			ensureInitialStateRow(
+			unsafeEnsureInitialStateRow(
 				ctx.runDb.connection,
 				handle.incarnationId,
 				STATE_SCHEMA_VERSION,
