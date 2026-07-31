@@ -9,11 +9,9 @@ import {
 	ExternalResolutionMalformedError,
 	StateCorruptedError,
 } from "../errors/concrete";
+import { readAndVerifyArtifact } from "../services/artifact-store";
 import { clock } from "../services/clock";
-import {
-	contentDigest,
-	contentMatchesDigest,
-} from "../services/content-digest";
+import { contentDigest } from "../services/content-digest";
 import {
 	installImmutableFileAtomic,
 	readRegularFileBytes,
@@ -74,11 +72,6 @@ function assertConfinedPaths<S extends object>(
 	ctx: DispatchContext<S>,
 	pending: PendingExternalRequestRecord,
 ): void {
-	const expectedManifestPath = path.join(
-		ctx.runDir,
-		"external-requests",
-		`${pending.label}.json`,
-	);
 	const expectedResultPath = path.join(
 		ctx.runDir,
 		"external-results",
@@ -86,7 +79,6 @@ function assertConfinedPaths<S extends object>(
 	);
 	const expectedAcceptedResolutionPath = acceptedResolutionPath(ctx, pending);
 	if (
-		pending.manifestPath !== expectedManifestPath ||
 		pending.resultPath !== expectedResultPath ||
 		(pending.acceptedResolutionPath !== undefined &&
 			pending.acceptedResolutionPath !== expectedAcceptedResolutionPath)
@@ -94,7 +86,6 @@ function assertConfinedPaths<S extends object>(
 		throw new StateCorruptedError("external request paths are invalid");
 	}
 
-	assertConfinedDirectory(ctx, "external-requests");
 	assertConfinedDirectory(ctx, "accepted-external-resolutions");
 }
 
@@ -103,31 +94,18 @@ function readStoredManifest<S extends object>(
 	pending: PendingExternalRequestRecord,
 	originPhase: string,
 ): ExternalRequestManifest {
-	let raw: Buffer;
-	try {
-		raw = readRegularFileBytes(pending.manifestPath);
-	} catch (error) {
-		throw new StateCorruptedError("external request manifest is unavailable", {
-			cause: error,
+	if (!pending.manifestArtifact) {
+		throw new StateCorruptedError("external request has no manifest artifact", {
 			runId: ctx.runId,
 			orchestratorName: ctx.config.name,
 			phase: pending.resumeAt,
 		});
 	}
-	if (!contentMatchesDigest(raw, pending.manifestDigest)) {
-		throw new StateCorruptedError(
-			"external request manifest digest does not match pending state",
-			{
-				runId: ctx.runId,
-				orchestratorName: ctx.config.name,
-				phase: pending.resumeAt,
-			},
-		);
-	}
+	const raw = readAndVerifyArtifact(ctx.runDir, pending.manifestArtifact);
 
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(raw.toString("utf-8"));
+		parsed = JSON.parse(Buffer.from(raw).toString("utf-8"));
 	} catch (error) {
 		throw new StateCorruptedError("external request manifest is malformed", {
 			cause: error,
@@ -203,11 +181,16 @@ async function reemitExternalRequest<S extends object>(
 	pending: PendingExternalRequestRecord,
 	manifest: ExternalRequestManifest,
 ): Promise<never> {
+	const canonicalManifestPath = path.join(
+		ctx.runDir,
+		"external-requests",
+		`${pending.label}.json`,
+	);
 	let block: string;
 	try {
 		block = externalRequestBinding.buildProtocolBlock(
 			manifest,
-			pending.manifestPath,
+			canonicalManifestPath,
 			ctx.config.resumeCommand(ctx.runId),
 		);
 	} catch (error) {

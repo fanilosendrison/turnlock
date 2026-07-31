@@ -1,23 +1,22 @@
 import * as path from "node:path";
 import { externalRequestBinding } from "../bindings/external-request";
 import { ProtocolError } from "../errors/concrete";
+import {
+	installPreparedArtifact,
+	prepareJsonArtifact,
+} from "../services/artifact-store";
 import { clock } from "../services/clock";
-import { contentDigest } from "../services/content-digest";
 import type {
 	PendingExternalRequestRecord,
 	StateFile,
 } from "../services/state-io";
 import type { PhaseResult } from "../types/phase";
-import {
-	type DispatchContext,
-	doExit,
-	isTestExitSignal,
-	writeFileSyncAtomic,
-} from "./context";
+import { type DispatchContext, doExit, isTestExitSignal } from "./context";
 import { assertExternalRequest } from "./external-request-validation";
 import { clearPendingYield } from "./pending-yield";
 import {
 	commitStateWithProjection,
+	projectCanonicalArtifactFenced,
 	releaseOwnershipFromContext,
 } from "./state-commit";
 import { emitFatalError } from "./terminal-handlers";
@@ -66,14 +65,23 @@ export async function handleExternalRequest<S extends object>(
 			emittedAtEpochMs,
 			runDir: ctx.runDir,
 		});
-		const manifestPath = path.join(
+
+		// 1. Prepare immutable artifact.
+		const prepared = prepareJsonArtifact(
+			ctx.runDir,
+			"external-request-manifest",
+			manifest,
+		);
+
+		// 2. Install immutable blob.
+		installPreparedArtifact(ctx.runDir, prepared);
+
+		// 3. Build the protocol block in memory (not emitted yet).
+		const canonicalManifestPath = path.join(
 			ctx.runDir,
 			"external-requests",
 			`${request.label}.json`,
 		);
-		const manifestBytes = Buffer.from(JSON.stringify(manifest), "utf-8");
-		const manifestDigest = contentDigest(manifestBytes);
-
 		const publication: PreparedPublication | FailedPublicationPreparation =
 			(() => {
 				try {
@@ -81,7 +89,7 @@ export async function handleExternalRequest<S extends object>(
 						ok: true,
 						block: externalRequestBinding.buildProtocolBlock(
 							manifest,
-							manifestPath,
+							canonicalManifestPath,
 							ctx.config.resumeCommand(ctx.runId),
 						),
 					};
@@ -90,15 +98,13 @@ export async function handleExternalRequest<S extends object>(
 				}
 			})();
 
-		writeFileSyncAtomic(manifestPath, manifestBytes);
-
+		// 4. Build state with ArtifactRef.
 		const pendingExternalRequest: PendingExternalRequestRecord = {
 			requestId: manifest.requestId,
 			label: request.label,
 			requestType: request.requestType,
 			resumeAt,
-			manifestPath,
-			manifestDigest,
+			manifestArtifact: prepared.ref,
 			resultPath: manifest.resultPath,
 			emittedAt,
 			emittedAtEpochMs,
@@ -113,11 +119,15 @@ export async function handleExternalRequest<S extends object>(
 			pendingExternalRequest,
 			usedLabels: [...state.usedLabels, request.label],
 		};
+
+		// 5. Commit fenced.
+
 		commitStateWithProjection(ctx, newState);
 		durableState = newState;
 
 		if (!publication.ok) throw publication.error;
 
+		// 6. Events only after successful fenced commit.
 		ctx.logger.emit({
 			eventType: "external_request_emit",
 			runId: ctx.runId,
@@ -128,6 +138,14 @@ export async function handleExternalRequest<S extends object>(
 			timestamp: emittedAt,
 		});
 
+		// 7. Optional canonical projection for backward compatibility.
+		try {
+			projectCanonicalArtifactFenced(ctx, prepared.ref, canonicalManifestPath);
+		} catch {
+			// Non-authoritative projection failure is not fatal.
+		}
+
+		// 8. Emit protocol block after commit + projection.
 		process.stdout.write(publication.block);
 		releaseOwnershipFromContext(ctx);
 		doExit(0);

@@ -6,17 +6,22 @@ import {
 	DEFAULT_TIMEOUT_MS,
 } from "../constants";
 import { InvalidConfigError, ProtocolError } from "../errors/concrete";
+import {
+	installPreparedArtifact,
+	prepareJsonArtifact,
+} from "../services/artifact-store";
 import { clock } from "../services/clock";
 import type { PendingDelegationRecord, StateFile } from "../services/state-io";
 import type {
 	BatchDelegationRequest,
 	DelegationRequest,
 } from "../types/delegation";
-import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
+import { type DispatchContext, doExit } from "./context";
 import { clearPendingYield } from "./pending-yield";
 import { selectBinding } from "./shared";
 import {
 	commitStateWithProjection,
+	projectCanonicalArtifactFenced,
 	releaseOwnershipFromContext,
 } from "./state-commit";
 
@@ -114,18 +119,23 @@ export async function handleDelegate<S extends object>(
 		runDir: ctx.runDir,
 	};
 	const manifest = binding.buildManifest(request, manifestContext);
-	const manifestPath = path.join(
-		ctx.runDir,
-		"delegations",
-		`${label}-${attempt}.json`,
-	);
-	writeFileSyncAtomic(manifestPath, JSON.stringify(manifest));
 
+	// 1. Prepare immutable artifact.
+	const prepared = prepareJsonArtifact(
+		ctx.runDir,
+		"delegation-manifest",
+		manifest,
+	);
+
+	// 2. Install immutable blob (may be orphaned if commit fails — acceptable).
+	installPreparedArtifact(ctx.runDir, prepared);
+
+	// 3. Build pending delegation record with ArtifactRef.
 	const pendingDelegation: PendingDelegationRecord = {
 		label,
 		kind,
 		resumeAt,
-		manifestPath,
+		manifestArtifact: prepared.ref,
 		emittedAtEpochMs,
 		deadlineAtEpochMs,
 		attempt,
@@ -147,8 +157,11 @@ export async function handleDelegate<S extends object>(
 		pendingDelegation,
 		usedLabels: [...state.usedLabels, label],
 	};
+
+	// 4. Commit fenced.
 	commitStateWithProjection(ctx, newState);
 
+	// 5. Events + protocol only after successful commit.
 	ctx.logger.emit({
 		eventType: "delegation_emit",
 		runId: ctx.runId,
@@ -160,8 +173,27 @@ export async function handleDelegate<S extends object>(
 		timestamp: emittedAt,
 	});
 
+	// 6. Optional: project canonical manifest for backward compatibility.
+	// The projection path matches the old convention.
+	const canonicalManifestPath = path.join(
+		ctx.runDir,
+		"delegations",
+		`${label}-${attempt}.json`,
+	);
+	try {
+		projectCanonicalArtifactFenced(ctx, prepared.ref, canonicalManifestPath);
+	} catch {
+		// Canonical projection is non-authoritative; failure is logged implicitly
+		// by the error handler but not fatal (the commit already succeeded).
+	}
+
 	const resumeCmd = ctx.config.resumeCommand(ctx.runId);
-	const block = binding.buildProtocolBlock(manifest, manifestPath, resumeCmd);
+	// Use the canonical path in protocol block for backward compatibility.
+	const block = binding.buildProtocolBlock(
+		manifest,
+		canonicalManifestPath,
+		resumeCmd,
+	);
 	process.stdout.write(block);
 
 	releaseOwnershipFromContext(ctx);

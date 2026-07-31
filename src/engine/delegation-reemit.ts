@@ -1,16 +1,21 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
 import type { DelegationManifest } from "../bindings/types";
 import { MANIFEST_VERSION } from "../constants";
 import { AbortedError, ProtocolError } from "../errors/concrete";
 import { abortableSleep } from "../services/abortable-sleep";
+import {
+	installPreparedArtifact,
+	prepareJsonArtifact,
+	readAndVerifyArtifact,
+} from "../services/artifact-store";
 import { clock } from "../services/clock";
 import type { PendingDelegationRecord, StateFile } from "../services/state-io";
-import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
+import { type DispatchContext, doExit } from "./context";
 import { clearPendingYield } from "./pending-yield";
 import { reconstructManifest, selectBinding } from "./shared";
 import {
 	commitStateWithProjection,
+	projectCanonicalArtifactFenced,
 	releaseOwnershipFromContext,
 } from "./state-commit";
 
@@ -43,9 +48,22 @@ export async function reemitDelegationAttempt<S extends object>(
 		});
 	}
 
+	// 1. Read and verify the old manifest via ArtifactRef.
+	if (!pd.manifestArtifact) {
+		throw new ProtocolError("pending delegation has no manifest artifact", {
+			runId: ctx.runId,
+			orchestratorName: ctx.config.name,
+			phase,
+		});
+	}
+	const oldManifestBytes = readAndVerifyArtifact(
+		ctx.runDir,
+		pd.manifestArtifact,
+	);
 	const oldManifest = JSON.parse(
-		fs.readFileSync(pd.manifestPath, "utf-8"),
+		Buffer.from(oldManifestBytes).toString("utf-8"),
 	) as DelegationManifest;
+
 	if (oldManifest.manifestVersion !== MANIFEST_VERSION) {
 		throw new ProtocolError(
 			`manifestVersion mismatch: expected ${MANIFEST_VERSION}, got ${String(oldManifest.manifestVersion)}`,
@@ -60,11 +78,7 @@ export async function reemitDelegationAttempt<S extends object>(
 	const newEmittedAtEpochMs = clock.nowEpochMs();
 	const newEmittedAt = clock.nowWallIso();
 	const newDeadlineAtEpochMs = newEmittedAtEpochMs + oldManifest.timeoutMs;
-	const newManifestPath = path.join(
-		ctx.runDir,
-		"delegations",
-		`${pd.label}-${newAttempt}.json`,
-	);
+
 	const newManifest = reconstructManifest(oldManifest, {
 		attempt: newAttempt,
 		emittedAt: newEmittedAt,
@@ -74,8 +88,15 @@ export async function reemitDelegationAttempt<S extends object>(
 		runDir: ctx.runDir,
 	});
 
-	writeFileSyncAtomic(newManifestPath, JSON.stringify(newManifest));
+	// 2. Prepare and install new immutable blob.
+	const prepared = prepareJsonArtifact(
+		ctx.runDir,
+		"delegation-manifest",
+		newManifest,
+	);
+	installPreparedArtifact(ctx.runDir, prepared);
 
+	// 3. Build new state with updated ArtifactRef.
 	const newState: StateFile<S> = {
 		...clearPendingYield(state),
 		pendingDelegation: {
@@ -83,13 +104,16 @@ export async function reemitDelegationAttempt<S extends object>(
 			attempt: newAttempt,
 			emittedAtEpochMs: newEmittedAtEpochMs,
 			deadlineAtEpochMs: newDeadlineAtEpochMs,
-			manifestPath: newManifestPath,
+			manifestArtifact: prepared.ref,
 		},
 		lastTransitionAt: newEmittedAt,
 		lastTransitionAtEpochMs: newEmittedAtEpochMs,
 	};
+
+	// 4. Commit fenced.
 	commitStateWithProjection(ctx, newState);
 
+	// 5. Events + protocol only after successful commit.
 	ctx.logger.emit({
 		eventType: "delegation_emit",
 		runId: ctx.runId,
@@ -100,11 +124,23 @@ export async function reemitDelegationAttempt<S extends object>(
 		timestamp: newEmittedAt,
 	});
 
+	// 6. Optional canonical projection for backward compatibility.
+	const canonicalManifestPath = path.join(
+		ctx.runDir,
+		"delegations",
+		`${pd.label}-${newAttempt}.json`,
+	);
+	try {
+		projectCanonicalArtifactFenced(ctx, prepared.ref, canonicalManifestPath);
+	} catch {
+		// Non-authoritative projection failure is not fatal.
+	}
+
 	const resumeCmd = ctx.config.resumeCommand(ctx.runId);
 	const binding = selectBinding(pd.kind);
 	const block = binding.buildProtocolBlock(
 		newManifest,
-		newManifestPath,
+		canonicalManifestPath,
 		resumeCmd,
 	);
 	process.stdout.write(block);
