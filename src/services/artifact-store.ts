@@ -181,7 +181,7 @@ export function installPreparedArtifact(
 	runDir: string,
 	artifact: PreparedArtifact,
 ): void {
-	validateArtifactRef(artifact.ref, artifact.ref.kind);
+	validateArtifactStructure(artifact.ref);
 	const targetPath = path.join(runDir, artifact.ref.relativePath);
 	atomicInstallImmutable(targetPath, artifact.bytes);
 }
@@ -200,7 +200,7 @@ export function readAndVerifyArtifact(
 	ref: ArtifactRef,
 ): Uint8Array {
 	// Structural validation — path confinement, digest format, etc.
-	validateArtifactRef(ref, ref.kind);
+	validateArtifactStructure(ref);
 
 	const targetPath = path.join(runDir, ref.relativePath);
 
@@ -247,7 +247,8 @@ export function artifactAbsolutePath(runDir: string, digest: string): string {
  *    - digest matches the expected sha256:<hex> format.
  *    - relativePath is exactly derived from the digest.
  *    - relativePath is relative, stays under artifacts/sha256, no `..`.
- *    - kind matches expectedKind.
+ *    - kind matches expectedKind (caller must specify the correct kind for
+ *      the field, e.g. "terminal-output" for terminalResult.outputArtifact).
  *    - mediaType is "application/json".
  *    - sizeBytes is a non-negative finite integer.
  *
@@ -256,11 +257,29 @@ export function validateArtifactRef(
 	ref: ArtifactRef,
 	expectedKind: ArtifactKind,
 ): void {
-	// Kind
+	// Structural checks first.
+	validateArtifactStructure(ref);
+
+	// Kind must match the field-specific expectation.
 	if (ref.kind !== expectedKind) {
 		throw new ArtifactIntegrityError(
 			`artifact kind mismatch: expected ${expectedKind}, got ${ref.kind}`,
 		);
+	}
+}
+
+/** Validate the structural integrity of an ArtifactRef (digest format,
+ *  path derivation, confinement, media type, size) WITHOUT checking the
+ *  kind field.  Used by the store layer which doesn't know the expected
+ *  kind.  Field-specific callers should use validateArtifactRef(). */
+function validateArtifactStructure(ref: ArtifactRef): void {
+	// Kind must be a valid ArtifactKind value.
+	if (
+		ref.kind !== "terminal-output" &&
+		ref.kind !== "delegation-manifest" &&
+		ref.kind !== "external-request-manifest"
+	) {
+		throw new ArtifactIntegrityError(`invalid artifact kind: ${ref.kind}`);
 	}
 
 	// Algorithm
