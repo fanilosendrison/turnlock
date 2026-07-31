@@ -737,141 +737,178 @@ async function runResumeMode<S extends object>(
 
 	// Read authoritative state from SQLite (defense-in-depth — should
 	// always succeed after the paths above).
-	const readResult = readAuthoritativeState<S>(runDb.connection);
-	if (readResult.state === null) {
-		// Release ownership so the next attempt can acquire immediately.
-		// STALE_HANDLE is acceptable — this handle should still be valid.
-		const releaseResult = releaseOwnership({
-			db: runDb.connection,
-			handle,
-		});
-		runDb.close();
-
-		if (
-			releaseResult.kind !== "SUCCESS" &&
-			releaseResult.kind !== "STALE_HANDLE"
-		) {
-			throw new StateMissingError("state missing in SQLite (release failed)", {
-				runId,
-				orchestratorName: config.name,
-				cause:
-					releaseResult.kind === "DB_FAILURE" ? releaseResult.cause : undefined,
-			});
-		}
-
-		throw new StateMissingError("state missing in SQLite", {
-			runId,
-			orchestratorName: config.name,
-		});
-	}
-
-	// Attempt v3→v4 migration via migrateV3ToV4.  The migration is
-	// all-or-nothing: if any legacy manifest cannot be converted, the
-	// result includes the blocking reason.  A v3 state with no legacy
-	// fields at all is a successful no-op migration.
-	let authoritativeRecord = readResult.state;
-	let authoritativeDigest = readResult.digest;
-
-	if (readResult.state.schemaVersion === 3) {
-		const migrationResult = migrateV3ToV4(
-			readResult.state as unknown as Record<string, unknown>,
-			runDir,
-		);
-
-		if (migrationResult.kind === "MIGRATED") {
-			const maybeMigrated = migrationResult.state;
-			// All legacy fields were converted (or none existed) — commit the v4 state.
-			const migratedRecord: StateRecord<S> = {
-				...readResult.state,
-				schemaVersion: STATE_SCHEMA_VERSION,
-				pendingDelegation: maybeMigrated.pendingDelegation,
-				pendingExternalRequest: maybeMigrated.pendingExternalRequest,
-				...(maybeMigrated.terminalResult !== undefined
-					? {
-							terminalResult:
-								maybeMigrated.terminalResult as TerminalDoneRecord,
-						}
-					: {}),
-			};
-
-			const { commitState } =
-				require("../persistence/sqlite/run-state-store") as {
-					commitState: typeof import("../persistence/sqlite/run-state-store").commitState;
-				};
-			const commitResult = commitState({
-				db: runDb.connection,
-				handle,
-				expectedRevision: readResult.state.stateRevision,
-				nextState: migratedRecord,
-				nowEpochMs: clock.nowEpochMs(),
-				nowIso: clock.nowWallIso(),
-			});
-
-			if (commitResult.kind !== "COMMITTED") {
-				releaseOwnership({ db: runDb.connection, handle });
-				runDb.close();
-				throw new ProtocolError(
-					`v3→v4 migration commit failed: ${commitResult.kind}`,
-					{ runId, orchestratorName: config.name },
-				);
-			}
-
-			authoritativeRecord = commitResult.committed.state as StateRecord<S>;
-			authoritativeDigest = commitResult.committed.stateDigest;
-		} else {
-			// Migration blocked — state stays v3.  This is fatal:
-			// we cannot resume with a v3 state that cannot be migrated.
-			// Release ownership before closing so the next attempt
-			// can acquire immediately.
+	//
+	// From here to runHandleResume, any failure — including
+	// DbIntegrityError from digest verification — must release
+	// ownership before throwing.
+	try {
+		const readResult = readAuthoritativeState<S>(runDb.connection);
+		if (readResult.state === null) {
+			// Release ownership so the next attempt can acquire immediately.
+			// STALE_HANDLE is acceptable — this handle should still be valid.
 			const releaseResult = releaseOwnership({
 				db: runDb.connection,
 				handle,
 			});
 			runDb.close();
 
-			// STALE_HANDLE is acceptable: this handle no longer owns
-			// the row (a successor may hold it).  No further release
-			// should be attempted.
-			// DB_FAILURE means we could not release — report it.
 			if (
 				releaseResult.kind !== "SUCCESS" &&
 				releaseResult.kind !== "STALE_HANDLE"
 			) {
-				throw new StateMigrationBlockedError(
-					`v3→v4 migration blocked: legacy manifest cannot be converted (release failed: ${releaseResult.kind})`,
+				throw new StateMissingError(
+					"state missing in SQLite (release failed)",
 					{
-						reason: migrationResult.reason,
+						runId,
+						orchestratorName: config.name,
 						cause:
 							releaseResult.kind === "DB_FAILURE"
 								? releaseResult.cause
 								: undefined,
+					},
+				);
+			}
+
+			throw new StateMissingError("state missing in SQLite", {
+				runId,
+				orchestratorName: config.name,
+			});
+		}
+
+		// Attempt v3→v4 migration via migrateV3ToV4.  The migration is
+		// all-or-nothing: if any legacy manifest cannot be converted, the
+		// result includes the blocking reason.  A v3 state with no legacy
+		// fields at all is a successful no-op migration.
+		let authoritativeRecord = readResult.state;
+		let authoritativeDigest = readResult.digest;
+
+		if (readResult.state.schemaVersion === 3) {
+			const migrationResult = migrateV3ToV4(
+				readResult.state as unknown as Record<string, unknown>,
+				runDir,
+			);
+
+			if (migrationResult.kind === "MIGRATED") {
+				const maybeMigrated = migrationResult.state;
+				// All legacy fields were converted (or none existed) — commit the v4 state.
+				const migratedRecord: StateRecord<S> = {
+					...readResult.state,
+					schemaVersion: STATE_SCHEMA_VERSION,
+					pendingDelegation: maybeMigrated.pendingDelegation,
+					pendingExternalRequest: maybeMigrated.pendingExternalRequest,
+					...(maybeMigrated.terminalResult !== undefined
+						? {
+								terminalResult:
+									maybeMigrated.terminalResult as TerminalDoneRecord,
+							}
+						: {}),
+				};
+
+				const { commitState } =
+					require("../persistence/sqlite/run-state-store") as {
+						commitState: typeof import("../persistence/sqlite/run-state-store").commitState;
+					};
+				const commitResult = commitState({
+					db: runDb.connection,
+					handle,
+					expectedRevision: readResult.state.stateRevision,
+					nextState: migratedRecord,
+					nowEpochMs: clock.nowEpochMs(),
+					nowIso: clock.nowWallIso(),
+				});
+
+				if (commitResult.kind !== "COMMITTED") {
+					const releaseResult = releaseOwnership({
+						db: runDb.connection,
+						handle,
+					});
+					runDb.close();
+
+					// Verify release — a DB_FAILURE means the lock may
+					// still be HELD.
+					if (
+						releaseResult.kind !== "SUCCESS" &&
+						releaseResult.kind !== "STALE_HANDLE"
+					) {
+						throw new ProtocolError(
+							`v3→v4 migration commit failed and ownership release also failed: ${commitResult.kind} + ${releaseResult.kind}`,
+							{
+								runId,
+								orchestratorName: config.name,
+								cause: new AggregateError(
+									[
+										new Error(`migration commit: ${commitResult.kind}`),
+										releaseResult.kind === "DB_FAILURE"
+											? releaseResult.cause
+											: new Error(releaseResult.kind),
+									],
+									"migration commit and release both failed",
+								),
+							},
+						);
+					}
+
+					throw new ProtocolError(
+						`v3→v4 migration commit failed: ${commitResult.kind}`,
+						{ runId, orchestratorName: config.name },
+					);
+				}
+
+				authoritativeRecord = commitResult.committed.state as StateRecord<S>;
+				authoritativeDigest = commitResult.committed.stateDigest;
+			} else {
+				// Migration blocked — state stays v3.  This is fatal:
+				// we cannot resume with a v3 state that cannot be migrated.
+				// Release ownership before closing so the next attempt
+				// can acquire immediately.
+				const releaseResult = releaseOwnership({
+					db: runDb.connection,
+					handle,
+				});
+				runDb.close();
+
+				// STALE_HANDLE is acceptable: this handle no longer owns
+				// the row (a successor may hold it).  No further release
+				// should be attempted.
+				// DB_FAILURE means we could not release — report it.
+				if (
+					releaseResult.kind !== "SUCCESS" &&
+					releaseResult.kind !== "STALE_HANDLE"
+				) {
+					throw new StateMigrationBlockedError(
+						`v3→v4 migration blocked: legacy manifest cannot be converted (release failed: ${releaseResult.kind})`,
+						{
+							reason: migrationResult.reason,
+							cause:
+								releaseResult.kind === "DB_FAILURE"
+									? releaseResult.cause
+									: undefined,
+							runId,
+							orchestratorName: config.name,
+						},
+					);
+				}
+
+				throw new StateMigrationBlockedError(
+					"v3→v4 migration blocked: legacy manifest cannot be converted",
+					{
+						reason: migrationResult.reason,
 						runId,
 						orchestratorName: config.name,
 					},
 				);
 			}
-
-			throw new StateMigrationBlockedError(
-				"v3→v4 migration blocked: legacy manifest cannot be converted",
-				{
-					reason: migrationResult.reason,
-					runId,
-					orchestratorName: config.name,
-				},
-			);
 		}
-	}
 
-	// Build the in-memory StateFile from the authoritative record (which
-	// may now be v4 with the updated revision).
-	const state = stateRecordToStateFile(authoritativeRecord, runDir);
+		// Build the in-memory StateFile from the authoritative record (which
+		// may now be v4 with the updated revision).
+		const state = stateRecordToStateFile(authoritativeRecord, runDir);
 
-	// Project state.json from the authoritative record under fence.
-	// The fenced projection re-reads from SQLite — content always comes
-	// from the authority.
-	// Wrap in try/catch — if projection fails after the state is already
-	// authoritative, we must release ownership before throwing.
-	try {
+		// Project state.json from the authoritative record under fence.
+		// The fenced projection re-reads from SQLite — content always comes
+		// from the authority.
+		// Wrap in try/catch — if projection fails after the state is already
+		// authoritative, we must release ownership before throwing.
 		projectAuthoritativeStateFenced(
 			runDb.connection,
 			handle,
@@ -926,9 +963,9 @@ async function runResumeMode<S extends object>(
 		installSignalHandlers(ctx);
 
 		await runHandleResume(ctx, state);
-	} catch (projectionErr) {
-		// State is already committed in SQLite.  Release ownership so the
-		// next --resume can acquire immediately.
+	} catch (resumeErr) {
+		// Any failure after ownership was acquired — read, migration,
+		// projection, setup, or dispatch — must release before throwing.
 		const releaseResult = releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
 
@@ -939,24 +976,24 @@ async function runResumeMode<S extends object>(
 			releaseResult.kind !== "STALE_HANDLE"
 		) {
 			throw new ProtocolError(
-				"Resume projection/setup failed and ownership release also failed",
+				"Resume failed and ownership release also failed",
 				{
 					runId,
 					orchestratorName: config.name,
 					cause: new AggregateError(
 						[
-							projectionErr,
+							resumeErr,
 							releaseResult.kind === "DB_FAILURE"
 								? releaseResult.cause
 								: new Error(releaseResult.kind),
 						],
-						"resume projection/setup and release both failed",
+						"resume and release both failed",
 					),
 				},
 			);
 		}
 
-		throw projectionErr;
+		throw resumeErr;
 	}
 }
 
