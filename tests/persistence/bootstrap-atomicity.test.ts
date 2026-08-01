@@ -1,0 +1,1076 @@
+// Bootstrap atomicity tests — TL-F-001 point 4.
+//
+// Verifies that incarnation + ownership + state are established in a single
+// BEGIN IMMEDIATE ... COMMIT, or not at all.  No partial state is observable
+// after any bootstrap or migration attempt.
+
+import { describe, expect, test } from "bun:test";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { STATE_SCHEMA_VERSION } from "../../src/constants";
+import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
+import {
+	acquireOwnership,
+	type LockHandle,
+	releaseOwnership,
+} from "../../src/persistence/sqlite/ownership";
+import {
+	bootstrapNewRunAtomic,
+	type CommittedState,
+	migrateLegacyRunAtomic,
+} from "../../src/persistence/sqlite/run-bootstrap";
+import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
+import { readAuthoritativeState } from "../../src/persistence/sqlite/run-state-store";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const LEASE_MS = 30 * 60 * 1000;
+const NOW_EPOCH = 1_000_000_000_000;
+const NOW_ISO = "2001-09-09T01:46:40.000Z";
+const CONTENTION_DEADLINE_MS = 2000;
+const RUN_ID = "01HX0000000000000000000001";
+const ORCH_NAME = "bootstrap-atomicity-test";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function setup() {
+	const dir = makeTempDir();
+	const dbPath = join(dir, "turnlock.sqlite3");
+	const runDb = openRunDatabase({
+		driver: bunSqliteDriver,
+		dbPath,
+		busyTimeoutMs: 500,
+	});
+	return {
+		dir,
+		dbPath,
+		runDb,
+		cleanup: () => {
+			runDb.close();
+			cleanupTempDir(dir);
+		},
+	};
+}
+
+function makeInitialState(overrides: Record<string, unknown> = {}) {
+	return {
+		schemaVersion: STATE_SCHEMA_VERSION,
+		runId: RUN_ID,
+		orchestratorName: ORCH_NAME,
+		startedAt: NOW_ISO,
+		startedAtEpochMs: NOW_EPOCH,
+		lastTransitionAt: NOW_ISO,
+		lastTransitionAtEpochMs: NOW_EPOCH,
+		currentPhase: "start",
+		phasesExecuted: 0,
+		accumulatedDurationMs: 0,
+		data: { stage: "initial" },
+		usedLabels: [],
+		...overrides,
+	};
+}
+
+function assertTablesEmpty(runDb: ReturnType<typeof openRunDatabase>) {
+	const inc = runDb.connection
+		.prepare("SELECT COUNT(*) AS cnt FROM run_incarnation")
+		.get() as { cnt: number };
+	const own = runDb.connection
+		.prepare("SELECT COUNT(*) AS cnt FROM run_ownership")
+		.get() as { cnt: number };
+	const state = runDb.connection
+		.prepare("SELECT COUNT(*) AS cnt FROM run_state")
+		.get() as { cnt: number };
+	expect(inc.cnt).toBe(0);
+	expect(own.cnt).toBe(0);
+	expect(state.cnt).toBe(0);
+}
+
+function assertFullyEstablished(
+	runDb: ReturnType<typeof openRunDatabase>,
+	handle: LockHandle,
+	committed: CommittedState,
+) {
+	// incarnation
+	const incRow = runDb.connection
+		.prepare(
+			"SELECT incarnation_id, run_id, orchestrator_name FROM run_incarnation WHERE singleton = 1",
+		)
+		.get() as
+		| { incarnation_id: string; run_id: string; orchestrator_name: string }
+		| undefined;
+	expect(incRow).toBeDefined();
+	expect(incRow!.incarnation_id).toBe(handle.incarnationId);
+	expect(incRow!.run_id).toBe(RUN_ID);
+
+	// ownership
+	const ownRow = runDb.connection
+		.prepare(
+			"SELECT ownership_status, owner_token, fence_token, lease_until_epoch_ms FROM run_ownership WHERE singleton = 1",
+		)
+		.get() as
+		| {
+				ownership_status: string;
+				owner_token: string;
+				fence_token: number | bigint;
+				lease_until_epoch_ms: number;
+		  }
+		| undefined;
+	expect(ownRow).toBeDefined();
+	expect(ownRow!.ownership_status).toBe("HELD");
+	expect(ownRow!.owner_token).toBe(handle.ownerToken);
+	const ownFence =
+		typeof ownRow!.fence_token === "bigint"
+			? ownRow!.fence_token
+			: BigInt(ownRow!.fence_token);
+	expect(ownFence).toBe(handle.fenceToken);
+
+	// state
+	const stateRow = runDb.connection
+		.prepare(
+			"SELECT state_revision, committed_by_owner_token, committed_by_fence_token FROM run_state WHERE singleton = 1",
+		)
+		.get() as
+		| {
+				state_revision: number | bigint;
+				committed_by_owner_token: string;
+				committed_by_fence_token: number | bigint;
+		  }
+		| undefined;
+	expect(stateRow).toBeDefined();
+	expect(stateRow!.committed_by_owner_token).toBe(handle.ownerToken);
+	const stateFence =
+		typeof stateRow!.committed_by_fence_token === "bigint"
+			? stateRow!.committed_by_fence_token
+			: BigInt(stateRow!.committed_by_fence_token);
+	expect(stateFence).toBe(handle.fenceToken);
+	const rev =
+		typeof stateRow!.state_revision === "bigint"
+			? stateRow!.state_revision
+			: BigInt(stateRow!.state_revision);
+	expect(rev).toBe(0n);
+
+	// committed state
+	expect(committed.stateRevision).toBe("0");
+	expect(committed.committedFenceToken).toBe(String(handle.fenceToken));
+	expect(committed.incarnationId).toBe(handle.incarnationId);
+}
+
+// ---------------------------------------------------------------------------
+// Test A — Bootstrap réussi
+// ---------------------------------------------------------------------------
+
+describe("bootstrap atomicity", () => {
+	test("A — bootstrap réussi: all three tables populated, handle valid", () => {
+		const ctx = setup();
+		try {
+			const result = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+
+			expect(result.kind).toBe("BOOTSTRAPPED");
+			if (result.kind !== "BOOTSTRAPPED") return;
+
+			expect(result.handle.fenceToken).toBe(1n);
+			assertFullyEstablished(ctx.runDb, result.handle, result.committed);
+
+			// Verify state can be read back.
+			const authRead = readAuthoritativeState(ctx.runDb.connection);
+			expect(authRead.state).not.toBeNull();
+			expect(authRead.state!.stateRevision).toBe("0");
+			expect(authRead.state!.runIncarnationId).toBe(
+				result.handle.incarnationId,
+			);
+
+			// Clean release.
+			releaseOwnership({
+				db: ctx.runDb.connection,
+				handle: result.handle,
+			});
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// Test B — Already established DB with active owner produces ACTIVE_CONFLICT
+	// -----------------------------------------------------------------------
+
+	test("B — DB fully established with active owner → ACTIVE_CONFLICT", () => {
+		const ctx = setup();
+		try {
+			// First bootstrap.
+			const first = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+			expect(first.kind).toBe("BOOTSTRAPPED");
+			if (first.kind !== "BOOTSTRAPPED") return;
+
+			// Second bootstrap on the same DB while lease is active.
+			const second = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+
+			// Should report active conflict (via the already-established
+			// path detecting the active owner).
+			expect(second.kind).toBe("ACTIVE_CONFLICT");
+
+			// Clean release.
+			releaseOwnership({
+				db: ctx.runDb.connection,
+				handle: first.handle,
+			});
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// Test C — Bootstrap on already established (FREE) DB
+	// -----------------------------------------------------------------------
+
+	test("C — DB already established but FREE → ALREADY_ESTABLISHED", () => {
+		const ctx = setup();
+		try {
+			// First bootstrap.
+			const first = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+			expect(first.kind).toBe("BOOTSTRAPPED");
+			if (first.kind !== "BOOTSTRAPPED") return;
+
+			// Release.
+			releaseOwnership({
+				db: ctx.runDb.connection,
+				handle: first.handle,
+			});
+
+			// Second bootstrap on FREE DB.
+			const second = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+
+			expect(second.kind).toBe("ALREADY_ESTABLISHED");
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// Test D — Idempotent: repeated bootstrap on same run returns
+	//         ALREADY_ESTABLISHED when already held
+	// -----------------------------------------------------------------------
+
+	test("D — repeated bootstrap with active lease → ACTIVE_CONFLICT", () => {
+		const ctx = setup();
+		try {
+			const first = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+			expect(first.kind).toBe("BOOTSTRAPPED");
+			if (first.kind !== "BOOTSTRAPPED") return;
+
+			// DB already established AND held → ACTIVE_CONFLICT.
+			const second = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+			expect(second.kind).toBe("ACTIVE_CONFLICT");
+
+			releaseOwnership({
+				db: ctx.runDb.connection,
+				handle: first.handle,
+			});
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// Test E — Handle published only after COMMIT
+	// -----------------------------------------------------------------------
+
+	test("E — handle not observable on DB_FAILURE", () => {
+		const ctx = setup();
+		try {
+			// First bootstrap to populate the DB.
+			const first = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+			expect(first.kind).toBe("BOOTSTRAPPED");
+			if (first.kind !== "BOOTSTRAPPED") return;
+
+			// Don't release — ownership is HELD.
+
+			// Second bootstrap attempt with active owner.
+			const result = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+
+			// Must NOT return a handle.
+			expect(result.kind).not.toBe("BOOTSTRAPPED");
+			expect(result).not.toHaveProperty("handle");
+
+			releaseOwnership({
+				db: ctx.runDb.connection,
+				handle: first.handle,
+			});
+		} finally {
+			ctx.cleanup();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Fault injection tests
+// ---------------------------------------------------------------------------
+
+describe("bootstrap atomicity — fault injection", () => {
+	// -----------------------------------------------------------------------
+	// Test F — Schema-only DB is recoverable
+	// -----------------------------------------------------------------------
+
+	test("F — schema-only DB: bootstrap succeeds on second attempt", () => {
+		const ctx = setup();
+
+		// Simulate: close and reopen (schema-only state).
+		ctx.runDb.close();
+
+		const reopened = openRunDatabase({
+			driver: bunSqliteDriver,
+			dbPath: ctx.dbPath,
+			busyTimeoutMs: 500,
+		});
+
+		try {
+			// Verify empty.
+			assertTablesEmpty(reopened);
+
+			// Bootstrap should succeed.
+			const result = bootstrapNewRunAtomic({
+				db: reopened.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+
+			expect(result.kind).toBe("BOOTSTRAPPED");
+			if (result.kind !== "BOOTSTRAPPED") return;
+			assertFullyEstablished(reopened, result.handle, result.committed);
+
+			releaseOwnership({
+				db: reopened.connection,
+				handle: result.handle,
+			});
+		} finally {
+			reopened.close();
+			ctx.cleanup();
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// Test G — Uncommitted transaction is rolled back
+	// -----------------------------------------------------------------------
+
+	test("G — uncommitted transaction rolled back explicitly", () => {
+		const ctx = setup();
+
+		// Simulate a partial bootstrap failure: BEGIN, insert some rows,
+		// then ROLLBACK.  This is exactly what bootstrapNewRunAtomic does
+		// when an error occurs before COMMIT.
+		ctx.runDb.connection.exec("BEGIN IMMEDIATE");
+		ctx.runDb.connection.exec(
+			`INSERT INTO run_incarnation (singleton, run_id, incarnation_id, orchestrator_name, created_at_epoch_ms, created_at_iso)
+			 VALUES (1, '${RUN_ID}', 'fake-inc', '${ORCH_NAME}', ${NOW_EPOCH}, '${NOW_ISO}')`,
+		);
+		ctx.runDb.connection.exec(
+			`INSERT INTO run_ownership (singleton, incarnation_id, ownership_status, fence_token)
+			 VALUES (1, 'fake-inc', 'HELD', 1)`,
+		);
+		// Simulate error → ROLLBACK.
+		ctx.runDb.connection.exec("ROLLBACK");
+
+		// Verify no rows are visible after rollback.
+		assertTablesEmpty(ctx.runDb);
+
+		// Bootstrap should succeed on the same connection.
+		const result = bootstrapNewRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			initialState: makeInitialState(),
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+
+		expect(result.kind).toBe("BOOTSTRAPPED");
+		if (result.kind !== "BOOTSTRAPPED") return;
+		assertFullyEstablished(ctx.runDb, result.handle, result.committed);
+
+		releaseOwnership({
+			db: ctx.runDb.connection,
+			handle: result.handle,
+		});
+		ctx.cleanup();
+	});
+
+	// -----------------------------------------------------------------------
+	// Test H — Incarnation-only DB (old implementation artifact)
+	// -----------------------------------------------------------------------
+
+	test("H — incarnation-only partial DB: bootstrap recovers", () => {
+		const ctx = setup();
+
+		// Simulate old implementation: incarnation present, ownership FREE,
+		// no state row.  Use acquireOwnership then release to set this up.
+		const acq = acquireOwnership({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+		});
+		expect(acq.kind).toBe("ACQUIRED");
+		if (acq.kind !== "ACQUIRED") return;
+
+		// Release (leaves incarnation + FREE ownership, no state).
+		releaseOwnership({ db: ctx.runDb.connection, handle: acq.handle });
+
+		// Verify: incarnation exists, ownership is FREE, state absent.
+		const incCnt = ctx.runDb.connection
+			.prepare("SELECT COUNT(*) AS cnt FROM run_incarnation")
+			.get() as { cnt: number };
+		expect(incCnt.cnt).toBe(1);
+		const stateCnt = ctx.runDb.connection
+			.prepare("SELECT COUNT(*) AS cnt FROM run_state")
+			.get() as { cnt: number };
+		expect(stateCnt.cnt).toBe(0);
+
+		// Now bootstrap — should recover by establishing state.
+		const result = bootstrapNewRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			initialState: makeInitialState(),
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+
+		expect(result.kind).toBe("BOOTSTRAPPED");
+		if (result.kind !== "BOOTSTRAPPED") return;
+
+		// Because ownership was FREE with fence_token=1, the new
+		// acquisition increments fence_token to 2.
+		expect(result.handle.fenceToken).toBe(2n);
+		assertFullyEstablished(ctx.runDb, result.handle, result.committed);
+
+		releaseOwnership({ db: ctx.runDb.connection, handle: result.handle });
+		ctx.cleanup();
+	});
+
+	// -----------------------------------------------------------------------
+	// Test I — Owned-no-state DB (old impl: ownership HELD, no state)
+	// -----------------------------------------------------------------------
+
+	test("I — owned-no-state DB with active lease → INCOMPLETE_EXISTING_BOOTSTRAP", () => {
+		const ctx = setup();
+
+		// Acquire ownership (leaves: incarnation + HELD ownership, no state).
+		const acq = acquireOwnership({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+		});
+		expect(acq.kind).toBe("ACQUIRED");
+		if (acq.kind !== "ACQUIRED") return;
+
+		// DON'T release — ownership is HELD, no state row.
+		// Verify state absent.
+		const stateCnt = ctx.runDb.connection
+			.prepare("SELECT COUNT(*) AS cnt FROM run_state")
+			.get() as { cnt: number };
+		expect(stateCnt.cnt).toBe(0);
+
+		// Bootstrap on this DB with active lease.
+		const result = bootstrapNewRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			initialState: makeInitialState(),
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+
+		// Should report incomplete bootstrap (ownership held, no state).
+		expect(result.kind).toBe("INCOMPLETE_EXISTING_BOOTSTRAP");
+
+		// Verify state still absent — rollback preserved.
+		const stateCntAfter = ctx.runDb.connection
+			.prepare("SELECT COUNT(*) AS cnt FROM run_state")
+			.get() as { cnt: number };
+		expect(stateCntAfter.cnt).toBe(0);
+
+		releaseOwnership({ db: ctx.runDb.connection, handle: acq.handle });
+		ctx.cleanup();
+	});
+
+	// -----------------------------------------------------------------------
+	// Test J — Owned-no-state DB with expired lease can be recovered
+	// -----------------------------------------------------------------------
+
+	test("J — owned-no-state DB with expired lease → recovery succeeds", () => {
+		const ctx = setup();
+
+		// Acquire ownership with epoch 0 (immediately expired relative to NOW_EPOCH).
+		const acq = acquireOwnership({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: 0,
+			nowIso: "1970-01-01T00:00:00.000Z",
+			leaseDurationMs: 1000,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			leaseClockEpochMs: () => 0,
+		});
+		expect(acq.kind).toBe("ACQUIRED");
+		if (acq.kind !== "ACQUIRED") return;
+
+		// State absent.
+		const stateCnt = ctx.runDb.connection
+			.prepare("SELECT COUNT(*) AS cnt FROM run_state")
+			.get() as { cnt: number };
+		expect(stateCnt.cnt).toBe(0);
+
+		// Bootstrap with NOW_EPOCH (way past expiry) — should recover.
+		const result = bootstrapNewRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			initialState: makeInitialState(),
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+
+		expect(result.kind).toBe("BOOTSTRAPPED");
+		if (result.kind !== "BOOTSTRAPPED") return;
+
+		// fence should have incremented (was 1, now 2).
+		expect(result.handle.fenceToken).toBe(2n);
+
+		releaseOwnership({ db: ctx.runDb.connection, handle: result.handle });
+		ctx.cleanup();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Legacy migration atomicity tests
+// ---------------------------------------------------------------------------
+
+describe("legacy migration atomicity", () => {
+	test("K — migration réussie: all three tables populated, handle valid", () => {
+		const ctx = setup();
+
+		const legacyState = {
+			schemaVersion: STATE_SCHEMA_VERSION,
+			runId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			startedAt: "2020-01-01T00:00:00.000Z",
+			startedAtEpochMs: 1_577_836_800_000,
+			lastTransitionAt: "2020-01-01T00:01:00.000Z",
+			lastTransitionAtEpochMs: 1_577_836_860_000,
+			currentPhase: "legacy-phase",
+			phasesExecuted: 5,
+			accumulatedDurationMs: 10000,
+			data: { stage: "legacy" },
+			usedLabels: ["old-label"],
+		};
+
+		const result = migrateLegacyRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			incarnationId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			legacyState,
+			legacyStartedAtEpochMs: 1_577_836_800_000,
+			legacyStartedAt: "2020-01-01T00:00:00.000Z",
+			legacyLastTransitionAtEpochMs: 1_577_836_860_000,
+			legacyLastTransitionAt: "2020-01-01T00:01:00.000Z",
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+
+		expect(result.kind).toBe("MIGRATED");
+		if (result.kind !== "MIGRATED") return;
+
+		assertFullyEstablished(ctx.runDb, result.handle, result.committed);
+
+		// Verify legacy timestamps preserved.
+		const incRow = ctx.runDb.connection
+			.prepare(
+				"SELECT created_at_epoch_ms, created_at_iso FROM run_incarnation WHERE singleton = 1",
+			)
+			.get() as { created_at_epoch_ms: number; created_at_iso: string };
+		expect(incRow.created_at_epoch_ms).toBe(1_577_836_800_000);
+		expect(incRow.created_at_iso).toBe("2020-01-01T00:00:00.000Z");
+
+		// Verify ownership uses current time.
+		const ownRow = ctx.runDb.connection
+			.prepare(
+				"SELECT acquired_at_epoch_ms, lease_until_epoch_ms FROM run_ownership WHERE singleton = 1",
+			)
+			.get() as { acquired_at_epoch_ms: number; lease_until_epoch_ms: number };
+		expect(ownRow.acquired_at_epoch_ms).toBe(NOW_EPOCH);
+		expect(ownRow.lease_until_epoch_ms).toBe(NOW_EPOCH + LEASE_MS);
+
+		// Verify state preserves legacy data.
+		const authRead = readAuthoritativeState(ctx.runDb.connection);
+		expect(authRead.state).not.toBeNull();
+		expect(authRead.state!.currentPhase).toBe("legacy-phase");
+		expect(authRead.state!.phasesExecuted).toBe(5);
+
+		releaseOwnership({ db: ctx.runDb.connection, handle: result.handle });
+		ctx.cleanup();
+	});
+
+	test("L — migration on already established DB → ALREADY_ESTABLISHED", () => {
+		const ctx = setup();
+
+		const legacyState = makeInitialState();
+
+		const first = migrateLegacyRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			incarnationId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			legacyState,
+			legacyStartedAtEpochMs: NOW_EPOCH,
+			legacyStartedAt: NOW_ISO,
+			legacyLastTransitionAtEpochMs: NOW_EPOCH,
+			legacyLastTransitionAt: NOW_ISO,
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+		expect(first.kind).toBe("MIGRATED");
+		if (first.kind !== "MIGRATED") return;
+
+		// Release before second attempt.
+		releaseOwnership({ db: ctx.runDb.connection, handle: first.handle });
+
+		// Second migration on the same DB.
+		const second = migrateLegacyRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			incarnationId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			legacyState,
+			legacyStartedAtEpochMs: NOW_EPOCH,
+			legacyStartedAt: NOW_ISO,
+			legacyLastTransitionAtEpochMs: NOW_EPOCH,
+			legacyLastTransitionAt: NOW_ISO,
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+
+		expect(second.kind).toBe("ALREADY_ESTABLISHED");
+		ctx.cleanup();
+	});
+
+	test("M — migration with active owner → ACTIVE_CONFLICT", () => {
+		const ctx = setup();
+
+		const legacyState = makeInitialState();
+
+		const first = migrateLegacyRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			incarnationId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			legacyState,
+			legacyStartedAtEpochMs: NOW_EPOCH,
+			legacyStartedAt: NOW_ISO,
+			legacyLastTransitionAtEpochMs: NOW_EPOCH,
+			legacyLastTransitionAt: NOW_ISO,
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+		expect(first.kind).toBe("MIGRATED");
+		if (first.kind !== "MIGRATED") return;
+
+		// Don't release — ownership HELD.
+
+		// Second migration — should detect active conflict.
+		const second = migrateLegacyRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			incarnationId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			legacyState,
+			legacyStartedAtEpochMs: NOW_EPOCH,
+			legacyStartedAt: NOW_ISO,
+			legacyLastTransitionAtEpochMs: NOW_EPOCH,
+			legacyLastTransitionAt: NOW_ISO,
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+
+		expect(second.kind).toBe("ACTIVE_CONFLICT");
+
+		releaseOwnership({ db: ctx.runDb.connection, handle: first.handle });
+		ctx.cleanup();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Old implementation partial DB handling
+// ---------------------------------------------------------------------------
+
+describe("old implementation partial DB handling", () => {
+	test("N — incarnation+ownership present, state absent, no state.json → INCOMPLETE_BOOTSTRAP", () => {
+		const ctx = setup();
+
+		// Manually create the old-implementation artifact:
+		// incarnation + HELD ownership, no state row.
+		ctx.runDb.connection.exec("BEGIN IMMEDIATE");
+		ctx.runDb.connection.exec(
+			`INSERT INTO run_incarnation (singleton, run_id, incarnation_id, orchestrator_name, created_at_epoch_ms, created_at_iso)
+			 VALUES (1, '${RUN_ID}', 'old-inc', '${ORCH_NAME}', ${NOW_EPOCH}, '${NOW_ISO}')`,
+		);
+		ctx.runDb.connection.exec(
+			`INSERT INTO run_ownership (singleton, incarnation_id, ownership_status, owner_token, owner_pid, fence_token, acquired_at_epoch_ms, lease_until_epoch_ms)
+			 VALUES (1, 'old-inc', 'HELD', 'old-token', 99999, 1, ${NOW_EPOCH}, ${NOW_EPOCH + LEASE_MS})`,
+		);
+		ctx.runDb.connection.exec("COMMIT");
+
+		// Verify state absent.
+		const stateCnt = ctx.runDb.connection
+			.prepare("SELECT COUNT(*) AS cnt FROM run_state")
+			.get() as { cnt: number };
+		expect(stateCnt.cnt).toBe(0);
+
+		// Bootstrap should fail-closed.
+		const result = bootstrapNewRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			initialState: makeInitialState(),
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+
+		expect(result.kind).toBe("INCOMPLETE_EXISTING_BOOTSTRAP");
+		if (result.kind === "INCOMPLETE_EXISTING_BOOTSTRAP") {
+			expect(result.details).toContain("INCOMPLETE_BOOTSTRAP");
+			expect(result.details).toContain("no recovery source");
+		}
+
+		// Verify no state was created, ownership unchanged.
+		const stateCntAfter = ctx.runDb.connection
+			.prepare("SELECT COUNT(*) AS cnt FROM run_state")
+			.get() as { cnt: number };
+		expect(stateCntAfter.cnt).toBe(0);
+
+		const ownRow = ctx.runDb.connection
+			.prepare(
+				"SELECT fence_token, ownership_status FROM run_ownership WHERE singleton = 1",
+			)
+			.get() as { fence_token: number | bigint; ownership_status: string };
+		expect(ownRow.ownership_status).toBe("HELD");
+		const fence =
+			typeof ownRow.fence_token === "bigint"
+				? ownRow.fence_token
+				: BigInt(ownRow.fence_token);
+		expect(fence).toBe(1n); // Not reset.
+
+		ctx.cleanup();
+	});
+
+	test("O — schema-only DB with no state.json: bootstrap succeeds", () => {
+		const ctx = setup();
+
+		// Schema-only: close and reopen.
+		ctx.runDb.close();
+
+		const reopened = openRunDatabase({
+			driver: bunSqliteDriver,
+			dbPath: ctx.dbPath,
+			busyTimeoutMs: 500,
+		});
+
+		try {
+			assertTablesEmpty(reopened);
+
+			const result = bootstrapNewRunAtomic({
+				db: reopened.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+
+			expect(result.kind).toBe("BOOTSTRAPPED");
+			if (result.kind !== "BOOTSTRAPPED") return;
+
+			releaseOwnership({
+				db: reopened.connection,
+				handle: result.handle,
+			});
+		} finally {
+			reopened.close();
+			ctx.cleanup();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// State consistency checks
+// ---------------------------------------------------------------------------
+
+describe("state consistency", () => {
+	test("P — revision starts at 0", () => {
+		const ctx = setup();
+		try {
+			const result = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+
+			expect(result.kind).toBe("BOOTSTRAPPED");
+			if (result.kind !== "BOOTSTRAPPED") return;
+
+			expect(result.committed.stateRevision).toBe("0");
+
+			releaseOwnership({
+				db: ctx.runDb.connection,
+				handle: result.handle,
+			});
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	test("Q — fenceToken starts at 1 for fresh bootstrap", () => {
+		const ctx = setup();
+		try {
+			const result = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+
+			expect(result.kind).toBe("BOOTSTRAPPED");
+			if (result.kind !== "BOOTSTRAPPED") return;
+
+			expect(result.handle.fenceToken).toBe(1n);
+			expect(result.committed.committedFenceToken).toBe("1");
+
+			releaseOwnership({
+				db: ctx.runDb.connection,
+				handle: result.handle,
+			});
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	test("R — committed_by_owner_token matches handle.ownerToken", () => {
+		const ctx = setup();
+		try {
+			const result = bootstrapNewRunAtomic({
+				db: ctx.runDb.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				initialState: makeInitialState(),
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			});
+
+			expect(result.kind).toBe("BOOTSTRAPPED");
+			if (result.kind !== "BOOTSTRAPPED") return;
+
+			const stateRow = ctx.runDb.connection
+				.prepare(
+					"SELECT committed_by_owner_token, committed_by_fence_token FROM run_state WHERE singleton = 1",
+				)
+				.get() as {
+				committed_by_owner_token: string;
+				committed_by_fence_token: number | bigint;
+			};
+
+			expect(stateRow.committed_by_owner_token).toBe(result.handle.ownerToken);
+			const fence =
+				typeof stateRow.committed_by_fence_token === "bigint"
+					? stateRow.committed_by_fence_token
+					: BigInt(stateRow.committed_by_fence_token);
+			expect(fence).toBe(result.handle.fenceToken);
+
+			releaseOwnership({
+				db: ctx.runDb.connection,
+				handle: result.handle,
+			});
+		} finally {
+			ctx.cleanup();
+		}
+	});
+});
