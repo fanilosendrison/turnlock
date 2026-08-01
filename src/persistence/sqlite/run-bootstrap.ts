@@ -14,15 +14,16 @@ import {
 	productionDependencies,
 } from "./run-bootstrap-core";
 
-// Re-export the public types required by production callers.
-export {
-	type BootstrapNewRunParams,
-	type BootstrapNewRunResult,
-	type CommittedState,
-	type MigrateLegacyRunParams,
-	type MigrateLegacyRunResult,
-} from "./run-bootstrap-core";
 export type { LockHandle } from "./ownership";
+
+// Re-export the public types required by production callers.
+export type {
+	BootstrapNewRunParams,
+	BootstrapNewRunResult,
+	CommittedState,
+	MigrateLegacyRunParams,
+	MigrateLegacyRunResult,
+} from "./run-bootstrap-core";
 
 // ---------------------------------------------------------------------------
 // Public API
