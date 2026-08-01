@@ -18,7 +18,7 @@ import {
 	type CommittedState,
 	migrateLegacyRunAtomic,
 } from "../../src/persistence/sqlite/run-bootstrap";
-import { migrateLegacyRunAtomicWithDependencies } from "../../src/persistence/sqlite/run-bootstrap-internal";
+import { migrateLegacyRunAtomicCore } from "../../src/persistence/sqlite/run-bootstrap-core";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
 import { readAuthoritativeState } from "../../src/persistence/sqlite/run-state-store";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
@@ -1521,7 +1521,7 @@ describe("incarnation identity", () => {
 			blockerDb.exec("BEGIN IMMEDIATE");
 
 			const legacyState = makeInitialState({ currentPhase: "test-x" });
-			const result = migrateLegacyRunAtomicWithDependencies(
+			const result = migrateLegacyRunAtomicCore(
 				{
 					db: reopened.connection,
 					runId: RUN_ID,
