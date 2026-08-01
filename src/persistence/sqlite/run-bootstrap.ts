@@ -70,7 +70,6 @@ export type BootstrapNewRunResult =
 export interface MigrateLegacyRunParams {
 	readonly db: SqliteConnection;
 	readonly runId: string;
-	readonly incarnationId: string;
 	readonly orchestratorName: string;
 	readonly nowEpochMs: number;
 	readonly nowIso: string;
@@ -211,8 +210,9 @@ function establishRunInTransaction(
 		initialStateJson: string;
 		stateSchemaVersion: number;
 		partialRecovery: PartialRecoveryPolicy;
-		// For legacy migration: pre-created incarnation data
-		legacyIncarnationId?: string;
+		// Candidate incarnation ID — generated once by the caller before the
+		// retry loop so that SQLITE_BUSY retries preserve the same identity.
+		readonly incarnationCandidate: string;
 		legacyStartedAtEpochMs?: number;
 		legacyStartedAt?: string;
 		legacyLastTransitionAtEpochMs?: number;
@@ -234,8 +234,7 @@ function establishRunInTransaction(
 
 	// Normalize timestamps: for a new run, use the post-lock clock;
 	// for legacy migration, preserve the legacy timestamps independently.
-	const effectiveStartedAtEpochMs =
-		params.legacyStartedAtEpochMs ?? nowEpochMs;
+	const effectiveStartedAtEpochMs = params.legacyStartedAtEpochMs ?? nowEpochMs;
 	const effectiveStartedAt = params.legacyStartedAt ?? nowIso;
 	const effectiveLastTransitionAtEpochMs =
 		params.legacyLastTransitionAtEpochMs ?? nowEpochMs;
@@ -314,10 +313,13 @@ function establishRunInTransaction(
 		// Incarnation-only or incarnation+ownership(FREE) — proceed.
 	}
 
-	// 2. Ensure incarnation.
+	// 2. Ensure incarnation — use the caller-supplied candidate.
+	//    If a row already exists the candidate is discarded and the
+	//    persisted identity is returned.
 	const incarnationId = ensureIncarnationInTransaction(
 		db,
 		runId,
+		params.incarnationCandidate,
 		orchestratorName,
 		params.legacyStartedAtEpochMs ?? nowEpochMs,
 		params.legacyStartedAt ?? nowIso,
@@ -472,11 +474,15 @@ export function bootstrapNewRunAtomic(
 	} = params;
 
 	const ownerToken = generateRunId();
+	const incarnationCandidate = generateRunId();
 	const ownerPid = process.pid;
 	const initialStateJson = JSON.stringify(initialState);
 	// Timestamps in initialRecord (startedAt, lastTransitionAt, etc.) are
 	// pre-lock values.  establishRunInTransaction will normalize them to
 	// the post-lock clock for new runs, or preserve legacy timestamps.
+	//
+	// incarnationCandidate is generated once before the retry loop so
+	// that SQLITE_BUSY retries preserve the same logical identity.
 
 	const deadlineMs = performance.now() + contentionDeadlineMs;
 	const maxAttempts = 10;
@@ -509,6 +515,7 @@ export function bootstrapNewRunAtomic(
 				initialStateJson,
 				stateSchemaVersion,
 				partialRecovery: "FORBIDDEN",
+				incarnationCandidate,
 			});
 		} catch (error) {
 			rollback(db);
@@ -585,7 +592,10 @@ export function bootstrapNewRunAtomic(
 /** Migrate a legacy run (state.json, no SQLite DB) into an authoritative
  *  SQLite run atomically.
  *
- *  Preserves the legacy startedAt/lastTransitionAt timestamps.
+ *  Legacy migration preserves the logical runId and historical state
+ *  timestamps, but assigns a new Turnlock run incarnation because the
+ *  legacy protocol did not contain a distinct durable incarnation identity.
+ *
  *  Ownership is established with current wall-clock time.
  *  All three tables populated in a single BEGIN IMMEDIATE ... COMMIT. */
 export function migrateLegacyRunAtomic(
@@ -594,7 +604,6 @@ export function migrateLegacyRunAtomic(
 	const {
 		db,
 		runId,
-		incarnationId,
 		orchestratorName,
 		nowEpochMs: _nowEpochMs,
 		nowIso: _nowIso,
@@ -608,7 +617,12 @@ export function migrateLegacyRunAtomic(
 		contentionDeadlineMs,
 	} = params;
 
+	// Generate owner token and incarnation candidate once before the
+	// retry loop — a SQLITE_BUSY retry is an infrastructure retry,
+	// not a new logical migration attempt, and must preserve the same
+	// incarnation identity.
 	const ownerToken = generateRunId();
+	const incarnationCandidate = generateRunId();
 	const ownerPid = process.pid;
 
 	// Build the initial state JSON with legacy timestamps.
@@ -650,7 +664,7 @@ export function migrateLegacyRunAtomic(
 				initialStateJson,
 				stateSchemaVersion,
 				partialRecovery: "FROM_VALIDATED_LEGACY_STATE",
-				legacyIncarnationId: incarnationId,
+				incarnationCandidate,
 				legacyStartedAtEpochMs,
 				legacyStartedAt,
 				legacyLastTransitionAtEpochMs,

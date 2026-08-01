@@ -80,7 +80,6 @@ function seedLegacyStateToSqlite<S extends object>(
 		const migrateResult = migrateLegacyRunAtomic({
 			db: runDb.connection,
 			runId,
-			incarnationId: state.runId,
 			orchestratorName: state.orchestratorName,
 			nowEpochMs: clock.nowEpochMs(),
 			nowIso: clock.nowWallIso(),

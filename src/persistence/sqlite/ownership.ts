@@ -251,10 +251,16 @@ export function rollback(db: SqliteConnection): void {
 // never publish LockHandle — only the top-level transactional scope does.
 
 /** Ensure the incarnation row exists within an active transaction.
- *  Idempotent: returns the existing incarnation ID if already present. */
+ *
+ *  If no row exists, the supplied `incarnationCandidate` is inserted.
+ *  If a row already exists, its identity is validated and its
+ *  `incarnation_id` is returned — the candidate is discarded.
+ *
+ *  Idempotent; never replaces an existing incarnation identity. */
 export function ensureIncarnationInTransaction(
 	db: SqliteConnection,
 	runId: string,
+	incarnationCandidate: string,
 	orchestratorName: string,
 	nowEpochMs: number,
 	nowIso: string,
@@ -281,13 +287,12 @@ export function ensureIncarnationInTransaction(
 		return existing.incarnation_id;
 	}
 
-	const incarnationId = generateRunId();
 	db.prepare(
 		`INSERT OR IGNORE INTO run_incarnation
 		 (singleton, run_id, incarnation_id, orchestrator_name,
 		  created_at_epoch_ms, created_at_iso)
 		 VALUES (1, ?, ?, ?, ?, ?)`,
-	).run(runId, incarnationId, orchestratorName, nowEpochMs, nowIso);
+	).run(runId, incarnationCandidate, orchestratorName, nowEpochMs, nowIso);
 
 	// Re-read — the INSERT OR IGNORE may have been a no-op if another
 	// connection raced (unlikely under BEGIN IMMEDIATE but safe).
@@ -313,7 +318,7 @@ export function ensureIncarnationInTransaction(
 		return inserted.incarnation_id;
 	}
 
-	return incarnationId;
+	return incarnationCandidate;
 }
 
 /** Ensure the ownership singleton row exists (FREE, fence_token = 0)
