@@ -6,11 +6,19 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
+import { DbIntegrityError } from "../../src/persistence/sqlite/errors";
 import {
 	acquireOwnership,
+	acquireOwnershipDirectInTransaction,
+	beginImmediate,
+	commit,
+	ensureIncarnationInTransaction,
+	ensureOwnershipRowInTransaction,
 	type LockHandle,
+	rollback,
 } from "../../src/persistence/sqlite/ownership";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
+import { generateRunId } from "../../src/services/run-id";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 
 const LEASE_MS = 30 * 60 * 1000; // 30 min
@@ -323,6 +331,96 @@ describe("post-lock clock gap", () => {
 			// Lease computed from post-lock clock: 6000 + 2000 = 8000.
 			expect(b.handle.leaseUntilEpochMs).toBe(8000);
 			expect(b.handle.fenceToken).toBe(2n);
+		} finally {
+			ctx.cleanup();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Hardening: incarnation_id coherence in transactional helpers
+// ---------------------------------------------------------------------------
+
+describe("incarnation_id coherence", () => {
+	test("ensureOwnershipRowInTransaction rejects mismatched incarnation", () => {
+		const ctx = setup();
+		try {
+			const db = ctx.runDb.connection;
+
+			// Insert incarnation row.
+			beginImmediate(db);
+			ensureIncarnationInTransaction(
+				db,
+				"run-1",
+				"inc-a",
+				"orch",
+				NOW_EPOCH,
+				NOW_ISO,
+			);
+			// Insert ownership row with incarnation_id = 'inc-a'.
+			ensureOwnershipRowInTransaction(db, "inc-a");
+			commit(db);
+
+			// Now in a new transaction, try to insert OR IGNORE with a
+			// different incarnation.  The INSERT is a no-op because the
+			// row already exists, but our re-read must detect the mismatch.
+			beginImmediate(db);
+			expect(() => {
+				ensureOwnershipRowInTransaction(db, "inc-b");
+			}).toThrow(DbIntegrityError);
+			rollback(db);
+
+			// Verify the original row is untouched.
+			const row = db
+				.prepare("SELECT incarnation_id FROM run_ownership WHERE singleton = 1")
+				.get() as { incarnation_id: string };
+			expect(row.incarnation_id).toBe("inc-a");
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	test("acquireOwnershipDirectInTransaction rejects wrong incarnationId", () => {
+		const ctx = setup();
+		try {
+			const db = ctx.runDb.connection;
+
+			// Setup: incarnation + ownership row with incarnation 'inc-a'.
+			beginImmediate(db);
+			ensureIncarnationInTransaction(
+				db,
+				"run-1",
+				"inc-a",
+				"orch",
+				NOW_EPOCH,
+				NOW_ISO,
+			);
+			ensureOwnershipRowInTransaction(db, "inc-a");
+			commit(db);
+
+			// Call acquireOwnershipDirectInTransaction with a different
+			// incarnationId.  The WHERE clause must NOT match any row.
+			beginImmediate(db);
+			expect(() => {
+				acquireOwnershipDirectInTransaction(
+					db,
+					"inc-wrong",
+					generateRunId(),
+					12345,
+					NOW_EPOCH,
+					LEASE_MS,
+				);
+			}).toThrow(DbIntegrityError);
+			rollback(db);
+
+			// Verify the ownership row is untouched.
+			const row = db
+				.prepare(
+					"SELECT incarnation_id, ownership_status FROM run_ownership WHERE singleton = 1",
+				)
+				.get() as { incarnation_id: string; ownership_status: string };
+			expect(row.incarnation_id).toBe("inc-a");
+			expect(row.ownership_status).toBe("FREE");
 		} finally {
 			ctx.cleanup();
 		}
