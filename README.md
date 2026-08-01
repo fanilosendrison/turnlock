@@ -4,7 +4,7 @@
 > It lets your scripts run the mechanical workflow in code, pause only when a Claude Code, Codex, or other coding harness must do semantic work, then resume automatically.
 >
 > Write a pipeline where code handles the mechanical steps and the agent handles the rest.
-> No manual handoff, no polling, no restart from scratch — your script controls the flow, the agent only intervenes where it's needed.
+> No manual handoff, no polling, no restart from scratch — your script controls the flow, the agent only intervenes where it needs to.
 
 ---
 
@@ -200,7 +200,7 @@ AI SDKs are for chaining LLM calls. turnlock is for chaining **mechanical and ag
 
 If you don't need crash recovery or auditability, a state-machine library in a long-running process is simpler. turnlock adds snapshot persistence, a delegation protocol, and resume-by-relaunch. Use it when "the script might die mid-pipeline and must recover exactly where it was."
 
-**The through-line: lightweight.** Every alternative above brings a server, a framework, or a stack of dependencies. turnlock ships **2 production dependencies** (`zod`, `ulid`), runs as a single process that starts and exits, and requires zero infrastructure. No Docker, no database, no queue, no daemon. Clone it, read the README, write your first pipeline in 10 minutes.
+**The through-line: lightweight.** Every alternative above brings a server, a framework, or a stack of dependencies. turnlock ships **2 production dependencies** (`zod`, `ulid`), runs as a single process that starts and exits, and requires zero infrastructure. No Docker, no external database service, no queue, no daemon. It uses an embedded, same-host SQLite database inside each run directory. Clone it, read the README, write your first pipeline in 10 minutes.
 
 ---
 
@@ -208,9 +208,9 @@ If you don't need crash recovery or auditability, a state-machine library in a l
 
 **Determinism.** The orchestration logic lives in your TypeScript code, not in the agent's judgment. Given the same state, turnlock always picks the same next yield. State is deep-frozen before each phase — no accidental mutation.
 
-**Reliability.** Every stable phase yield snapshots state to disk atomically (`tmp + rename`). `--resume` continues snapshots suspended on a pending delegation or External Request. Turnlock does not currently replay a freely executing phase after a crash.
+**Reliability.** Every stable phase yield snapshots state to a SQLite-authoritative store with fenced CAS ownership. `state.json` is a projection regenerated from the authority on resume. `--resume` continues snapshots suspended on a pending delegation or External Request. Turnlock does not currently replay a freely executing phase after a crash.
 
-**Auditability.** Each run produces an authoritative `state.json` snapshot, an append-only `events.ndjson` audit trail, and JSON manifests for yielded requests — all correlated by `run_id`. Events supplement the snapshot; they do not reconstruct `state.data`.
+**Auditability.** Each run produces a SQLite-authoritative state store, a projected `state.json` snapshot, an append-only `events.ndjson` audit trail, and JSON manifests for yielded requests — all correlated by `run_id`. `state.json` is a readable projection; SQLite holds the authority.
 
 **Host-agnostic.** Delegation requests travel over stdout in a neutral protocol (`@@TURNLOCK@@ ... @@END@@`). Any host that can read them, execute the request, and relaunch the binary is a valid consumer. Claude Code is the reference integration; Codex, Cursor, and custom scripts are all valid.
 
@@ -326,6 +326,7 @@ bun run build     # emit ./dist from src/
 |----------|-------------|
 | [`docs/NX-TURNLOCK.md`](docs/NX-TURNLOCK.md) | Full architectural concept: invariants, layer model, contract, protocol |
 | [`docs/SEPARATION.md`](docs/SEPARATION.md) | Runtime / consumer architecture separation |
+| [`docs/sqlite-ownership-migration.md`](docs/sqlite-ownership-migration.md) | **Upgrade guide**: migrating from legacy `.lock` to SQLite ownership |
 | [`docs/consumers/claude-code/`](docs/consumers/claude-code/) | Claude Code integration (reference consumer) |
 | [`specs/briefs/`](specs/briefs/) | Immutable historical briefs documenting the original implementation intent; the current code is authoritative |
 
