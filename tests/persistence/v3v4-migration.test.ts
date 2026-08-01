@@ -1329,6 +1329,7 @@ return io.done({ approved: result.approved, reviewed: true });
 			// Record authoritative state before .lock is introduced.
 			const beforeRead = readAuthoritativeState(seedDb.connection);
 			expect(beforeRead.state).not.toBeNull();
+			const beforeDigest = beforeRead.digest;
 			const beforeFence = seedDb.connection
 				.prepare("SELECT fence_token FROM run_ownership WHERE singleton = 1")
 				.get() as { fence_token: number | bigint } | undefined;
@@ -1390,6 +1391,7 @@ return io.done({ approved: result.approved, reviewed: true });
 				const afterRead = readAuthoritativeState(checkDb.connection);
 				expect(afterRead.state).not.toBeNull();
 				expect(afterRead.state!.stateRevision).toBe(beforeRevision);
+				expect(afterRead.digest).toBe(beforeDigest);
 				expect(afterFence!.ownership_status).toBe("FREE");
 			} finally {
 				checkDb.close();
