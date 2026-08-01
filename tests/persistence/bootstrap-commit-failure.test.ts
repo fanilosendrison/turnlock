@@ -177,9 +177,9 @@ function assertFullyEstablished(
 	expect(ownRow?.ownership_status).toBe("HELD");
 	expect(ownRow?.owner_token).toBe(handle.ownerToken);
 	const ownFence =
-		typeof ownRow?.fence_token === "bigint"
-			? ownRow?.fence_token
-			: BigInt(ownRow?.fence_token);
+		typeof ownRow!.fence_token === "bigint"
+			? ownRow!.fence_token
+			: BigInt(ownRow!.fence_token as number);
 	expect(ownFence).toBe(handle.fenceToken);
 
 	const stateRow = runDb.connection
@@ -196,14 +196,14 @@ function assertFullyEstablished(
 	expect(stateRow).toBeDefined();
 	expect(stateRow?.committed_by_owner_token).toBe(handle.ownerToken);
 	const stateFence =
-		typeof stateRow?.committed_by_fence_token === "bigint"
-			? stateRow?.committed_by_fence_token
-			: BigInt(stateRow?.committed_by_fence_token);
+		typeof stateRow!.committed_by_fence_token === "bigint"
+			? stateRow!.committed_by_fence_token
+			: BigInt(stateRow!.committed_by_fence_token as number);
 	expect(stateFence).toBe(handle.fenceToken);
 	const rev =
-		typeof stateRow?.state_revision === "bigint"
-			? stateRow?.state_revision
-			: BigInt(stateRow?.state_revision);
+		typeof stateRow!.state_revision === "bigint"
+			? stateRow!.state_revision
+			: BigInt(stateRow!.state_revision as number);
 	expect(rev).toBe(0n);
 }
 
