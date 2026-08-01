@@ -47,6 +47,11 @@ export interface BootstrapNewRunParams {
 	readonly initialState: Record<string, unknown>;
 	readonly stateSchemaVersion: number;
 	readonly contentionDeadlineMs: number;
+	/**
+	 * Optional id generator for deterministic testing.
+	 * Defaults to `generateRunId`.
+	 */
+	readonly idGenerator?: () => string;
 }
 
 export type BootstrapNewRunResult =
@@ -83,6 +88,11 @@ export interface MigrateLegacyRunParams {
 	readonly legacyLastTransitionAt: string;
 	readonly stateSchemaVersion: number;
 	readonly contentionDeadlineMs: number;
+	/**
+	 * Optional id generator for deterministic testing.
+	 * Defaults to `generateRunId`.
+	 */
+	readonly idGenerator?: () => string;
 }
 
 export type MigrateLegacyRunResult =
@@ -473,8 +483,9 @@ export function bootstrapNewRunAtomic(
 		contentionDeadlineMs,
 	} = params;
 
-	const ownerToken = generateRunId();
-	const incarnationCandidate = generateRunId();
+	const idGen = params.idGenerator ?? generateRunId;
+	const ownerToken = idGen();
+	const incarnationCandidate = idGen();
 	const ownerPid = process.pid;
 	const initialStateJson = JSON.stringify(initialState);
 	// Timestamps in initialRecord (startedAt, lastTransitionAt, etc.) are
@@ -621,8 +632,9 @@ export function migrateLegacyRunAtomic(
 	// retry loop — a SQLITE_BUSY retry is an infrastructure retry,
 	// not a new logical migration attempt, and must preserve the same
 	// incarnation identity.
-	const ownerToken = generateRunId();
-	const incarnationCandidate = generateRunId();
+	const idGen = params.idGenerator ?? generateRunId;
+	const ownerToken = idGen();
+	const incarnationCandidate = idGen();
 	const ownerPid = process.pid;
 
 	// Build the initial state JSON with legacy timestamps.
