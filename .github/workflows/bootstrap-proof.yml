@@ -1,0 +1,34 @@
+name: bootstrap-proof
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.12"
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun typecheck
+
+      - name: Lint
+        run: bun lint
+
+      - name: Build
+        run: bun run build
+
+      - name: Full test suite
+        run: bun test
+
+      - name: TL-F-001 Bootstrap atomicity proof
+        run: bun test:tl-f-001-bootstrap-proof
