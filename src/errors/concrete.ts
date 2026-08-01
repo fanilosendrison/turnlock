@@ -61,6 +61,18 @@ export class LegacyLockMigrationBlockedError extends OrchestratorError {
 	readonly kind = "legacy_lock_migration_blocked" as const;
 }
 
+/**
+ * Raised when both SQLite ownership storage (`turnlock.sqlite3`) and a
+ * legacy file-lock (`.lock`) coexist in the same RUN_DIR.
+ *
+ * This is NOT a migration scenario — a DB already established alongside a
+ * `.lock` means the deployment or downgrade contract has been violated.
+ * Turnlock refuses fail-closed and grants no new authority.
+ */
+export class MixedOwnershipProtocolError extends OrchestratorError {
+	readonly kind = "mixed_ownership_protocol_detected" as const;
+}
+
 export interface PersistenceFailureErrorOptions
 	extends OrchestratorErrorOptions {
 	readonly operation: AuthorityOperation;

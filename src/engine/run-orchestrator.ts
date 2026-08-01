@@ -3,7 +3,6 @@ import * as path from "node:path";
 import { STATE_SCHEMA_VERSION } from "../constants";
 import {
 	InvalidConfigError,
-	LegacyLockMigrationBlockedError,
 	ProtocolError,
 	RunLockedError,
 	StateMigrationBlockedError,
@@ -37,6 +36,7 @@ import { type DispatchContext, doExit, isTestExitSignal } from "./context";
 import { runDispatchLoop } from "./dispatch-loop";
 import { emitRunLockedError, handleTopLevelError } from "./error-emitter";
 import { runHandleResume } from "./handle-resume";
+import { assertOwnershipStorageCompatibility } from "./ownership-storage-compatibility";
 import {
 	type ParsedArgv,
 	parseArgv,
@@ -325,8 +325,21 @@ async function runInitialMode<S extends object>(
 	const nowEpoch = clock.nowEpochMs();
 	const nowIso = clock.nowWallIso();
 
-	// Open SQLite database and acquire ownership transactionally.
+	// Guard: refuse to establish SQLite ownership if a legacy .lock exists.
+	// A reused runId may point to an existing RUN_DIR containing artifacts
+	// from a legacy process.  existsSync is a defensive best-effort check;
+	// the exclusive upgrade window is an operational precondition.
 	const dbPath = path.join(runDir, DB_FILENAME);
+	const dbExistsBeforeOpen = fs.existsSync(dbPath);
+	assertOwnershipStorageCompatibility({
+		runDir,
+		sqliteDatabaseExists: dbExistsBeforeOpen,
+		mode: "initial",
+		runId,
+		orchestratorName: config.name,
+	});
+
+	// Open SQLite database and acquire ownership transactionally.
 	const runDb = openRunDatabase({
 		driver: bunSqliteDriver,
 		dbPath,
@@ -543,6 +556,21 @@ async function runResumeMode<S extends object>(
 	const dbPath = path.join(runDir, DB_FILENAME);
 	const dbExists = fs.existsSync(dbPath);
 
+	// Centralized ownership-storage compatibility guard.
+	// Applied BEFORE any DB creation, ownership acquisition, fence token
+	// increment, state projection, or phase execution.
+	//
+	// existsSync(".lock") is a defensive best-effort check, NOT an atomic
+	// inter-version lock.  A legacy process starting concurrently with
+	// migration is an operational concern (see docs/sqlite-ownership-migration.md).
+	assertOwnershipStorageCompatibility({
+		runDir,
+		sqliteDatabaseExists: dbExists,
+		mode: "resume",
+		runId,
+		orchestratorName: config.name,
+	});
+
 	let runDb: ReturnType<typeof openRunDatabase>;
 	let handle: import("../persistence/sqlite/ownership").LockHandle;
 
@@ -571,18 +599,6 @@ async function runResumeMode<S extends object>(
 				runId,
 				orchestratorName: config.name,
 			});
-		}
-
-		// Guard: if a legacy .lock file exists, an old-process owner may
-		// still hold the run.  Creating a DB and acquiring SQLite ownership
-		// would allow two owners (legacy file-based + SQLite) to coexist.
-		// Fail-closed: block migration until the legacy lock is removed.
-		const legacyLockPath = path.join(runDir, ".lock");
-		if (fs.existsSync(legacyLockPath)) {
-			throw new LegacyLockMigrationBlockedError(
-				"Legacy ownership lock (.lock) exists; exclusive migration to SQLite cannot be established.",
-				{ runId, orchestratorName: config.name },
-			);
 		}
 
 		// Validate identity BEFORE creating the DB — a mismatched legacy

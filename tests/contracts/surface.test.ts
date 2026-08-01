@@ -46,6 +46,7 @@ const EXPECTED_EXPORTS = new Set([
 	"AuthorityLostError",
 	"PersistenceFailureError",
 	"StateRevisionConflictError",
+	"MixedOwnershipProtocolError",
 	"PROTOCOL_VERSION",
 	"STATE_SCHEMA_VERSION",
 ]);
@@ -243,9 +244,13 @@ describe("[GREEN-L1] " + "OrchestratorErrorKind fermé (C-GL-12..13)", () => {
 			"legacy_lock_migration_blocked",
 			() => new publicApi.LegacyLockMigrationBlockedError("x"),
 		],
+		[
+			"mixed_ownership_protocol_detected",
+			() => new publicApi.MixedOwnershipProtocolError("x"),
+		],
 	] as const;
-	test("C-GL-12 | 20 kind values", () => {
-		expect(errorCases).toHaveLength(20);
+	test("C-GL-12 | 21 kind values", () => {
+		expect(errorCases).toHaveLength(21);
 	});
 	test("C-GL-13 | each kind ↔ class mapping", () => {
 		for (const [kind, buildError] of errorCases) {

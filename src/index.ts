@@ -19,6 +19,7 @@ export {
 	InvalidConfigError,
 	LegacyLockMigrationBlockedError,
 	type MigrationBlockReason,
+	MixedOwnershipProtocolError,
 	PersistenceFailureError,
 	type PersistenceFailureErrorOptions,
 	PhaseError,

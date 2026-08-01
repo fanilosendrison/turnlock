@@ -18,7 +18,8 @@ export type OrchestratorErrorKind =
 	| "persistence_failure"
 	| "artifact_integrity"
 	| "state_migration_blocked"
-	| "legacy_lock_migration_blocked";
+	| "legacy_lock_migration_blocked"
+	| "mixed_ownership_protocol_detected";
 
 export interface OrchestratorErrorOptions {
 	readonly cause?: unknown;
