@@ -92,5 +92,7 @@ docs/formalizing-fsm-builder/
 .turnlock/
 .claude/run/
 AGENTS.md
-/docs
+!/docs
+/docs/*
+!/docs/sqlite-ownership-migration.md
 /specs
