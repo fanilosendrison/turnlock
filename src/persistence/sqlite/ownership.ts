@@ -244,6 +244,168 @@ export function rollback(db: SqliteConnection): void {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// In-transaction helpers (no BEGIN/COMMIT/ROLLBACK)
+// ---------------------------------------------------------------------------
+// These primitives must be called inside an existing transaction.  They
+// never publish LockHandle — only the top-level transactional scope does.
+
+/** Ensure the incarnation row exists within an active transaction.
+ *  Idempotent: returns the existing incarnation ID if already present. */
+export function ensureIncarnationInTransaction(
+	db: SqliteConnection,
+	runId: string,
+	orchestratorName: string,
+	nowEpochMs: number,
+	nowIso: string,
+): string {
+	const existing = db
+		.prepare(
+			"SELECT run_id, incarnation_id, orchestrator_name FROM run_incarnation WHERE singleton = 1",
+		)
+		.get() as
+		| { run_id: string; incarnation_id: string; orchestrator_name: string }
+		| undefined;
+
+	if (existing !== undefined) {
+		if (existing.run_id !== runId) {
+			throw new DbIntegrityError(
+				`run_incarnation run_id mismatch: expected ${runId}, got ${existing.run_id}`,
+			);
+		}
+		if (existing.orchestrator_name !== orchestratorName) {
+			throw new DbIntegrityError(
+				`run_incarnation orchestrator_name mismatch: expected ${orchestratorName}, got ${existing.orchestrator_name}`,
+			);
+		}
+		return existing.incarnation_id;
+	}
+
+	const incarnationId = generateRunId();
+	db.prepare(
+		`INSERT OR IGNORE INTO run_incarnation
+		 (singleton, run_id, incarnation_id, orchestrator_name,
+		  created_at_epoch_ms, created_at_iso)
+		 VALUES (1, ?, ?, ?, ?, ?)`,
+	).run(runId, incarnationId, orchestratorName, nowEpochMs, nowIso);
+
+	// Re-read — the INSERT OR IGNORE may have been a no-op if another
+	// connection raced (unlikely under BEGIN IMMEDIATE but safe).
+	const inserted = db
+		.prepare(
+			"SELECT run_id, incarnation_id, orchestrator_name FROM run_incarnation WHERE singleton = 1",
+		)
+		.get() as
+		| { run_id: string; incarnation_id: string; orchestrator_name: string }
+		| undefined;
+
+	if (inserted !== undefined) {
+		if (inserted.run_id !== runId) {
+			throw new DbIntegrityError(
+				`run_incarnation run_id mismatch after race: expected ${runId}, got ${inserted.run_id}`,
+			);
+		}
+		if (inserted.orchestrator_name !== orchestratorName) {
+			throw new DbIntegrityError(
+				`run_incarnation orchestrator_name mismatch after race: expected ${orchestratorName}, got ${inserted.orchestrator_name}`,
+			);
+		}
+		return inserted.incarnation_id;
+	}
+
+	return incarnationId;
+}
+
+/** Ensure the ownership singleton row exists (FREE, fence_token = 0)
+ *  within an active transaction.  Idempotent. */
+export function ensureOwnershipRowInTransaction(
+	db: SqliteConnection,
+	incarnationId: string,
+): void {
+	db.prepare(
+		`INSERT OR IGNORE INTO run_ownership
+		 (singleton, incarnation_id, ownership_status,
+		  fence_token)
+		 VALUES (1, ?, 'FREE', 0)`,
+	).run(incarnationId);
+}
+
+/** Result of acquiring ownership directly within a transaction. */
+export interface AcquireOwnershipInTransactionResult {
+	readonly fenceToken: bigint;
+	readonly leaseUntilEpochMs: number;
+}
+
+/** Directly set ownership to HELD within an active transaction.
+ *
+ *  No CAS retry loop — the caller holds BEGIN IMMEDIATE and is the only
+ *  writer.  The fence token is read from the current row and incremented.
+ *
+ *  Returns null if the ownership is actively held by another owner
+ *  (lease not yet expired).  The caller must ROLLBACK and report
+ *  ACTIVE_CONFLICT. */
+export function acquireOwnershipDirectInTransaction(
+	db: SqliteConnection,
+	_incarnationId: string,
+	ownerToken: string,
+	ownerPid: number,
+	nowEpochMs: number,
+	leaseDurationMs: number,
+): AcquireOwnershipInTransactionResult | null {
+	// Read current ownership state.
+	const row = db
+		.prepare(
+			"SELECT ownership_status, fence_token, lease_until_epoch_ms FROM run_ownership WHERE singleton = 1",
+		)
+		.get() as
+		| {
+				ownership_status: string;
+				fence_token: number | bigint;
+				lease_until_epoch_ms: number | null;
+		  }
+		| undefined;
+
+	if (row === undefined) {
+		throw new DbIntegrityError("ownership row missing in transaction");
+	}
+
+	// Active owner check.
+	if (
+		row.ownership_status === "HELD" &&
+		row.lease_until_epoch_ms !== null &&
+		nowEpochMs < row.lease_until_epoch_ms
+	) {
+		return null; // ACTIVE_CONFLICT
+	}
+
+	const newFence = bigintFromRow(row.fence_token) + 1n;
+	const leaseUntil = nowEpochMs + leaseDurationMs;
+
+	db.prepare(
+		`UPDATE run_ownership
+		 SET ownership_status = 'HELD',
+		     owner_token = ?,
+		     owner_pid = ?,
+		     fence_token = ?,
+		     acquired_at_epoch_ms = ?,
+		     lease_until_epoch_ms = ?
+		 WHERE singleton = 1`,
+	).run(ownerToken, ownerPid, newFence, nowEpochMs, leaseUntil);
+
+	return { fenceToken: newFence, leaseUntilEpochMs: leaseUntil };
+}
+
+/** Read the current incarnation_id from the ownership row (within a
+ *  transaction or outside).  Returns null if no ownership row exists. */
+export function readOwnershipIncarnationId(
+	db: SqliteConnection,
+): string | null {
+	const row = db
+		.prepare("SELECT incarnation_id FROM run_ownership WHERE singleton = 1")
+		.get() as { incarnation_id: string } | undefined;
+	return row?.incarnation_id ?? null;
+}
+
 function isBusy(error: unknown): boolean {
 	const msg = String(error);
 	return msg.includes("SQLITE_BUSY") || msg.includes("database is locked");
