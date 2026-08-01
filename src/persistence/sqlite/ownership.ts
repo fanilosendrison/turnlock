@@ -322,7 +322,10 @@ export function ensureIncarnationInTransaction(
 }
 
 /** Ensure the ownership singleton row exists (FREE, fence_token = 0)
- *  within an active transaction.  Idempotent. */
+ *  within an active transaction.  Idempotent.
+ *
+ *  If a row already exists, validates that it references the expected
+ *  incarnation.  Throws DbIntegrityError on mismatch. */
 export function ensureOwnershipRowInTransaction(
 	db: SqliteConnection,
 	incarnationId: string,
@@ -333,6 +336,18 @@ export function ensureOwnershipRowInTransaction(
 		  fence_token)
 		 VALUES (1, ?, 'FREE', 0)`,
 	).run(incarnationId);
+
+	// Re-read to validate — a pre-existing row with a different
+	// incarnation_id must be detected and rejected.
+	const existing = db
+		.prepare("SELECT incarnation_id FROM run_ownership WHERE singleton = 1")
+		.get() as { incarnation_id: string } | undefined;
+
+	if (existing !== undefined && existing.incarnation_id !== incarnationId) {
+		throw new DbIntegrityError(
+			`run_ownership incarnation_id mismatch: expected ${incarnationId}, got ${existing.incarnation_id}`,
+		);
+	}
 }
 
 /** Result of acquiring ownership directly within a transaction. */
@@ -351,7 +366,7 @@ export interface AcquireOwnershipInTransactionResult {
  *  ACTIVE_CONFLICT. */
 export function acquireOwnershipDirectInTransaction(
 	db: SqliteConnection,
-	_incarnationId: string,
+	incarnationId: string,
 	ownerToken: string,
 	ownerPid: number,
 	nowEpochMs: number,
@@ -360,9 +375,9 @@ export function acquireOwnershipDirectInTransaction(
 	// Read current ownership state.
 	const row = db
 		.prepare(
-			"SELECT ownership_status, fence_token, lease_until_epoch_ms FROM run_ownership WHERE singleton = 1",
+			"SELECT ownership_status, fence_token, lease_until_epoch_ms FROM run_ownership WHERE singleton = 1 AND incarnation_id = ?",
 		)
-		.get() as
+		.get(incarnationId) as
 		| {
 				ownership_status: string;
 				fence_token: number | bigint;
@@ -394,8 +409,9 @@ export function acquireOwnershipDirectInTransaction(
 		     fence_token = ?,
 		     acquired_at_epoch_ms = ?,
 		     lease_until_epoch_ms = ?
-		 WHERE singleton = 1`,
-	).run(ownerToken, ownerPid, newFence, nowEpochMs, leaseUntil);
+		 WHERE singleton = 1
+		   AND incarnation_id = ?`,
+	).run(ownerToken, ownerPid, newFence, nowEpochMs, leaseUntil, incarnationId);
 
 	return { fenceToken: newFence, leaseUntilEpochMs: leaseUntil };
 }
