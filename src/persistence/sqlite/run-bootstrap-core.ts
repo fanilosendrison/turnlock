@@ -6,6 +6,10 @@
 // and tests inject their own identity generator through RunBootstrapDependencies.
 //
 // The production value is `productionDependencies`, which wraps `generateRunId`.
+//
+// Fault injection is supported through BootstrapInternalDependencies for
+// testing atomicity guarantees.  The public API (run-bootstrap.ts) never
+// exposes these hooks.
 
 import { createHash } from "node:crypto";
 import { generateRunId } from "../../services/run-id";
@@ -22,6 +26,36 @@ import {
 import type { SqliteConnection } from "./sqlite-driver";
 
 // ---------------------------------------------------------------------------
+// Fault injection types (internal — never exposed on the public API)
+// ---------------------------------------------------------------------------
+
+/** Closed set of fault points for bootstrap atomicity testing.
+ *
+ *  The first five points are pre-commit — an injected failure at any of
+ *  them must result in a complete rollback with no observable rows.
+ *
+ *  AFTER_COMMIT_BEFORE_HANDLE is post-commit and exists for structural
+ *  verification; an injected failure here cannot be rolled back. */
+export type BootstrapFaultPoint =
+	| "AFTER_BEGIN"
+	| "AFTER_INCARNATION_WRITE"
+	| "AFTER_OWNERSHIP_WRITE"
+	| "AFTER_STATE_WRITE"
+	| "BEFORE_COMMIT"
+	| "AFTER_COMMIT_BEFORE_HANDLE";
+
+/** Sentinel error for fault injection tests.
+ *
+ *  Tests throw this from `onFaultPoint` when a target frontier is reached.
+ *  The error carries the fault point for assertion purposes. */
+export class InjectedBootstrapFailure extends Error {
+	constructor(readonly point: BootstrapFaultPoint) {
+		super(`Injected bootstrap failure at ${point}`);
+		this.name = "InjectedBootstrapFailure";
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Dependencies
 // ---------------------------------------------------------------------------
 
@@ -34,8 +68,18 @@ export interface RunBootstrapDependencies {
 	readonly generateId: () => string;
 }
 
+/** Internal dependencies — extends RunBootstrapDependencies with fault
+ *  injection hooks reserved for testing.
+ *
+ *  NEVER exposed on the public API.  Production code always passes
+ *  `productionDependencies` (which has no `onFaultPoint`). */
+export interface BootstrapInternalDependencies
+	extends RunBootstrapDependencies {
+	readonly onFaultPoint?: (point: BootstrapFaultPoint) => void;
+}
+
 /** Production dependencies — always uses `generateRunId`. */
-export const productionDependencies: RunBootstrapDependencies = {
+export const productionDependencies: BootstrapInternalDependencies = {
 	generateId: generateRunId,
 };
 
@@ -239,6 +283,8 @@ export function establishRunInTransaction(
 		legacyStartedAt?: string;
 		legacyLastTransitionAtEpochMs?: number;
 		legacyLastTransitionAt?: string;
+		/** Fault injection hook — internal, never exposed on public API. */
+		readonly onFaultPoint?: (point: BootstrapFaultPoint) => void;
 	},
 ): EstablishResult | null {
 	const {
@@ -346,6 +392,7 @@ export function establishRunInTransaction(
 		params.legacyStartedAtEpochMs ?? nowEpochMs,
 		params.legacyStartedAt ?? nowIso,
 	);
+	params.onFaultPoint?.("AFTER_INCARNATION_WRITE");
 
 	// 3. Ensure ownership row.
 	ensureOwnershipRowInTransaction(db, incarnationId);
@@ -365,6 +412,7 @@ export function establishRunInTransaction(
 			"ACTIVE_CONFLICT: ownership held by another process",
 		);
 	}
+	params.onFaultPoint?.("AFTER_OWNERSHIP_WRITE");
 
 	// 5. Insert initial state.
 	const digest = computeDigest(initialStateJson);
@@ -441,6 +489,7 @@ export function establishRunInTransaction(
 			"Failed to insert initial state row — unknown reason",
 		);
 	}
+	params.onFaultPoint?.("AFTER_STATE_WRITE");
 
 	// 6. Verify coherence.
 	const finalSnapshot = readDbSnapshot(db);
@@ -487,10 +536,13 @@ export function establishRunInTransaction(
  *  No partial state is observable, no LockHandle is published.
  *
  *  The `deps.generateId()` parameter permits deterministic testing of
- *  identity stability across SQLITE_BUSY retries. */
+ *  identity stability across SQLITE_BUSY retries.
+ *
+ *  The `deps.onFaultPoint()` hook is reserved for internal fault injection
+ *  tests and is NEVER exposed on the public API. */
 export function bootstrapNewRunAtomicCore(
 	params: BootstrapNewRunParams,
-	deps: RunBootstrapDependencies,
+	deps: BootstrapInternalDependencies,
 ): BootstrapNewRunResult {
 	const {
 		db,
@@ -521,11 +573,18 @@ export function bootstrapNewRunAtomicCore(
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
 		if (performance.now() > deadlineMs) break;
 
+		let transactionStarted = false;
+		let committed = false;
+
 		try {
 			beginImmediate(db);
+			transactionStarted = true;
+			deps.onFaultPoint?.("AFTER_BEGIN");
 		} catch (error) {
+			if (transactionStarted) {
+				rollback(db);
+			}
 			if (isBusy(error)) continue;
-			rollback(db);
 			return { kind: "DB_FAILURE", cause: error };
 		}
 
@@ -547,9 +606,12 @@ export function bootstrapNewRunAtomicCore(
 				stateSchemaVersion,
 				partialRecovery: "FORBIDDEN",
 				incarnationCandidate,
+				...(deps.onFaultPoint ? { onFaultPoint: deps.onFaultPoint } : {}),
 			});
 		} catch (error) {
-			rollback(db);
+			if (transactionStarted && !committed) {
+				rollback(db);
+			}
 			if (error instanceof DbIntegrityError) {
 				const msg = error.message;
 				if (msg.startsWith("ACTIVE_CONFLICT")) {
@@ -576,18 +638,31 @@ export function bootstrapNewRunAtomicCore(
 		}
 
 		if (establishResult === null) {
-			rollback(db);
+			if (transactionStarted && !committed) {
+				rollback(db);
+			}
 			return { kind: "ALREADY_ESTABLISHED" };
 		}
 
-		// COMMIT.
+		// Pre-commit fault point + COMMIT — both wrapped so injected
+		// failures at BEFORE_COMMIT trigger rollback.
 		try {
+			deps.onFaultPoint?.("BEFORE_COMMIT");
 			commit(db);
+			committed = true;
 		} catch (error) {
-			rollback(db);
+			if (transactionStarted && !committed) {
+				rollback(db);
+			}
 			if (isBusy(error)) continue;
 			return { kind: "DB_FAILURE", cause: error };
 		}
+
+		// Post-commit fault point — for structural verification only.
+		// An injected failure here CANNOT be rolled back (COMMIT already
+		// succeeded).  Crash-recovery tests in later lots will prove
+		// correct handle reconstruction after a post-commit crash.
+		deps.onFaultPoint?.("AFTER_COMMIT_BEFORE_HANDLE");
 
 		// Only after COMMIT: build LockHandle and CommittedState.
 		const handle: LockHandle = {
@@ -597,7 +672,7 @@ export function bootstrapNewRunAtomicCore(
 			leaseUntilEpochMs: establishResult.leaseUntilEpochMs,
 		};
 
-		const committed: CommittedState = {
+		const committedState: CommittedState = {
 			state: {
 				...establishResult.normalizedState,
 				runIncarnationId: establishResult.incarnationId,
@@ -610,7 +685,7 @@ export function bootstrapNewRunAtomicCore(
 			incarnationId: establishResult.incarnationId,
 		};
 
-		return { kind: "BOOTSTRAPPED", handle, committed };
+		return { kind: "BOOTSTRAPPED", handle, committed: committedState };
 	}
 
 	return { kind: "DB_CONTENTION_TIMEOUT" };
@@ -636,10 +711,13 @@ export function bootstrapNewRunAtomicCore(
  *  All three tables populated in a single BEGIN IMMEDIATE ... COMMIT.
  *
  *  The `deps.generateId()` parameter permits deterministic testing of
- *  identity stability across SQLITE_BUSY retries. */
+ *  identity stability across SQLITE_BUSY retries.
+ *
+ *  The `deps.onFaultPoint()` hook is reserved for internal fault injection
+ *  tests and is NEVER exposed on the public API. */
 export function migrateLegacyRunAtomicCore(
 	params: MigrateLegacyRunParams,
-	deps: RunBootstrapDependencies,
+	deps: BootstrapInternalDependencies,
 ): MigrateLegacyRunResult {
 	const {
 		db,
@@ -679,11 +757,18 @@ export function migrateLegacyRunAtomicCore(
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
 		if (performance.now() > deadlineMs) break;
 
+		let transactionStarted = false;
+		let committed = false;
+
 		try {
 			beginImmediate(db);
+			transactionStarted = true;
+			deps.onFaultPoint?.("AFTER_BEGIN");
 		} catch (error) {
+			if (transactionStarted) {
+				rollback(db);
+			}
 			if (isBusy(error)) continue;
-			rollback(db);
 			return { kind: "DB_FAILURE", cause: error };
 		}
 
@@ -709,9 +794,12 @@ export function migrateLegacyRunAtomicCore(
 				legacyStartedAt,
 				legacyLastTransitionAtEpochMs,
 				legacyLastTransitionAt,
+				...(deps.onFaultPoint ? { onFaultPoint: deps.onFaultPoint } : {}),
 			});
 		} catch (error) {
-			rollback(db);
+			if (transactionStarted && !committed) {
+				rollback(db);
+			}
 			if (error instanceof DbIntegrityError) {
 				const msg = error.message;
 				if (msg.startsWith("ACTIVE_CONFLICT")) {
@@ -728,18 +816,31 @@ export function migrateLegacyRunAtomicCore(
 		}
 
 		if (establishResult === null) {
-			rollback(db);
+			if (transactionStarted && !committed) {
+				rollback(db);
+			}
 			return { kind: "ALREADY_ESTABLISHED" };
 		}
 
-		// COMMIT.
+		// Pre-commit fault point + COMMIT — both wrapped so injected
+		// failures at BEFORE_COMMIT trigger rollback.
 		try {
+			deps.onFaultPoint?.("BEFORE_COMMIT");
 			commit(db);
+			committed = true;
 		} catch (error) {
-			rollback(db);
+			if (transactionStarted && !committed) {
+				rollback(db);
+			}
 			if (isBusy(error)) continue;
 			return { kind: "DB_FAILURE", cause: error };
 		}
+
+		// Post-commit fault point — for structural verification only.
+		// An injected failure here CANNOT be rolled back (COMMIT already
+		// succeeded).  Crash-recovery tests in later lots will prove
+		// correct handle reconstruction after a post-commit crash.
+		deps.onFaultPoint?.("AFTER_COMMIT_BEFORE_HANDLE");
 
 		// Only after COMMIT: build LockHandle and CommittedState.
 		const handle: LockHandle = {
@@ -749,7 +850,7 @@ export function migrateLegacyRunAtomicCore(
 			leaseUntilEpochMs: establishResult.leaseUntilEpochMs,
 		};
 
-		const committed: CommittedState = {
+		const committedState: CommittedState = {
 			state: {
 				...establishResult.normalizedState,
 				runIncarnationId: establishResult.incarnationId,
@@ -762,7 +863,7 @@ export function migrateLegacyRunAtomicCore(
 			incarnationId: establishResult.incarnationId,
 		};
 
-		return { kind: "MIGRATED", handle, committed };
+		return { kind: "MIGRATED", handle, committed: committedState };
 	}
 
 	return { kind: "DB_CONTENTION_TIMEOUT" };
