@@ -1464,52 +1464,119 @@ describe("incarnation identity", () => {
 		ctx.cleanup();
 	});
 
-	// -----------------------------------------------------------------------
-	// Test X — candidate is stable across retries (deterministic idGenerator)
-	// -----------------------------------------------------------------------
 
-	test("X — incarnation candidate stable across retries", () => {
+	// -----------------------------------------------------------------------
+	// Test X — candidate is stable across a real SQLITE_BUSY retry
+	// -----------------------------------------------------------------------
+	//
+	// A second connection holds a write transaction.  The first
+	// BEGIN IMMEDIATE fails with SQLITE_BUSY.  We intercept db.exec
+	// to release the blocker on the *second* call to BEGIN IMMEDIATE,
+	// so the retry loop inside migrateLegacyRunAtomic succeeds on
+	// attempt 2.  A deterministic idGenerator proves exactly 2 calls
+	// (ownerToken + incarnationCandidate) regardless of retries.
+
+	test("X — incarnation candidate stable across real SQLITE_BUSY retry", () => {
 		const ctx = setup();
 
-		// Use a deterministic counter-based generator to prove that
-		// only ONE candidate is generated per migrateLegacyRunAtomic call,
-		// even if the internal loop retries (not simulated here — the
-		// proof is structural: the generateRunId() call site is before
-		// the retry loop, verified by code review and by observing that
-		// a fresh migration always produces a single, stable incarnation).
+		let counter = 0;
+		const idGenerator = (): string => {
+			counter++;
+			return `test-inc-${String(counter).padStart(4, "0")}`;
+		};
 
-		const legacyState = makeInitialState({ currentPhase: "test-x" });
-		const result = migrateLegacyRunAtomic({
-			db: ctx.runDb.connection,
-			runId: RUN_ID,
-			orchestratorName: ORCH_NAME,
-			nowEpochMs: NOW_EPOCH,
-			nowIso: NOW_ISO,
-			leaseDurationMs: LEASE_MS,
-			leaseClockEpochMs: () => NOW_EPOCH,
-			legacyState,
-			legacyStartedAtEpochMs: NOW_EPOCH,
-			legacyStartedAt: NOW_ISO,
-			legacyLastTransitionAtEpochMs: NOW_EPOCH,
-			legacyLastTransitionAt: NOW_ISO,
-			stateSchemaVersion: STATE_SCHEMA_VERSION,
-			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		// Open a second connection to the same DB file to hold a
+		// write transaction, forcing SQLITE_BUSY on the first
+		// BEGIN IMMEDIATE of the main connection.
+		const blockerDb = bunSqliteDriver.open(ctx.dbPath);
+
+		// Close and reopen the main connection with busy_timeout=0
+		// so BEGIN IMMEDIATE fails INSTANTLY when the blocker holds
+		// the write lock.
+		ctx.runDb.close();
+		const reopened = openRunDatabase({
+			driver: bunSqliteDriver,
+			dbPath: ctx.dbPath,
+			busyTimeoutMs: 0,
 		});
 
-		expect(result.kind).toBe("MIGRATED");
-		if (result.kind !== "MIGRATED") return;
+		// Intercept db.exec: on the second BEGIN IMMEDIATE call,
+		// release the blocker first so the retry succeeds.
+		let beginAttempts = 0;
+		const originalExec = reopened.connection.exec.bind(reopened.connection);
+		reopened.connection.exec = (sql: string) => {
+			if (sql === "BEGIN IMMEDIATE") {
+				beginAttempts++;
+				if (beginAttempts >= 2) {
+					// Release the blocker before the retry attempt.
+					blockerDb.exec("ROLLBACK");
+				}
+			}
+			return originalExec(sql);
+		};
 
-		// The incarnation in the handle must equal the incarnation in the DB
-		// — a single stable identity was generated and persisted.
-		const incRow = ctx.runDb.connection
-			.prepare("SELECT incarnation_id FROM run_incarnation WHERE singleton = 1")
-			.get() as { incarnation_id: string };
-		expect(result.handle.incarnationId).toBe(incRow.incarnation_id);
+		try {
+			// Hold a write transaction on the blocker connection.
+			blockerDb.exec("BEGIN IMMEDIATE");
 
-		// Also verify the incarnation is not the runId.
-		expect(result.handle.incarnationId).not.toBe(RUN_ID);
+			const legacyState = makeInitialState({ currentPhase: "test-x" });
+			const result = migrateLegacyRunAtomic({
+				db: reopened.connection,
+				runId: RUN_ID,
+				orchestratorName: ORCH_NAME,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+				legacyState,
+				legacyStartedAtEpochMs: NOW_EPOCH,
+				legacyStartedAt: NOW_ISO,
+				legacyLastTransitionAtEpochMs: NOW_EPOCH,
+				legacyLastTransitionAt: NOW_ISO,
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+				idGenerator,
+			});
 
-		releaseOwnership({ db: ctx.runDb.connection, handle: result.handle });
-		ctx.cleanup();
+			// Must have succeeded after the retry.
+			expect(result.kind).toBe("MIGRATED");
+			if (result.kind !== "MIGRATED") {
+				reopened.close();
+				blockerDb.close();
+				ctx.cleanup();
+				return;
+			}
+
+			// First BEGIN IMMEDIATE failed with SQLITE_BUSY.
+			expect(beginAttempts).toBeGreaterThanOrEqual(2);
+
+			// Proof: the generator was called exactly twice — once for
+			// ownerToken, once for incarnationCandidate.  If it were
+			// called per retry, counter would be ≥ 3.
+			expect(counter).toBe(2);
+
+			// The incarnation in the handle must equal the incarnation
+			// in the DB.
+			const incRow = reopened.connection
+				.prepare(
+					"SELECT incarnation_id FROM run_incarnation WHERE singleton = 1",
+				)
+				.get() as { incarnation_id: string };
+			expect(result.handle.incarnationId).toBe(incRow.incarnation_id);
+
+			// The incarnation is the deterministic candidate, not runId.
+			expect(result.handle.incarnationId).toBe("test-inc-0002");
+			expect(result.handle.incarnationId).not.toBe(RUN_ID);
+
+			releaseOwnership({
+				db: reopened.connection,
+				handle: result.handle,
+			});
+		} finally {
+			try { blockerDb.exec("ROLLBACK"); } catch { /* already released */ }
+			reopened.close();
+			blockerDb.close();
+			ctx.cleanup();
+		}
 	});
 });
