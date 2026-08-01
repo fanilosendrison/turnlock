@@ -185,6 +185,19 @@ interface EstablishResult {
 	readonly normalizedState: Record<string, unknown>;
 }
 
+/** Recovery policy for partial DB states.
+ *
+ *  - FORBIDDEN: any existing row in incarnation, ownership, or state tables
+ *    (even an incomplete set) is rejected as INCOMPLETE_EXISTING_BOOTSTRAP.
+ *    Only a completely empty (schema-only) DB is accepted.  Used by
+ *    bootstrapNewRunAtomic for new runs.
+ *
+ *  - FROM_VALIDATED_LEGACY_STATE: recovery is allowed when a validated
+ *    state.json exists and can serve as the authoritative state source.
+ *    The ownership row may be FREE or expired; the fence token is
+ *    incremented.  Used by migrateLegacyRunAtomic. */
+export type PartialRecoveryPolicy = "FORBIDDEN" | "FROM_VALIDATED_LEGACY_STATE";
+
 function establishRunInTransaction(
 	db: SqliteConnection,
 	params: {
@@ -197,10 +210,13 @@ function establishRunInTransaction(
 		ownerPid: number;
 		initialStateJson: string;
 		stateSchemaVersion: number;
+		partialRecovery: PartialRecoveryPolicy;
 		// For legacy migration: pre-created incarnation data
 		legacyIncarnationId?: string;
 		legacyStartedAtEpochMs?: number;
 		legacyStartedAt?: string;
+		legacyLastTransitionAtEpochMs?: number;
+		legacyLastTransitionAt?: string;
 	},
 ): EstablishResult | null {
 	const {
@@ -213,20 +229,26 @@ function establishRunInTransaction(
 		ownerPid,
 		initialStateJson: rawInitialStateJson,
 		stateSchemaVersion,
+		partialRecovery,
 	} = params;
 
 	// Normalize timestamps: for a new run, use the post-lock clock;
-	// for legacy migration, preserve the legacy timestamps.
-	const effectiveNowEpochMs = params.legacyStartedAtEpochMs ?? nowEpochMs;
-	const effectiveNowIso = params.legacyStartedAt ?? nowIso;
+	// for legacy migration, preserve the legacy timestamps independently.
+	const effectiveStartedAtEpochMs =
+		params.legacyStartedAtEpochMs ?? nowEpochMs;
+	const effectiveStartedAt = params.legacyStartedAt ?? nowIso;
+	const effectiveLastTransitionAtEpochMs =
+		params.legacyLastTransitionAtEpochMs ?? nowEpochMs;
+	const effectiveLastTransitionAt = params.legacyLastTransitionAt ?? nowIso;
+
 	const initialStateObj = JSON.parse(rawInitialStateJson) as Record<
 		string,
 		unknown
 	>;
-	initialStateObj.startedAt = effectiveNowIso;
-	initialStateObj.startedAtEpochMs = effectiveNowEpochMs;
-	initialStateObj.lastTransitionAt = effectiveNowIso;
-	initialStateObj.lastTransitionAtEpochMs = effectiveNowEpochMs;
+	initialStateObj.startedAt = effectiveStartedAt;
+	initialStateObj.startedAtEpochMs = effectiveStartedAtEpochMs;
+	initialStateObj.lastTransitionAt = effectiveLastTransitionAt;
+	initialStateObj.lastTransitionAtEpochMs = effectiveLastTransitionAtEpochMs;
 	const initialStateJson = JSON.stringify(initialStateObj);
 
 	// 1. Check current state.
@@ -249,28 +271,47 @@ function establishRunInTransaction(
 		return null; // ALREADY_ESTABLISHED
 	}
 
-	// Partial state detection.
-	if (snapshot.hasOwnership && !snapshot.hasState) {
-		// Ownership row exists but no state — incomplete bootstrap.
-		// Check if ownership is actively held.
-		if (
-			snapshot.ownershipStatus === "HELD" &&
-			snapshot.leaseUntilEpochMs !== null &&
-			nowEpochMs < snapshot.leaseUntilEpochMs
-		) {
-			// Active owner — cannot recover without the lost state.
+	// Partial state detection — policy-dependent.
+	const hasAnyRow =
+		snapshot.hasIncarnation || snapshot.hasOwnership || snapshot.hasState;
+	const isComplete =
+		snapshot.hasIncarnation && snapshot.hasOwnership && snapshot.hasState;
+
+	if (hasAnyRow && !isComplete) {
+		// Incomplete bootstrap: at least one table has rows but not all three.
+		if (partialRecovery === "FORBIDDEN") {
+			// bootstrapNewRunAtomic: never recover a partial DB with
+			// config.initialState.  The original state is lost and
+			// the current config may differ from the interrupted attempt.
 			throw new DbIntegrityError(
-				"INCOMPLETE_BOOTSTRAP: ownership held but no state row — no recovery source",
+				"INCOMPLETE_BOOTSTRAP: partial DB detected — recovery forbidden without validated legacy state",
 			);
 		}
-		// Ownership is FREE or expired — we can recover by establishing
-		// state in this same transaction.
-	}
 
-	if (snapshot.hasState && !snapshot.hasOwnership) {
-		throw new DbIntegrityError(
-			"INCOMPLETE_BOOTSTRAP: state exists but no ownership row",
-		);
+		// FROM_VALIDATED_LEGACY_STATE: recovery allowed only with a
+		// validated state.json as the authoritative source.
+		//
+		// Check specific partial states:
+		if (snapshot.hasOwnership && !snapshot.hasState) {
+			if (
+				snapshot.ownershipStatus === "HELD" &&
+				snapshot.leaseUntilEpochMs !== null &&
+				nowEpochMs < snapshot.leaseUntilEpochMs
+			) {
+				throw new DbIntegrityError(
+					"INCOMPLETE_BOOTSTRAP: ownership held but no state row — no recovery source",
+				);
+			}
+			// Ownership is FREE or expired — proceed to recovery.
+		}
+
+		if (snapshot.hasState && !snapshot.hasOwnership) {
+			throw new DbIntegrityError(
+				"INCOMPLETE_BOOTSTRAP: state exists but no ownership row",
+			);
+		}
+
+		// Incarnation-only or incarnation+ownership(FREE) — proceed.
 	}
 
 	// 2. Ensure incarnation.
@@ -467,6 +508,7 @@ export function bootstrapNewRunAtomic(
 				ownerPid,
 				initialStateJson,
 				stateSchemaVersion,
+				partialRecovery: "FORBIDDEN",
 			});
 		} catch (error) {
 			rollback(db);
@@ -607,9 +649,12 @@ export function migrateLegacyRunAtomic(
 				ownerPid,
 				initialStateJson,
 				stateSchemaVersion,
+				partialRecovery: "FROM_VALIDATED_LEGACY_STATE",
 				legacyIncarnationId: incarnationId,
 				legacyStartedAtEpochMs,
 				legacyStartedAt,
+				legacyLastTransitionAtEpochMs,
+				legacyLastTransitionAt,
 			});
 		} catch (error) {
 			rollback(db);

@@ -509,10 +509,10 @@ describe("bootstrap atomicity — fault injection", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// Test H — Incarnation-only DB (old implementation artifact)
+	// Test H — Incarnation-only DB: bootstrap FORBIDDEN, migration recovers
 	// -----------------------------------------------------------------------
 
-	test("H — incarnation-only partial DB: bootstrap recovers", () => {
+	test("H — incarnation-only partial DB: bootstrapNewRunAtomic rejects", () => {
 		const ctx = setup();
 
 		// Simulate old implementation: incarnation present, ownership FREE,
@@ -543,7 +543,8 @@ describe("bootstrap atomicity — fault injection", () => {
 			.get() as { cnt: number };
 		expect(stateCnt.cnt).toBe(0);
 
-		// Now bootstrap — should recover by establishing state.
+		// bootstrapNewRunAtomic must reject partial DB — config.initialState
+		// is not a valid recovery source for an old partial incarnation.
 		const result = bootstrapNewRunAtomic({
 			db: ctx.runDb.connection,
 			runId: RUN_ID,
@@ -557,13 +558,65 @@ describe("bootstrap atomicity — fault injection", () => {
 			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 		});
 
-		expect(result.kind).toBe("BOOTSTRAPPED");
-		if (result.kind !== "BOOTSTRAPPED") return;
+		expect(result.kind).toBe("INCOMPLETE_EXISTING_BOOTSTRAP");
 
-		// Because ownership was FREE with fence_token=1, the new
-		// acquisition increments fence_token to 2.
+		// Verify state still absent — rollback preserved.
+		const stateCntAfter = ctx.runDb.connection
+			.prepare("SELECT COUNT(*) AS cnt FROM run_state")
+			.get() as { cnt: number };
+		expect(stateCntAfter.cnt).toBe(0);
+
+		ctx.cleanup();
+	});
+
+	test("H2 — incarnation-only partial DB: migrateLegacyRunAtomic recovers", () => {
+		const ctx = setup();
+
+		// Same setup: partial DB with incarnation + FREE ownership, no state.
+		const acq = acquireOwnership({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+		});
+		expect(acq.kind).toBe("ACQUIRED");
+		if (acq.kind !== "ACQUIRED") return;
+		releaseOwnership({ db: ctx.runDb.connection, handle: acq.handle });
+
+		// migrateLegacyRunAtomic with a validated legacy state CAN recover.
+		const legacyState = makeInitialState({ currentPhase: "legacy-recovered" });
+		const result = migrateLegacyRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			incarnationId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			legacyState,
+			legacyStartedAtEpochMs: NOW_EPOCH,
+			legacyStartedAt: NOW_ISO,
+			legacyLastTransitionAtEpochMs: NOW_EPOCH,
+			legacyLastTransitionAt: NOW_ISO,
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+
+		expect(result.kind).toBe("MIGRATED");
+		if (result.kind !== "MIGRATED") return;
+
+		// fence_token increments from 1 to 2.
 		expect(result.handle.fenceToken).toBe(2n);
-		assertFullyEstablished(ctx.runDb, result.handle, result.committed);
+
+		// State was recovered from legacy source.
+		const authRead = readAuthoritativeState(ctx.runDb.connection);
+		expect(authRead.state).not.toBeNull();
+		expect(authRead.state!.currentPhase).toBe("legacy-recovered");
 
 		releaseOwnership({ db: ctx.runDb.connection, handle: result.handle });
 		ctx.cleanup();
@@ -625,10 +678,11 @@ describe("bootstrap atomicity — fault injection", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// Test J — Owned-no-state DB with expired lease can be recovered
+	// Test J — Owned-no-state DB with expired lease: bootstrap rejects,
+	//         migrateLegacyRunAtomic recovers
 	// -----------------------------------------------------------------------
 
-	test("J — owned-no-state DB with expired lease → recovery succeeds", () => {
+	test("J — owned-no-state DB with expired lease: bootstrapNewRunAtomic rejects", () => {
 		const ctx = setup();
 
 		// Acquire ownership with epoch 0 (immediately expired relative to NOW_EPOCH).
@@ -651,7 +705,8 @@ describe("bootstrap atomicity — fault injection", () => {
 			.get() as { cnt: number };
 		expect(stateCnt.cnt).toBe(0);
 
-		// Bootstrap with NOW_EPOCH (way past expiry) — should recover.
+		// bootstrapNewRunAtomic rejects — config.initialState is not
+		// a valid recovery source for an incomplete DB.
 		const result = bootstrapNewRunAtomic({
 			db: ctx.runDb.connection,
 			runId: RUN_ID,
@@ -665,11 +720,66 @@ describe("bootstrap atomicity — fault injection", () => {
 			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 		});
 
-		expect(result.kind).toBe("BOOTSTRAPPED");
-		if (result.kind !== "BOOTSTRAPPED") return;
+		expect(result.kind).toBe("INCOMPLETE_EXISTING_BOOTSTRAP");
+
+		// State still absent — rollback preserved.
+		const stateCntAfter = ctx.runDb.connection
+			.prepare("SELECT COUNT(*) AS cnt FROM run_state")
+			.get() as { cnt: number };
+		expect(stateCntAfter.cnt).toBe(0);
+
+		// Cleanup: release the stale ownership so the DB can be reused.
+		releaseOwnership({ db: ctx.runDb.connection, handle: acq.handle });
+		ctx.cleanup();
+	});
+
+	test("J2 — owned-no-state DB with expired lease: migrateLegacyRunAtomic recovers", () => {
+		const ctx = setup();
+
+		// Same expired partial DB setup.
+		const acq = acquireOwnership({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: 0,
+			nowIso: "1970-01-01T00:00:00.000Z",
+			leaseDurationMs: 1000,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+			leaseClockEpochMs: () => 0,
+		});
+		expect(acq.kind).toBe("ACQUIRED");
+		if (acq.kind !== "ACQUIRED") return;
+
+		// migrateLegacyRunAtomic recovers from validated legacy state.
+		const legacyState = makeInitialState({ currentPhase: "recovered-via-migration" });
+		const result = migrateLegacyRunAtomic({
+			db: ctx.runDb.connection,
+			runId: RUN_ID,
+			incarnationId: RUN_ID,
+			orchestratorName: ORCH_NAME,
+			nowEpochMs: NOW_EPOCH,
+			nowIso: NOW_ISO,
+			leaseDurationMs: LEASE_MS,
+			leaseClockEpochMs: () => NOW_EPOCH,
+			legacyState,
+			legacyStartedAtEpochMs: NOW_EPOCH,
+			legacyStartedAt: NOW_ISO,
+			legacyLastTransitionAtEpochMs: NOW_EPOCH,
+			legacyLastTransitionAt: NOW_ISO,
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+		});
+
+		expect(result.kind).toBe("MIGRATED");
+		if (result.kind !== "MIGRATED") return;
 
 		// fence should have incremented (was 1, now 2).
 		expect(result.handle.fenceToken).toBe(2n);
+
+		// State recovered from legacy source.
+		const authRead = readAuthoritativeState(ctx.runDb.connection);
+		expect(authRead.state).not.toBeNull();
+		expect(authRead.state!.currentPhase).toBe("recovered-via-migration");
 
 		releaseOwnership({ db: ctx.runDb.connection, handle: result.handle });
 		ctx.cleanup();
@@ -745,6 +855,12 @@ describe("legacy migration atomicity", () => {
 		expect(authRead.state).not.toBeNull();
 		expect(authRead.state!.currentPhase).toBe("legacy-phase");
 		expect(authRead.state!.phasesExecuted).toBe(5);
+
+		// Verify startedAt and lastTransitionAt are distinct and preserved.
+		expect(authRead.state!.startedAt).toBe("2020-01-01T00:00:00.000Z");
+		expect(authRead.state!.startedAtEpochMs).toBe(1_577_836_800_000);
+		expect(authRead.state!.lastTransitionAt).toBe("2020-01-01T00:01:00.000Z");
+		expect(authRead.state!.lastTransitionAtEpochMs).toBe(1_577_836_860_000);
 
 		releaseOwnership({ db: ctx.runDb.connection, handle: result.handle });
 		ctx.cleanup();
@@ -898,7 +1014,7 @@ describe("old implementation partial DB handling", () => {
 		expect(result.kind).toBe("INCOMPLETE_EXISTING_BOOTSTRAP");
 		if (result.kind === "INCOMPLETE_EXISTING_BOOTSTRAP") {
 			expect(result.details).toContain("INCOMPLETE_BOOTSTRAP");
-			expect(result.details).toContain("no recovery source");
+			expect(result.details).toContain("recovery forbidden");
 		}
 
 		// Verify no state was created, ownership unchanged.
