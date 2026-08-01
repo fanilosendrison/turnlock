@@ -14,19 +14,13 @@ import {
 	productionDependencies,
 } from "./run-bootstrap-core";
 
-// Re-export the full public surface for backward compatibility.
+// Re-export the public types required by production callers.
 export {
 	type BootstrapNewRunParams,
 	type BootstrapNewRunResult,
 	type CommittedState,
-	type EstablishResult,
 	type MigrateLegacyRunParams,
 	type MigrateLegacyRunResult,
-	type PartialRecoveryPolicy,
-	type RunBootstrapDependencies,
-	computeDigest,
-	establishRunInTransaction,
-	isBusy,
 } from "./run-bootstrap-core";
 export type { LockHandle } from "./ownership";
 
