@@ -110,16 +110,30 @@ Reactivate only **SQLite-compatible** binaries and automation.
 
 ## Blocked States
 
-Turnlock refuses fail-closed in the following incompatible states:
+### Ownership storage compatibility guards
+
+The compatibility guard (`assertOwnershipStorageCompatibility`) runs
+**before** any SQLite ownership acquisition, DB creation, fence token
+increment, state projection, or phase execution.  When it blocks, **no
+authoritative mutation occurs** and **no new ownership is granted**.
 
 | State | Error | Description |
 |-------|-------|-------------|
-| DB absent + `.lock` present | `legacy_lock_migration_blocked` | Migration blocked — legacy lock exists |
-| DB present + `.lock` present | `mixed_ownership_protocol_detected` | Protocol contract violated — both artifacts coexist |
-| Migration of `state.json` impossible | `state_migration_blocked` | v3→v4 manifest conversion failed |
+| DB absent + `.lock` present | `legacy_lock_migration_blocked` | Migration blocked — legacy lock exists before SQLite establishment |
+| DB present + `.lock` present | `mixed_ownership_protocol_detected` | Protocol contract violated — both artifacts coexist after SQLite establishment |
 
-In all cases, Turnlock makes **no authoritative mutation** and grants
-**no new ownership**.
+### State-schema migration failure
+
+A `state_migration_blocked` error is a separate concern: it occurs
+during v3→v4 manifest conversion.  This failure happens **after**
+ownership acquisition in the resume path.  Turnlock releases that
+ownership before propagating the error, and no workflow-state
+transition is committed.  However, the ownership row itself may have
+seen a fence-token increment and release cycle during the attempt.
+
+| State | Error | Description |
+|-------|-------|-------------|
+| Migration of `state.json` impossible | `state_migration_blocked` | v3→v4 manifest conversion failed |
 
 ## Non-Guarantees
 
@@ -155,11 +169,24 @@ The presence of `turnlock.sqlite3` is the durable no-return marker:
 
 ## Recovery from a residual `.lock`
 
-If a `.lock` file remains after migration (e.g., a legacy process was
-killed), Turnlock will block with `LegacyLockMigrationBlockedError`.
+### Before SQLite establishment
 
-The `.lock` must be removed **only after external confirmation** that
-no legacy process holds it:
+If `.lock` is present before SQLite has been established (i.e. no
+`turnlock.sqlite3` exists in the run directory), Turnlock blocks with
+`LegacyLockMigrationBlockedError`.
+
+### After SQLite establishment
+
+If `.lock` coexists with an already established `turnlock.sqlite3`,
+Turnlock blocks with `MixedOwnershipProtocolError`.  This indicates
+a deployment or downgrade contract violation — the run directory
+already belongs to the SQLite protocol, and a legacy artifact must
+not be present.
+
+### Removal procedure
+
+In either case, the `.lock` must be removed **only after external
+confirmation** that no legacy process holds it:
 
 ```bash
 # Operator verification (external to Turnlock):
