@@ -2,6 +2,10 @@ export const PROTOCOL_VERSION = 3 as const;
 export const STATE_SCHEMA_VERSION = 4 as const;
 export const EXTERNAL_REQUEST_MANIFEST_VERSION = 1 as const;
 
+/** Internal SQLite state_json marker; never included in state.json projections. */
+export const PENDING_INITIAL_DISPATCH_STATE_FIELD =
+	"__turnlockPendingInitialDispatch" as const;
+
 export const MAX_EVENT_FIELD_LENGTH = 200;
 export const MAX_EXTERNAL_LABEL_LENGTH = 173;
 

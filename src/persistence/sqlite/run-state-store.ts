@@ -6,7 +6,10 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { STATE_SCHEMA_VERSION } from "../../constants";
+import {
+	PENDING_INITIAL_DISPATCH_STATE_FIELD,
+	STATE_SCHEMA_VERSION,
+} from "../../constants";
 import {
 	AuthorityLostError,
 	PersistenceFailureError,
@@ -25,6 +28,20 @@ export interface StateAuthorityMetadata {
 	readonly stateRevision: string;
 	readonly committedFenceToken: string;
 }
+
+/** Internal crash boundaries for the repairable state.json projection. */
+export type ProjectionFaultPoint =
+	| "AFTER_TEMP_FILE_WRITE"
+	| "AFTER_TEMP_FILE_FSYNC"
+	| "AFTER_RENAME"
+	| "BEFORE_DIRECTORY_FSYNC";
+
+/** Internal-only dependencies used by crash-injection tests. */
+export interface ProjectionInternalDependencies {
+	readonly onFaultPoint?: (point: ProjectionFaultPoint) => void;
+}
+
+const productionProjectionDependencies: ProjectionInternalDependencies = {};
 
 export interface StateRecord<S extends object> {
 	readonly schemaVersion: number;
@@ -526,6 +543,8 @@ export function commitState<S extends object>(
 export interface ReadStateResult<S extends object> {
 	readonly state: StateRecord<S> | null;
 	readonly digest: string | null;
+	/** Durable evidence that a new-run bootstrap has not committed a phase. */
+	readonly pendingInitialDispatch: boolean;
 }
 
 export function readAuthoritativeState<S extends object>(
@@ -546,7 +565,9 @@ export function readAuthoritativeState<S extends object>(
 		  }
 		| undefined;
 
-	if (row === undefined) return { state: null, digest: null };
+	if (row === undefined) {
+		return { state: null, digest: null, pendingInitialDispatch: false };
+	}
 
 	// Verify the stored digest matches the stored JSON.
 	// A corrupt state_json with a stale digest must not be
@@ -582,7 +603,12 @@ export function readAuthoritativeState<S extends object>(
 			: {}),
 	};
 
-	return { state, digest: row.state_digest };
+	return {
+		state,
+		digest: row.state_digest,
+		pendingInitialDispatch:
+			parsed[PENDING_INITIAL_DISPATCH_STATE_FIELD] === true,
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -595,6 +621,7 @@ function writeStateJsonProjection(
 	runDir: string,
 	state: StateRecord<object>,
 	digest: string,
+	dependencies: ProjectionInternalDependencies,
 ): void {
 	const projection: Record<string, unknown> = {
 		schemaVersion: state.schemaVersion,
@@ -629,8 +656,26 @@ function writeStateJsonProjection(
 	const tmpPath = path.join(runDir, "state.json.tmp");
 	const statePath = path.join(runDir, "state.json");
 
-	fs.writeFileSync(tmpPath, json, { encoding: "utf-8" });
+	const temporaryFile = fs.openSync(tmpPath, "w", 0o600);
+	try {
+		fs.writeFileSync(temporaryFile, json, { encoding: "utf-8" });
+		dependencies.onFaultPoint?.("AFTER_TEMP_FILE_WRITE");
+		fs.fsyncSync(temporaryFile);
+		dependencies.onFaultPoint?.("AFTER_TEMP_FILE_FSYNC");
+	} finally {
+		fs.closeSync(temporaryFile);
+	}
+
 	fs.renameSync(tmpPath, statePath);
+	dependencies.onFaultPoint?.("AFTER_RENAME");
+
+	const directory = fs.openSync(runDir, fs.constants.O_RDONLY);
+	try {
+		dependencies.onFaultPoint?.("BEFORE_DIRECTORY_FSYNC");
+		fs.fsyncSync(directory);
+	} finally {
+		fs.closeSync(directory);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -647,8 +692,9 @@ function writeStateJsonProjection(
  *       transaction — the projected content ALWAYS comes from SQLite, never
  *       from a caller-supplied object.
  *    3. Verify the re-read revision and digest match the expected values.
- *    4. Write state.json atomically (tmp + rename) using the re-read state.
- *    5. COMMIT.
+ *    4. Write and fsync state.json.tmp using the re-read state.
+ *    5. Rename state.json.tmp to state.json and fsync the run directory.
+ *    6. COMMIT.
  *
  *  Guarantees:
  *    - A stale owner whose lease expired is rejected (EXPIRED_HANDLE).
@@ -673,6 +719,7 @@ export function projectAuthoritativeStateFenced(
 	expectedRevision: string,
 	expectedDigest: string,
 	leaseClockEpochMs?: () => number,
+	dependencies: ProjectionInternalDependencies = productionProjectionDependencies,
 ): void {
 	try {
 		beginImmediate(db);
@@ -817,9 +864,10 @@ export function projectAuthoritativeStateFenced(
 			runDir,
 			readResult.state,
 			readResult.digest ?? expectedDigest,
+			dependencies,
 		);
 
-		// Step 5 — COMMIT.
+		// Step 6 — COMMIT.
 		commit(db);
 	} catch (error) {
 		rollback(db);

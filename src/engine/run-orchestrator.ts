@@ -1,6 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { STATE_SCHEMA_VERSION } from "../constants";
+import {
+	PENDING_INITIAL_DISPATCH_STATE_FIELD,
+	STATE_SCHEMA_VERSION,
+} from "../constants";
 import {
 	InvalidConfigError,
 	ProtocolError,
@@ -20,6 +23,7 @@ import {
 } from "../persistence/sqlite/run-bootstrap";
 import { openRunDatabase } from "../persistence/sqlite/run-database";
 import {
+	type ProjectionInternalDependencies,
 	projectAuthoritativeStateFenced,
 	readAuthoritativeState,
 	type StateRecord,
@@ -50,6 +54,20 @@ import {
 import { installSignalHandlers } from "./signal-handlers";
 
 const DB_FILENAME = "turnlock.sqlite3";
+
+export interface RunOrchestratorInternalHooks {
+	afterBootstrapResult?(): void;
+	beforeInitialProjection?(): void;
+	afterInitialProjection?(): void;
+}
+
+export interface RunOrchestratorInternalDependencies {
+	readonly hooks?: RunOrchestratorInternalHooks;
+	readonly projectionDependencies?: ProjectionInternalDependencies;
+}
+
+const productionRunOrchestratorDependencies: RunOrchestratorInternalDependencies =
+	{};
 
 /** Migrate a legacy state.json snapshot into an authoritative SQLite run
  *  atomically (single BEGIN IMMEDIATE ... COMMIT).
@@ -227,6 +245,7 @@ function migrateStateFileV3ToV4(
 async function runInitialMode<S extends object>(
 	config: OrchestratorConfig<S>,
 	argv: ParsedArgv,
+	dependencies: RunOrchestratorInternalDependencies,
 ): Promise<void> {
 	const runId = argv.runId ?? generateRunId();
 	if (argv.runId !== undefined) {
@@ -303,6 +322,7 @@ async function runInitialMode<S extends object>(
 		accumulatedDurationMs: 0,
 		data: config.initialState,
 		usedLabels: [],
+		[PENDING_INITIAL_DISPATCH_STATE_FIELD]: true,
 	};
 
 	const bootstrapResult = bootstrapNewRunAtomic({
@@ -354,16 +374,22 @@ async function runInitialMode<S extends object>(
 	// Project state.json from the authoritative record under fence
 	// (with correct runIncarnationId, stateRevision, committedFenceToken,
 	// and digest).
-	// Wrap in try/catch — if projection fails after the state is already
-	// authoritative, we must release ownership before throwing.
+	// Wrap every injectable post-bootstrap boundary in the same cleanup scope:
+	// an injected exception releases ownership, while SIGKILL deliberately
+	// leaves the durable lease for takeover after expiry.
 	try {
+		dependencies.hooks?.afterBootstrapResult?.();
+		dependencies.hooks?.beforeInitialProjection?.();
 		projectAuthoritativeStateFenced(
 			runDb.connection,
 			handle,
 			runDir,
 			committed.stateRevision,
 			committed.stateDigest,
+			undefined,
+			dependencies.projectionDependencies,
 		);
+		dependencies.hooks?.afterInitialProjection?.();
 
 		logger.enableDiskEmit(path.join(runDir, "events.ndjson"));
 
@@ -387,7 +413,7 @@ async function runInitialMode<S extends object>(
 			releaseResult.kind !== "STALE_HANDLE"
 		) {
 			throw new ProtocolError(
-				"Initial projection failed and ownership release also failed",
+				"Initial post-bootstrap step failed and ownership release also failed",
 				{
 					runId,
 					orchestratorName: config.name,
@@ -398,7 +424,7 @@ async function runInitialMode<S extends object>(
 								? releaseResult.cause
 								: new Error(releaseResult.kind),
 						],
-						"projection and release both failed",
+						"post-bootstrap step and release both failed",
 					),
 				},
 			);
@@ -463,6 +489,7 @@ async function runInitialMode<S extends object>(
 async function runResumeMode<S extends object>(
 	config: OrchestratorConfig<S>,
 	argv: ParsedArgv,
+	dependencies: RunOrchestratorInternalDependencies,
 ): Promise<void> {
 	if (!argv.runId) {
 		throw new InvalidConfigError("--resume requires --run-id");
@@ -711,6 +738,7 @@ async function runResumeMode<S extends object>(
 		// fields at all is a successful no-op migration.
 		let authoritativeRecord = readResult.state;
 		let authoritativeDigest = readResult.digest;
+		let pendingInitialDispatch = readResult.pendingInitialDispatch;
 
 		if (readResult.state.schemaVersion === 3) {
 			const migrationResult = migrateV3ToV4(
@@ -763,6 +791,7 @@ async function runResumeMode<S extends object>(
 
 				authoritativeRecord = commitResult.committed.state as StateRecord<S>;
 				authoritativeDigest = commitResult.committed.stateDigest;
+				pendingInitialDispatch = false;
 			} else {
 				throw new StateMigrationBlockedError(
 					"v3→v4 migration blocked: legacy manifest cannot be converted",
@@ -790,6 +819,8 @@ async function runResumeMode<S extends object>(
 			runDir,
 			authoritativeRecord.stateRevision,
 			authoritativeDigest ?? "",
+			undefined,
+			dependencies.projectionDependencies,
 		);
 
 		if (state.runId !== runId) {
@@ -833,7 +864,7 @@ async function runResumeMode<S extends object>(
 
 		installSignalHandlers(ctx);
 
-		await runHandleResume(ctx, state);
+		await runHandleResume(ctx, state, pendingInitialDispatch);
 	} catch (primaryError) {
 		// Single cleanup owner — release ownership then close the DB.
 		// Internal branches MUST NOT release or close; they just throw.
@@ -865,17 +896,29 @@ async function runResumeMode<S extends object>(
 	}
 }
 
+export async function runOrchestratorInternal<S extends object>(
+	config: OrchestratorConfig<S>,
+	argv: ParsedArgv,
+	dependencies: RunOrchestratorInternalDependencies,
+): Promise<void> {
+	validateConfig(config);
+	if (argv.resume) {
+		await runResumeMode(config, argv, dependencies);
+	} else {
+		await runInitialMode(config, argv, dependencies);
+	}
+}
+
 export async function runOrchestrator<S extends object>(
 	config: OrchestratorConfig<S>,
 ): Promise<void> {
 	try {
-		validateConfig(config);
 		const argv = parseArgv(process.argv.slice(2));
-		if (argv.resume) {
-			await runResumeMode(config, argv);
-		} else {
-			await runInitialMode(config, argv);
-		}
+		await runOrchestratorInternal(
+			config,
+			argv,
+			productionRunOrchestratorDependencies,
+		);
 	} catch (err) {
 		if (isTestExitSignal(err)) return;
 		try {

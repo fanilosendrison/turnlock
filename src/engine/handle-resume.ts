@@ -285,6 +285,7 @@ async function enterDispatchLoopWithResults<S extends object>(
 export async function runHandleResume<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
+	pendingInitialDispatch = false,
 ): Promise<never> {
 	// Terminal recovery: if the previous run committed a terminal result but
 	// crashed before projecting output.json or emitting the protocol block,
@@ -302,6 +303,23 @@ export async function runHandleResume<S extends object>(
 
 	const pd = state.pendingDelegation;
 	if (!pd) {
+		const isPristineBootstrap =
+			pendingInitialDispatch &&
+			ctx.stateRevision === "0" &&
+			state.phasesExecuted === 0 &&
+			state.accumulatedDurationMs === 0 &&
+			state.usedLabels.length === 0 &&
+			state.pendingExternalRequest === undefined &&
+			state.terminalResult === undefined;
+
+		if (isPristineBootstrap) {
+			// Bootstrap committed before the first phase became durable. Resume
+			// from SQLite's authoritative currentPhase, never config.initial or
+			// the repairable state.json projection.
+			await runDispatchLoop(ctx, state);
+			return undefined as never;
+		}
+
 		throw new ProtocolError("resume without pending delegation", {
 			runId: ctx.runId,
 			orchestratorName: ctx.config.name,
