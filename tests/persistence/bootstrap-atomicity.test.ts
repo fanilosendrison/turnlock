@@ -3,8 +3,14 @@
 // Verifies that incarnation + ownership + state are established in a single
 // BEGIN IMMEDIATE ... COMMIT, or not at all.  No partial state is observable
 // after any bootstrap or migration attempt.
+//
+// The "bootstrap primitive fault injection" and "legacy migration primitive
+// fault injection" sections prove atomicity by injecting exceptions at every
+// pre-commit boundary inside the REAL bootstrap / migration primitives, then
+// verifying complete rollback with zero observable rows.
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { STATE_SCHEMA_VERSION } from "../../src/constants";
 import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
@@ -18,7 +24,12 @@ import {
 	type CommittedState,
 	migrateLegacyRunAtomic,
 } from "../../src/persistence/sqlite/run-bootstrap";
-import { migrateLegacyRunAtomicCore } from "../../src/persistence/sqlite/run-bootstrap-core";
+import {
+	bootstrapNewRunAtomicCore,
+	type BootstrapFaultPoint,
+	InjectedBootstrapFailure,
+	migrateLegacyRunAtomicCore,
+} from "../../src/persistence/sqlite/run-bootstrap-core";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
 import { readAuthoritativeState } from "../../src/persistence/sqlite/run-state-store";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
@@ -33,6 +44,14 @@ const NOW_ISO = "2001-09-09T01:46:40.000Z";
 const CONTENTION_DEADLINE_MS = 2000;
 const RUN_ID = "01HX0000000000000000000001";
 const ORCH_NAME = "bootstrap-atomicity-test";
+
+const PRE_COMMIT_FAULT_POINTS: BootstrapFaultPoint[] = [
+	"AFTER_BEGIN",
+	"AFTER_INCARNATION_WRITE",
+	"AFTER_OWNERSHIP_WRITE",
+	"AFTER_STATE_WRITE",
+	"BEFORE_COMMIT",
+];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -459,10 +478,16 @@ describe("bootstrap atomicity — fault injection", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// Test G — Uncommitted transaction is rolled back
+	// Test G — Low-level SQLite: uncommitted transaction rolled back
+	//
+	// NOTE: This test manually executes BEGIN/INSERT/ROLLBACK as raw SQL.
+	// It proves SQLite rollback semantics, NOT that bootstrapNewRunAtomic
+	// correctly handles its own error path.  For proof that the real
+	// primitive rolls back on injected failures, see the
+	// "bootstrap primitive fault injection" section below.
 	// -----------------------------------------------------------------------
 
-	test("G — uncommitted transaction rolled back explicitly", () => {
+	test("G — SQLite low-level: uncommitted transaction rolled back explicitly", () => {
 		const ctx = setup();
 
 		// Simulate a partial bootstrap failure: BEGIN, insert some rows,
@@ -790,6 +815,325 @@ describe("bootstrap atomicity — fault injection", () => {
 
 		releaseOwnership({ db: ctx.runDb.connection, handle: result.handle });
 		ctx.cleanup();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Bootstrap primitive fault injection
+// ---------------------------------------------------------------------------
+// Proves that an exception injected INSIDE the real bootstrapNewRunAtomicCore
+// at each pre-commit boundary results in complete rollback: zero observable
+// rows in all three tables, no LockHandle returned, and the DB is immediately
+// reusable for a fresh bootstrap.
+
+function makeDeterministicIdGenerator(): () => string {
+	let counter = 0;
+	return (): string => {
+		counter++;
+		return `test-id-${String(counter).padStart(4, "0")}`;
+	};
+}
+
+describe("bootstrap primitive fault injection", () => {
+	for (const point of PRE_COMMIT_FAULT_POINTS) {
+		test(`rollback at ${point} — zero rows, no handle, re-bootstrap succeeds`, () => {
+			const ctx = setup();
+			try {
+				const result = bootstrapNewRunAtomicCore(
+					{
+						db: ctx.runDb.connection,
+						runId: RUN_ID,
+						orchestratorName: ORCH_NAME,
+						nowEpochMs: NOW_EPOCH,
+						nowIso: NOW_ISO,
+						leaseDurationMs: LEASE_MS,
+						leaseClockEpochMs: () => NOW_EPOCH,
+						initialState: makeInitialState(),
+						stateSchemaVersion: STATE_SCHEMA_VERSION,
+						contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+					},
+					{
+						generateId: makeDeterministicIdGenerator(),
+						onFaultPoint(p: BootstrapFaultPoint) {
+							if (p === point) {
+								throw new InjectedBootstrapFailure(p);
+							}
+						},
+					},
+				);
+
+				// Must not report BOOTSTRAPPED.
+				expect(result.kind).not.toBe("BOOTSTRAPPED");
+				expect(result.kind).toBe("DB_FAILURE");
+
+				// Must not return a handle.
+				expect(result).not.toHaveProperty("handle");
+
+				if (result.kind === "DB_FAILURE") {
+					expect(result.cause).toBeInstanceOf(InjectedBootstrapFailure);
+					expect((result.cause as InjectedBootstrapFailure).point).toBe(point);
+				}
+
+				// Close and reopen — verify all three tables are empty.
+				ctx.runDb.close();
+				const reopened = openRunDatabase({
+					driver: bunSqliteDriver,
+					dbPath: ctx.dbPath,
+					busyTimeoutMs: 500,
+				});
+
+				try {
+					assertTablesEmpty(reopened);
+
+					// Re-bootstrap on the reopened DB must succeed.
+					const second = bootstrapNewRunAtomic({
+						db: reopened.connection,
+						runId: RUN_ID,
+						orchestratorName: ORCH_NAME,
+						nowEpochMs: NOW_EPOCH,
+						nowIso: NOW_ISO,
+						leaseDurationMs: LEASE_MS,
+						leaseClockEpochMs: () => NOW_EPOCH,
+						initialState: makeInitialState(),
+						stateSchemaVersion: STATE_SCHEMA_VERSION,
+						contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+					});
+
+					expect(second.kind).toBe("BOOTSTRAPPED");
+					if (second.kind === "BOOTSTRAPPED") {
+						assertFullyEstablished(reopened, second.handle, second.committed);
+						releaseOwnership({
+							db: reopened.connection,
+							handle: second.handle,
+						});
+					}
+				} finally {
+					reopened.close();
+				}
+			} finally {
+				// runDb may already be closed; best-effort cleanup.
+				try { ctx.runDb.close(); } catch { /* ok */ }
+				ctx.cleanup();
+			}
+		});
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Legacy migration primitive fault injection
+// ---------------------------------------------------------------------------
+// Same proof for migrateLegacyRunAtomicCore — injected exception at each
+// pre-commit boundary leaves zero rows, no LockHandle, and the legacy
+// state.json unchanged byte-for-byte.
+
+describe("legacy migration primitive fault injection", () => {
+	const legacyState = makeInitialState({
+		currentPhase: "legacy-phase",
+		phasesExecuted: 5,
+	});
+
+	for (const point of PRE_COMMIT_FAULT_POINTS) {
+		test(`rollback at ${point} — zero rows, no handle, state.json intact, re-migration succeeds`, () => {
+			const ctx = setup();
+
+			// Write a real legacy state.json file to capture its bytes.
+			const stateJsonPath = join(ctx.dir, "state.json");
+			const stateJsonBytes = Buffer.from(
+				JSON.stringify(legacyState),
+				"utf-8",
+			);
+			require("node:fs").writeFileSync(stateJsonPath, stateJsonBytes);
+
+			try {
+				const result = migrateLegacyRunAtomicCore(
+					{
+						db: ctx.runDb.connection,
+						runId: RUN_ID,
+						orchestratorName: ORCH_NAME,
+						nowEpochMs: NOW_EPOCH,
+						nowIso: NOW_ISO,
+						leaseDurationMs: LEASE_MS,
+						leaseClockEpochMs: () => NOW_EPOCH,
+						legacyState,
+						legacyStartedAtEpochMs: NOW_EPOCH,
+						legacyStartedAt: NOW_ISO,
+						legacyLastTransitionAtEpochMs: NOW_EPOCH,
+						legacyLastTransitionAt: NOW_ISO,
+						stateSchemaVersion: STATE_SCHEMA_VERSION,
+						contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+					},
+					{
+						generateId: makeDeterministicIdGenerator(),
+						onFaultPoint(p: BootstrapFaultPoint) {
+							if (p === point) {
+								throw new InjectedBootstrapFailure(p);
+							}
+						},
+					},
+				);
+
+				// Must not report MIGRATED.
+				expect(result.kind).not.toBe("MIGRATED");
+				expect(result.kind).toBe("DB_FAILURE");
+
+				// Must not return a handle.
+				expect(result).not.toHaveProperty("handle");
+
+				if (result.kind === "DB_FAILURE") {
+					expect(result.cause).toBeInstanceOf(InjectedBootstrapFailure);
+					expect((result.cause as InjectedBootstrapFailure).point).toBe(point);
+				}
+
+				// Close and reopen — verify all three tables are empty.
+				ctx.runDb.close();
+				const reopened = openRunDatabase({
+					driver: bunSqliteDriver,
+					dbPath: ctx.dbPath,
+					busyTimeoutMs: 500,
+				});
+
+				try {
+					assertTablesEmpty(reopened);
+
+					// Verify state.json is unchanged byte-for-byte.
+					const currentBytes = readFileSync(stateJsonPath);
+					expect(currentBytes.equals(stateJsonBytes)).toBe(true);
+
+					// Re-migration on the reopened DB must succeed.
+					const second = migrateLegacyRunAtomic({
+						db: reopened.connection,
+						runId: RUN_ID,
+						orchestratorName: ORCH_NAME,
+						nowEpochMs: NOW_EPOCH,
+						nowIso: NOW_ISO,
+						leaseDurationMs: LEASE_MS,
+						leaseClockEpochMs: () => NOW_EPOCH,
+						legacyState,
+						legacyStartedAtEpochMs: NOW_EPOCH,
+						legacyStartedAt: NOW_ISO,
+						legacyLastTransitionAtEpochMs: NOW_EPOCH,
+						legacyLastTransitionAt: NOW_ISO,
+						stateSchemaVersion: STATE_SCHEMA_VERSION,
+						contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+					});
+
+					expect(second.kind).toBe("MIGRATED");
+					if (second.kind === "MIGRATED") {
+						assertFullyEstablished(reopened, second.handle, second.committed);
+						releaseOwnership({
+							db: reopened.connection,
+							handle: second.handle,
+						});
+					}
+				} finally {
+					reopened.close();
+				}
+			} finally {
+				try { ctx.runDb.close(); } catch { /* ok */ }
+				ctx.cleanup();
+			}
+		});
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Post-commit hook structural verification
+// ---------------------------------------------------------------------------
+// AFTER_COMMIT_BEFORE_HANDLE fires after COMMIT succeeds but before the
+// LockHandle is built.  This test only verifies the hook IS called — it does
+// NOT throw (post-commit failures cannot be rolled back and will be proven
+// by real-process crash tests in a later lot).
+
+describe("post-commit hook", () => {
+	test("AFTER_COMMIT_BEFORE_HANDLE is called after successful COMMIT", () => {
+		const ctx = setup();
+
+		let postCommitCalled = false;
+
+		try {
+			const result = bootstrapNewRunAtomicCore(
+				{
+					db: ctx.runDb.connection,
+					runId: RUN_ID,
+					orchestratorName: ORCH_NAME,
+					nowEpochMs: NOW_EPOCH,
+					nowIso: NOW_ISO,
+					leaseDurationMs: LEASE_MS,
+					leaseClockEpochMs: () => NOW_EPOCH,
+					initialState: makeInitialState(),
+					stateSchemaVersion: STATE_SCHEMA_VERSION,
+					contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+				},
+				{
+					generateId: makeDeterministicIdGenerator(),
+					onFaultPoint(p: BootstrapFaultPoint) {
+						if (p === "AFTER_COMMIT_BEFORE_HANDLE") {
+							postCommitCalled = true;
+						}
+					},
+				},
+			);
+
+			expect(postCommitCalled).toBe(true);
+			expect(result.kind).toBe("BOOTSTRAPPED");
+
+			if (result.kind === "BOOTSTRAPPED") {
+				releaseOwnership({
+					db: ctx.runDb.connection,
+					handle: result.handle,
+				});
+			}
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
+	test("AFTER_COMMIT_BEFORE_HANDLE fires for migration too", () => {
+		const ctx = setup();
+
+		let postCommitCalled = false;
+		const legacyState = makeInitialState({ currentPhase: "post-commit-test" });
+
+		try {
+			const result = migrateLegacyRunAtomicCore(
+				{
+					db: ctx.runDb.connection,
+					runId: RUN_ID,
+					orchestratorName: ORCH_NAME,
+					nowEpochMs: NOW_EPOCH,
+					nowIso: NOW_ISO,
+					leaseDurationMs: LEASE_MS,
+					leaseClockEpochMs: () => NOW_EPOCH,
+					legacyState,
+					legacyStartedAtEpochMs: NOW_EPOCH,
+					legacyStartedAt: NOW_ISO,
+					legacyLastTransitionAtEpochMs: NOW_EPOCH,
+					legacyLastTransitionAt: NOW_ISO,
+					stateSchemaVersion: STATE_SCHEMA_VERSION,
+					contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+				},
+				{
+					generateId: makeDeterministicIdGenerator(),
+					onFaultPoint(p: BootstrapFaultPoint) {
+						if (p === "AFTER_COMMIT_BEFORE_HANDLE") {
+							postCommitCalled = true;
+						}
+					},
+				},
+			);
+
+			expect(postCommitCalled).toBe(true);
+			expect(result.kind).toBe("MIGRATED");
+
+			if (result.kind === "MIGRATED") {
+				releaseOwnership({
+					db: ctx.runDb.connection,
+					handle: result.handle,
+				});
+			}
+		} finally {
+			ctx.cleanup();
+		}
 	});
 });
 
