@@ -33,6 +33,7 @@ import {
 	type CommittedState,
 	commitState,
 	initializeStateUnderFence,
+	type ProjectionFaultPoint,
 	projectAuthoritativeStateFenced,
 	readAuthoritativeState,
 	type StateRecord,
@@ -397,6 +398,53 @@ describe("content authenticity", () => {
 		}
 	});
 
+	test("projection durability hooks fire in write, file-fsync, rename, directory-fsync order", () => {
+		const ctx = setup();
+		try {
+			const now = Date.now();
+			const nowIso = new Date(now).toISOString();
+			const acquired = acquire(ctx.runDb, {
+				nowEpochMs: now,
+				nowIso,
+				leaseDurationMs: LONG_LEASE_MS,
+			});
+			expect(acquired.kind).toBe("ACQUIRED");
+			if (acquired.kind !== "ACQUIRED") return;
+
+			const record = makeRecord({
+				runIncarnationId: acquired.handle.incarnationId,
+			});
+			seedViaUnsafe(ctx.runDb, acquired.handle, record);
+			const read = readAuthoritativeState(ctx.runDb.connection);
+			expect(read.state).not.toBeNull();
+			if (read.digest === null) return;
+
+			const reached: ProjectionFaultPoint[] = [];
+			projectAuthoritativeStateFenced(
+				ctx.runDb.connection,
+				acquired.handle,
+				ctx.dir,
+				"0",
+				read.digest,
+				undefined,
+				{
+					onFaultPoint: (point) => reached.push(point),
+				},
+			);
+
+			expect(reached).toEqual([
+				"AFTER_TEMP_FILE_WRITE",
+				"AFTER_TEMP_FILE_FSYNC",
+				"AFTER_RENAME",
+				"BEFORE_DIRECTORY_FSYNC",
+			]);
+			expect(existsSync(join(ctx.dir, "state.json"))).toBe(true);
+			expect(existsSync(join(ctx.dir, "state.json.tmp"))).toBe(false);
+		} finally {
+			ctx.cleanup();
+		}
+	});
+
 	test("fenced projection with wrong digest → rejected", () => {
 		const ctx = setup();
 		try {
@@ -497,6 +545,7 @@ describe("canonical projection monotonicity", () => {
 			}
 			expect(currentRevision).toBe("5");
 			expect(lastCommitted).not.toBeNull();
+			if (lastCommitted === null) return;
 
 			// A is suspended — does not project revision 5.
 
@@ -553,7 +602,7 @@ describe("canonical projection monotonicity", () => {
 					handleA, // stale!
 					ctx.dir,
 					"5",
-					lastCommitted!.stateDigest,
+					lastCommitted.stateDigest,
 				);
 			} catch (err) {
 				aRejected = true;
