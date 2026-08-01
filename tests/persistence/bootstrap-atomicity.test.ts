@@ -372,10 +372,15 @@ describe("bootstrap atomicity", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// Test E — Handle published only after COMMIT
+	// Test E — Active ownership conflict returns no handle
+	//
+	// NOTE: This test verifies that a second bootstrap attempt on an
+	// already-owned DB returns ACTIVE_CONFLICT without publishing a
+	// LockHandle.  It does NOT test DB_FAILURE from a real COMMIT error.
+	// For real COMMIT failure tests, see bootstrap-commit-failure.test.ts.
 	// -----------------------------------------------------------------------
 
-	test("E — handle not observable on DB_FAILURE", () => {
+	test("E — active ownership conflict returns no handle", () => {
 		const ctx = setup();
 		try {
 			// First bootstrap to populate the DB.
@@ -410,8 +415,8 @@ describe("bootstrap atomicity", () => {
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
 
-			// Must NOT return a handle.
-			expect(result.kind).not.toBe("BOOTSTRAPPED");
+			// Must return ACTIVE_CONFLICT, not BOOTSTRAPPED, and no handle.
+			expect(result.kind).toBe("ACTIVE_CONFLICT");
 			expect(result).not.toHaveProperty("handle");
 
 			releaseOwnership({
