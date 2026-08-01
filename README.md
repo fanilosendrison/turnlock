@@ -93,7 +93,7 @@ runOrchestrator({
 1. `verify` runs once. Checks pass, then it calls `io.delegate(...)`.
 2. The runtime snapshots state to disk, prints a `@@TURNLOCK@@` protocol block on stdout, and **exits**.
 3. The parent agent (Claude Code) reads the protocol block, invokes the `commit-msg` skill, waits for completion, then relaunches the binary with `--resume --run-id <id>`.
-4. On resume, `state.json` is loaded. `commit` runs, consumes the skill's result, commits with the agent-written message, and emits `DONE`.
+4. On resume, authoritative state is loaded from SQLite and `state.json` is repaired or regenerated as a projection. `commit` runs, consumes the skill's result, commits with the agent-written message, and emits `DONE`.
 
 Notice that a phase is not synonymous with an agent call. A phase can do as much mechanical work as it needs before yielding. Splitting into another phase is reserved for durable boundaries: `delegate(...)`, `delegateBatch(...)`, `requestExternal(...)`, `done(...)`, or `fail(...)`.
 
@@ -182,15 +182,15 @@ const lint = async (state, io) => {
 | Concern | Bash script | turnlock |
 |---------|-------------|----------|
 | Invoke an agent from code | ❌ Impossible | ✅ `io.delegate(...)` |
-| Crash recovery | ❌ Restart from scratch | ✅ `state.json` + `--resume` |
+| Crash recovery | ❌ Restart from scratch | ✅ embedded SQLite authority + `--resume` |
 | Structured audit trail | ❌ Ad-hoc `echo` | ✅ `events.ndjson` + manifests |
 | Retry on transient errors | ❌ Manual trap/retry | ✅ Built-in backoff + timeout |
 | JSON manipulation | ❌ `jq` chains, fragile | ✅ Native TS + zod validation |
-| Deterministic flow | ❌ Discipline-only | ✅ Frozen state, single-result guard, lock file |
+| Deterministic flow | ❌ Discipline-only | ✅ Frozen state, single-result guard, fenced SQLite ownership |
 
 ### ...Temporal / Inngest / Trigger.dev?
 
-Temporal is a fantastic workflow engine — for distributed systems with a server. turnlock is designed for environments where **no server can exist**: a CI runner, a laptop, a Claude Code session. No Docker, no database, no worker pool — a single process that starts, runs, and exits. If you have a Temporal cluster, use Temporal. If you're inside an agent session, use turnlock.
+Temporal is a fantastic workflow engine — for distributed systems with a server. turnlock is designed for environments where **no server can exist**: a CI runner, a laptop, a Claude Code session. No Docker, no external database service, no worker pool — a single process that starts, runs, and exits. If you have a Temporal cluster, use Temporal. If you're inside an agent session, use turnlock.
 
 ### ...an AI SDK (Vercel AI, LangChain)?
 
