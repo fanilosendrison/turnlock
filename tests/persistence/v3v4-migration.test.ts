@@ -595,10 +595,9 @@ await runOrchestrator<State>({
 			mkdirSync(join(runDir, "artifacts", "sha256"), { recursive: true });
 			mkdirSync(join(runDir, "external-requests"), { recursive: true });
 			mkdirSync(join(runDir, "external-results"), { recursive: true });
-			mkdirSync(
-				join(runDir, "accepted-external-resolutions"),
-				{ recursive: true },
-			);
+			mkdirSync(join(runDir, "accepted-external-resolutions"), {
+				recursive: true,
+			});
 
 			// 3. Write the manifest file (referenced by manifestPath).
 			const manifestContent = JSON.stringify({
@@ -813,10 +812,9 @@ await runOrchestrator<State>({
 			mkdirSync(join(runDir, "artifacts", "sha256"), { recursive: true });
 			mkdirSync(join(runDir, "external-requests"), { recursive: true });
 			mkdirSync(join(runDir, "external-results"), { recursive: true });
-			mkdirSync(
-				join(runDir, "accepted-external-resolutions"),
-				{ recursive: true },
-			);
+			mkdirSync(join(runDir, "accepted-external-resolutions"), {
+				recursive: true,
+			});
 
 			// 3. Pre-seed a SQLite DB containing a v3 state whose
 			//    manifestPath points nowhere.
@@ -962,10 +960,9 @@ await runOrchestrator<State>({
 			mkdirSync(join(runDir, "artifacts", "sha256"), { recursive: true });
 			mkdirSync(join(runDir, "external-requests"), { recursive: true });
 			mkdirSync(join(runDir, "external-results"), { recursive: true });
-			mkdirSync(
-				join(runDir, "accepted-external-resolutions"),
-				{ recursive: true },
-			);
+			mkdirSync(join(runDir, "accepted-external-resolutions"), {
+				recursive: true,
+			});
 
 			// Write a valid state.json (v4) with pending delegation.
 			const manifestContent = JSON.stringify({
@@ -1028,13 +1025,13 @@ await runOrchestrator<State>({
 					},
 				},
 			};
-			writeFileSync(
-				join(runDir, "state.json"),
-				JSON.stringify(stateV4),
-			);
+			writeFileSync(join(runDir, "state.json"), JSON.stringify(stateV4));
 
 			// Create the legacy .lock file — this is what we're testing.
-			writeFileSync(join(runDir, ".lock"), "pid=99999\ntimestamp=1704067200000\n");
+			writeFileSync(
+				join(runDir, ".lock"),
+				"pid=99999\ntimestamp=1704067200000\n",
+			);
 
 			// Verify turnlock.sqlite3 does NOT exist.
 			const dbPath = join(runDir, "turnlock.sqlite3");
@@ -1105,10 +1102,9 @@ await runOrchestrator<State>({
 			mkdirSync(join(runDir, "artifacts", "sha256"), { recursive: true });
 			mkdirSync(join(runDir, "external-requests"), { recursive: true });
 			mkdirSync(join(runDir, "external-results"), { recursive: true });
-			mkdirSync(
-				join(runDir, "accepted-external-resolutions"),
-				{ recursive: true },
-			);
+			mkdirSync(join(runDir, "accepted-external-resolutions"), {
+				recursive: true,
+			});
 
 			// Write manifest file.
 			const manifestContent = JSON.stringify({
@@ -1177,10 +1173,7 @@ await runOrchestrator<State>({
 					},
 				},
 			};
-			writeFileSync(
-				join(runDir, "state.json"),
-				JSON.stringify(stateV4),
-			);
+			writeFileSync(join(runDir, "state.json"), JSON.stringify(stateV4));
 
 			// Explicitly verify .lock is absent.
 			const dbPath = join(runDir, "turnlock.sqlite3");
@@ -1230,6 +1223,237 @@ await runOrchestrator<State>({
 			}
 
 			// 8. Verify: no protocol blocks on stderr.
+			expect(result.stderr).not.toContain("@@TURNLOCK@@");
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	// -------------------------------------------------------------------
+	// Mixed ownership protocol detection (E2E)
+	// -------------------------------------------------------------------
+
+	test("DB present + .lock present → MixedOwnershipProtocolError, fail-closed", async () => {
+		const workspace = createE2EWorkspace("mixed-own-e2e-");
+		const orchestratorName = "e2e-mixed-own";
+		const runId = "01HX0000000000000000000XD1";
+
+		try {
+			const entrypoint = workspace.writeEntrypoint(
+				"mixed-own-e2e.ts",
+				buildEntrypointSource(`
+interface State { approved: boolean; reviewed: boolean }
+
+await runOrchestrator<State>({
+name: ${JSON.stringify(orchestratorName)},
+initial: "fanout",
+initialState: { approved: false, reviewed: false },
+resumeCommand: (runId: string) => \`bun \${import.meta.path} --run-id \${runId} --resume\`,
+phases: {
+fanout: definePhase<State>(async (_state, io) =>
+io.delegatePrompt("review the code", "collect", { reviewed: false })
+),
+collect: definePhase<State>(async (_state, io) => {
+const result = io.consumePendingResult(z.object({ approved: z.boolean() }));
+return io.done({ approved: result.approved, reviewed: true });
+}),
+},
+});
+`),
+			);
+
+			const runDir = join(workspace.runDirRoot, orchestratorName, runId);
+			mkdirSync(runDir, { recursive: true });
+			mkdirSync(join(runDir, "delegations"), { recursive: true });
+			mkdirSync(join(runDir, "results"), { recursive: true });
+			mkdirSync(join(runDir, "artifacts", "sha256"), { recursive: true });
+			mkdirSync(join(runDir, "external-requests"), { recursive: true });
+			mkdirSync(join(runDir, "external-results"), { recursive: true });
+			mkdirSync(join(runDir, "accepted-external-resolutions"), {
+				recursive: true,
+			});
+
+			// Pre-seed a SQLite DB with a valid authoritative state.
+			const dbPath = join(runDir, "turnlock.sqlite3");
+			const seedDb = openRunDatabase({
+				driver: bunSqliteDriver,
+				dbPath,
+				busyTimeoutMs: 500,
+			});
+
+			seedDb.connection
+				.prepare(
+					`INSERT INTO run_incarnation
+					 (singleton, run_id, incarnation_id, orchestrator_name,
+					  created_at_epoch_ms, created_at_iso)
+					 VALUES (1, ?, ?, ?, ?, ?)`,
+				)
+				.run(runId, runId, orchestratorName, NOW_EPOCH, NOW_ISO);
+
+			const acquireResult = acquireOwnership({
+				db: seedDb.connection,
+				runId,
+				orchestratorName,
+				nowEpochMs: NOW_EPOCH,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_MS,
+				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+				leaseClockEpochMs: () => NOW_EPOCH,
+			});
+			expect(acquireResult.kind).toBe("ACQUIRED");
+			if (acquireResult.kind !== "ACQUIRED") return;
+
+			const v4State = {
+				schemaVersion: STATE_SCHEMA_VERSION,
+				runId,
+				orchestratorName,
+				startedAt: NOW_ISO,
+				startedAtEpochMs: NOW_EPOCH,
+				lastTransitionAt: NOW_ISO,
+				lastTransitionAtEpochMs: NOW_EPOCH,
+				currentPhase: "fanout",
+				phasesExecuted: 1,
+				accumulatedDurationMs: 100,
+				data: { approved: false, reviewed: false },
+				usedLabels: ["review"],
+			};
+			unsafeEnsureInitialStateRow(
+				seedDb.connection,
+				acquireResult.handle.incarnationId,
+				STATE_SCHEMA_VERSION,
+				JSON.stringify(v4State),
+				NOW_EPOCH,
+				NOW_ISO,
+			);
+
+			// Record authoritative state before .lock is introduced.
+			const beforeRead = readAuthoritativeState(seedDb.connection);
+			expect(beforeRead.state).not.toBeNull();
+			const beforeFence = seedDb.connection
+				.prepare("SELECT fence_token FROM run_ownership WHERE singleton = 1")
+				.get() as { fence_token: number | bigint } | undefined;
+			const beforeRevision = beforeRead.state!.stateRevision;
+
+			releaseOwnership({
+				db: seedDb.connection,
+				handle: acquireResult.handle,
+			});
+			seedDb.connection.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+			seedDb.close();
+
+			// Write the legacy .lock — creating the mixed state.
+			writeFileSync(
+				join(runDir, ".lock"),
+				"pid=99999\ntimestamp=1704067200000\n",
+			);
+
+			// Run resume — MUST be blocked.
+			const result = await workspace.runEntrypoint(
+				entrypoint,
+				["--resume", "--run-id", runId],
+				{ timeoutMs: 15_000 },
+			);
+
+			expect(result.exitCode).toBe(1);
+			expect(countProtocolBlocks(result.stdout)).toBe(1);
+			const block = parseSingleProtocolBlock(result.stdout);
+			expect(block.action).toBe("ERROR");
+			expect(block.runId).toBe(runId);
+			expect(block.fields.errorKind).toBe("mixed_ownership_protocol_detected");
+			expect(String(block.fields.message)).toContain("coexist");
+
+			// Verify: no new authority granted.
+			const checkDb = openRunDatabase({
+				driver: bunSqliteDriver,
+				dbPath,
+				busyTimeoutMs: 500,
+			});
+			try {
+				const afterFence = checkDb.connection
+					.prepare(
+						"SELECT fence_token, ownership_status FROM run_ownership WHERE singleton = 1",
+					)
+					.get() as
+					| { fence_token: number | bigint; ownership_status: string }
+					| undefined;
+				expect(afterFence).toBeDefined();
+				expect(
+					typeof afterFence!.fence_token === "bigint"
+						? afterFence!.fence_token
+						: BigInt(afterFence!.fence_token as number),
+				).toBe(
+					typeof beforeFence!.fence_token === "bigint"
+						? (beforeFence!.fence_token as bigint)
+						: BigInt(beforeFence!.fence_token as number),
+				);
+
+				const afterRead = readAuthoritativeState(checkDb.connection);
+				expect(afterRead.state).not.toBeNull();
+				expect(afterRead.state!.stateRevision).toBe(beforeRevision);
+				expect(afterFence!.ownership_status).toBe("FREE");
+			} finally {
+				checkDb.close();
+			}
+
+			// .lock still present, not removed.
+			expect(existsSync(join(runDir, ".lock"))).toBe(true);
+			expect(result.stderr).not.toContain("@@TURNLOCK@@");
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	test("initial mode on reused RUN_DIR with .lock → blocked before SQLite creation", async () => {
+		const workspace = createE2EWorkspace("initial-lock-e2e-");
+		const orchestratorName = "e2e-initial-lock";
+		const runId = "01HX0000000000000000000NK1";
+
+		try {
+			const entrypoint = workspace.writeEntrypoint(
+				"initial-lock-e2e.ts",
+				buildEntrypointSource(`
+interface State { step: number }
+
+await runOrchestrator<State>({
+name: ${JSON.stringify(orchestratorName)},
+initial: "start",
+initialState: { step: 0 },
+resumeCommand: (runId: string) => \`bun \${import.meta.path} --run-id \${runId} --resume\`,
+phases: {
+start: definePhase<State>(async (state, io) => io.done({ step: 1 })),
+},
+});
+`),
+			);
+
+			// Pre-create the run directory with a legacy .lock but NO SQLite DB.
+			const runDir = join(workspace.runDirRoot, orchestratorName, runId);
+			mkdirSync(runDir, { recursive: true });
+			writeFileSync(
+				join(runDir, ".lock"),
+				"pid=99999\ntimestamp=1704067200000\n",
+			);
+
+			// Run in initial mode with --run-id pointing to the existing dir.
+			const result = await workspace.runEntrypoint(
+				entrypoint,
+				["--run-id", runId],
+				{ timeoutMs: 15_000 },
+			);
+
+			expect(result.exitCode).toBe(1);
+			expect(countProtocolBlocks(result.stdout)).toBe(1);
+			const block = parseSingleProtocolBlock(result.stdout);
+			expect(block.action).toBe("ERROR");
+			expect(block.runId).toBe(runId);
+			expect(block.fields.errorKind).toBe("legacy_lock_migration_blocked");
+
+			// turnlock.sqlite3 was NOT created.
+			const dbPath = join(runDir, "turnlock.sqlite3");
+			expect(existsSync(dbPath)).toBe(false);
+
+			// .lock was not removed.
+			expect(existsSync(join(runDir, ".lock"))).toBe(true);
 			expect(result.stderr).not.toContain("@@TURNLOCK@@");
 		} finally {
 			workspace.cleanup();
