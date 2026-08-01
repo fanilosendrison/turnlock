@@ -47,11 +47,6 @@ export interface BootstrapNewRunParams {
 	readonly initialState: Record<string, unknown>;
 	readonly stateSchemaVersion: number;
 	readonly contentionDeadlineMs: number;
-	/**
-	 * Optional id generator for deterministic testing.
-	 * Defaults to `generateRunId`.
-	 */
-	readonly idGenerator?: () => string;
 }
 
 export type BootstrapNewRunResult =
@@ -88,11 +83,6 @@ export interface MigrateLegacyRunParams {
 	readonly legacyLastTransitionAt: string;
 	readonly stateSchemaVersion: number;
 	readonly contentionDeadlineMs: number;
-	/**
-	 * Optional id generator for deterministic testing.
-	 * Defaults to `generateRunId`.
-	 */
-	readonly idGenerator?: () => string;
 }
 
 export type MigrateLegacyRunResult =
@@ -120,11 +110,13 @@ function bigintFromRow(value: unknown): bigint {
 	throw new DbIntegrityError(`expected bigint, got ${typeof value}`);
 }
 
-function computeDigest(jsonStr: string): string {
+/** @internal — exported for use by run-bootstrap-internal.ts (tests only). */
+export function computeDigest(jsonStr: string): string {
 	return `sha256:${createHash("sha256").update(jsonStr).digest("hex")}`;
 }
 
-function isBusy(error: unknown): boolean {
+/** @internal — exported for use by run-bootstrap-internal.ts (tests only). */
+export function isBusy(error: unknown): boolean {
 	const msg = String(error);
 	return msg.includes("SQLITE_BUSY") || msg.includes("database is locked");
 }
@@ -181,8 +173,11 @@ function readDbSnapshot(db: SqliteConnection): DbSnapshot {
 // Returns the data needed to build a LockHandle and CommittedState,
 // or null if the run is already fully established.
 // Throws on integrity errors.
+//
+// @internal — exported for use by run-bootstrap-internal.ts (tests only).
+// Not part of the public API.
 
-interface EstablishResult {
+export interface EstablishResult {
 	readonly incarnationId: string;
 	readonly ownerToken: string;
 	readonly fenceToken: bigint;
@@ -207,7 +202,8 @@ interface EstablishResult {
  *    incremented.  Used by migrateLegacyRunAtomic. */
 export type PartialRecoveryPolicy = "FORBIDDEN" | "FROM_VALIDATED_LEGACY_STATE";
 
-function establishRunInTransaction(
+/** @internal — exported for use by run-bootstrap-internal.ts (tests only). */
+export function establishRunInTransaction(
 	db: SqliteConnection,
 	params: {
 		runId: string;
@@ -483,9 +479,8 @@ export function bootstrapNewRunAtomic(
 		contentionDeadlineMs,
 	} = params;
 
-	const idGen = params.idGenerator ?? generateRunId;
-	const ownerToken = idGen();
-	const incarnationCandidate = idGen();
+	const ownerToken = generateRunId();
+	const incarnationCandidate = generateRunId();
 	const ownerPid = process.pid;
 	const initialStateJson = JSON.stringify(initialState);
 	// Timestamps in initialRecord (startedAt, lastTransitionAt, etc.) are
@@ -632,9 +627,8 @@ export function migrateLegacyRunAtomic(
 	// retry loop — a SQLITE_BUSY retry is an infrastructure retry,
 	// not a new logical migration attempt, and must preserve the same
 	// incarnation identity.
-	const idGen = params.idGenerator ?? generateRunId;
-	const ownerToken = idGen();
-	const incarnationCandidate = idGen();
+	const ownerToken = generateRunId();
+	const incarnationCandidate = generateRunId();
 	const ownerPid = process.pid;
 
 	// Build the initial state JSON with legacy timestamps.

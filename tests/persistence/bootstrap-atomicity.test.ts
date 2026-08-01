@@ -18,6 +18,7 @@ import {
 	type CommittedState,
 	migrateLegacyRunAtomic,
 } from "../../src/persistence/sqlite/run-bootstrap";
+import { migrateLegacyRunAtomicWithDependencies } from "../../src/persistence/sqlite/run-bootstrap-internal";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
 import { readAuthoritativeState } from "../../src/persistence/sqlite/run-state-store";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
@@ -1520,23 +1521,25 @@ describe("incarnation identity", () => {
 			blockerDb.exec("BEGIN IMMEDIATE");
 
 			const legacyState = makeInitialState({ currentPhase: "test-x" });
-			const result = migrateLegacyRunAtomic({
-				db: reopened.connection,
-				runId: RUN_ID,
-				orchestratorName: ORCH_NAME,
-				nowEpochMs: NOW_EPOCH,
-				nowIso: NOW_ISO,
-				leaseDurationMs: LEASE_MS,
-				leaseClockEpochMs: () => NOW_EPOCH,
-				legacyState,
-				legacyStartedAtEpochMs: NOW_EPOCH,
-				legacyStartedAt: NOW_ISO,
-				legacyLastTransitionAtEpochMs: NOW_EPOCH,
-				legacyLastTransitionAt: NOW_ISO,
-				stateSchemaVersion: STATE_SCHEMA_VERSION,
-				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
-				idGenerator,
-			});
+			const result = migrateLegacyRunAtomicWithDependencies(
+				{
+					db: reopened.connection,
+					runId: RUN_ID,
+					orchestratorName: ORCH_NAME,
+					nowEpochMs: NOW_EPOCH,
+					nowIso: NOW_ISO,
+					leaseDurationMs: LEASE_MS,
+					leaseClockEpochMs: () => NOW_EPOCH,
+					legacyState,
+					legacyStartedAtEpochMs: NOW_EPOCH,
+					legacyStartedAt: NOW_ISO,
+					legacyLastTransitionAtEpochMs: NOW_EPOCH,
+					legacyLastTransitionAt: NOW_ISO,
+					stateSchemaVersion: STATE_SCHEMA_VERSION,
+					contentionDeadlineMs: CONTENTION_DEADLINE_MS,
+				},
+				{ generateId: idGenerator },
+			);
 
 			// Must have succeeded after the retry.
 			expect(result.kind).toBe("MIGRATED");
