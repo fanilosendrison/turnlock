@@ -13,9 +13,13 @@ import {
 	acquireOwnership,
 	releaseOwnership,
 } from "../persistence/sqlite/ownership";
+import {
+	bootstrapNewRunAtomic,
+	type CommittedState,
+	migrateLegacyRunAtomic,
+} from "../persistence/sqlite/run-bootstrap";
 import { openRunDatabase } from "../persistence/sqlite/run-database";
 import {
-	initializeStateUnderFence,
 	projectAuthoritativeStateFenced,
 	readAuthoritativeState,
 	type StateRecord,
@@ -47,19 +51,15 @@ import { installSignalHandlers } from "./signal-handlers";
 
 const DB_FILENAME = "turnlock.sqlite3";
 
-/** Seed a freshly created SQLite DB from a legacy state.json snapshot.
+/** Migrate a legacy state.json snapshot into an authoritative SQLite run
+ *  atomically (single BEGIN IMMEDIATE ... COMMIT).
  *
- *  Opens the DB, pre-creates `run_incarnation` with the **legacy
- *  historical** `startedAt` (so the run's identity is preserved), then
- *  acquires ownership at the **current wall-clock time** (so the lease
- *  is valid), seeds the state row (timestamped at the legacy
- *  `lastTransitionAt`), and returns the open connection + active handle.
+ *  Preserves legacy startedAt/lastTransitionAt timestamps.
+ *  Ownership is established with current wall-clock time.
+ *  Returns the open connection + active handle only after COMMIT succeeds.
  *
- *  Does NOT call `projectStateJson` — the caller projects from the
- *  authoritative record re-read after this function returns.
- *
- *  On any failure after the DB is opened, the ownership is released
- *  (if acquired) and the DB is closed before rethrowing. */
+ *  On any failure the transaction is rolled back — no partial state,
+ *  no LockHandle, the state.json legacy file is untouched. */
 function seedLegacyStateToSqlite<S extends object>(
 	runDir: string,
 	runId: string,
@@ -67,6 +67,7 @@ function seedLegacyStateToSqlite<S extends object>(
 ): {
 	runDb: ReturnType<typeof openRunDatabase>;
 	handle: import("../persistence/sqlite/ownership").LockHandle;
+	committed: CommittedState;
 } {
 	const dbPath = path.join(runDir, DB_FILENAME);
 	const runDb = openRunDatabase({
@@ -75,138 +76,79 @@ function seedLegacyStateToSqlite<S extends object>(
 		busyTimeoutMs: 2000,
 	});
 
-	let handle: import("../persistence/sqlite/ownership").LockHandle | null =
-		null;
-
 	try {
-		// Pre-create run_incarnation with legacy historical startedAt
-		// *before* acquireOwnership.  acquireOwnership → ensureIncarnation
-		// will find the existing row and preserve these timestamps instead
-		// of overwriting them with clock.now().
-		//
-		// Uses INSERT OR IGNORE — idempotent if incarnation already exists.
-		runDb.connection
-			.prepare(
-				`INSERT OR IGNORE INTO run_incarnation
-				 (singleton, run_id, incarnation_id, orchestrator_name,
-				  created_at_epoch_ms, created_at_iso)
-				 VALUES (1, ?, ?, ?, ?, ?)`,
-			)
-			.run(
-				runId,
-				state.runId, // incarnation_id derived from legacy runId
-				state.orchestratorName,
-				state.startedAtEpochMs,
-				state.startedAt,
-			);
-
-		// Ownership must be acquired at the *current* wall-clock time for a
-		// valid lease.  The incarnation timestamps are already set above.
-		const ownershipNowEpochMs = clock.nowEpochMs();
-		const ownershipNowIso = clock.nowWallIso();
-
-		const acquireResult = acquireOwnership({
+		const migrateResult = migrateLegacyRunAtomic({
 			db: runDb.connection,
 			runId,
+			incarnationId: state.runId,
 			orchestratorName: state.orchestratorName,
-			nowEpochMs: ownershipNowEpochMs,
-			nowIso: ownershipNowIso,
+			nowEpochMs: clock.nowEpochMs(),
+			nowIso: clock.nowWallIso(),
 			leaseDurationMs: 30 * 60 * 1000,
+			legacyState: state as unknown as Record<string, unknown>,
+			legacyStartedAtEpochMs: state.startedAtEpochMs,
+			legacyStartedAt: state.startedAt,
+			legacyLastTransitionAtEpochMs: state.lastTransitionAtEpochMs,
+			legacyLastTransitionAt: state.lastTransitionAt,
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
 			contentionDeadlineMs: 5000,
 		});
 
-		if (acquireResult.kind !== "ACQUIRED") {
-			// DB opened but acquisition failed — close is handled in catch.
+		if (migrateResult.kind === "MIGRATED") {
+			return {
+				runDb,
+				handle: migrateResult.handle,
+				committed: migrateResult.committed,
+			};
+		}
+
+		if (migrateResult.kind === "ALREADY_ESTABLISHED") {
+			// Another process seeded between our pre-check and this call.
+			// We must close this connection — the caller will re-open or
+			// re-acquire on the existing DB.  But we need to return the
+			// DB and a handle.  Since we can't provide a valid handle,
+			// we throw and let the caller recover via re-acquisition.
+			runDb.close();
 			throw new StateMissingError(
-				`Failed to acquire ownership during legacy migration: ${acquireResult.kind}`,
+				"Legacy migration: run already established by another process",
 				{ runId, orchestratorName: state.orchestratorName },
 			);
 		}
 
-		handle = acquireResult.handle;
-
-		// Use the fenced initialization primitive so the initial state
-		// is only established if the caller still holds a valid lease.
-		// Re-read the clock *now* — the lease was checked at acquisition
-		// time, and the process may have been suspended since then.
-		const initNowEpochMs = clock.nowEpochMs();
-		const initNowIso = clock.nowWallIso();
-
-		const initResult = initializeStateUnderFence({
-			db: runDb.connection,
-			handle,
-			initialState: state as unknown as Record<string, unknown>,
-			nowEpochMs: initNowEpochMs,
-			nowIso: initNowIso,
-		});
-
-		if (initResult.kind === "STALE_HANDLE") {
-			throw new StateMissingError(
-				"Ownership became stale before initial state could be established",
-				{ runId, orchestratorName: state.orchestratorName },
-			);
-		}
-		if (initResult.kind === "EXPIRED_HANDLE") {
-			throw new StateMissingError(
-				"Ownership expired before initial state could be established",
-				{ runId, orchestratorName: state.orchestratorName },
-			);
-		}
-		if (initResult.kind === "DB_FAILURE") {
-			throw new StateMissingError(
-				"DB failure during initial state establishment",
-				{
-					runId,
-					orchestratorName: state.orchestratorName,
-					cause: initResult.cause,
-				},
-			);
-		}
-		if (initResult.kind === "ALREADY_INITIALIZED") {
-			// Another process completed the bootstrap between our pre-read
-			// and this call.  The state is now authoritative — fall through
-			// to return the open connection.  The caller will re-read the
-			// authoritative state.
-		}
-
-		// Do NOT project state.json here.  The caller re-reads the
-		// authoritative record from SQLite and projects it with the
-		// correct stateDigest, runIncarnationId, stateRevision, etc.
-
-		return { runDb, handle };
-	} catch (err) {
-		// Release ownership if acquired, so the next attempt can acquire
-		// immediately.  A DB_FAILURE result is attached to the error to
-		// prevent silent ownership leaks.
-		if (handle !== null) {
-			const releaseResult = releaseOwnership({
-				db: runDb.connection,
-				handle,
+		if (migrateResult.kind === "ACTIVE_CONFLICT") {
+			runDb.close();
+			throw new StateMissingError("Legacy migration: active owner conflict", {
+				runId,
+				orchestratorName: state.orchestratorName,
 			});
-			if (
-				releaseResult.kind !== "SUCCESS" &&
-				releaseResult.kind !== "STALE_HANDLE"
-			) {
-				// Wrap the original error so the caller can see both
-				// the seed failure and the release failure.
-				const wrapped = new StateMissingError(
-					`Legacy seed failed and ownership release also failed: ${releaseResult.kind}`,
-					{
-						runId,
-						orchestratorName: state.orchestratorName,
-						cause:
-							releaseResult.kind === "DB_FAILURE"
-								? new AggregateError(
-										[err, releaseResult.cause],
-										"legacy seed and ownership release both failed",
-									)
-								: err,
-					},
-				);
-				runDb.close();
-				throw wrapped;
-			}
 		}
+
+		if (migrateResult.kind === "INCOMPLETE_EXISTING_BOOTSTRAP") {
+			runDb.close();
+			throw new StateMissingError(
+				`Legacy migration: incomplete existing bootstrap — ${migrateResult.details}`,
+				{ runId, orchestratorName: state.orchestratorName },
+			);
+		}
+
+		if (migrateResult.kind === "DB_FAILURE") {
+			runDb.close();
+			throw new StateMissingError("Legacy migration: DB failure", {
+				runId,
+				orchestratorName: state.orchestratorName,
+				cause: migrateResult.cause,
+			});
+		}
+
+		// DB_CONTENTION_TIMEOUT
+		runDb.close();
+		throw new StateMissingError("Legacy migration: DB contention timeout", {
+			runId,
+			orchestratorName: state.orchestratorName,
+		});
+	} catch (err) {
+		// On any error, close the DB.  No ownership was established
+		// (the transaction was rolled back), so no release needed.
 		runDb.close();
 		throw err;
 	}
@@ -339,58 +281,17 @@ async function runInitialMode<S extends object>(
 		orchestratorName: config.name,
 	});
 
-	// Open SQLite database and acquire ownership transactionally.
+	// Open SQLite database and bootstrap atomically.
+	// incarnation + ownership + state are established in a single
+	// BEGIN IMMEDIATE ... COMMIT.  The LockHandle is only returned
+	// after the COMMIT succeeds.
 	const runDb = openRunDatabase({
 		driver: bunSqliteDriver,
 		dbPath,
 		busyTimeoutMs: 2000,
 	});
 
-	let acquireResult: ReturnType<typeof acquireOwnership>;
-	try {
-		acquireResult = acquireOwnership({
-			db: runDb.connection,
-			runId,
-			orchestratorName: config.name,
-			nowEpochMs: nowEpoch,
-			nowIso,
-			leaseDurationMs: 30 * 60 * 1000,
-			contentionDeadlineMs: 5000,
-		});
-	} catch (err) {
-		runDb.close();
-		throw err;
-	}
-
-	if (acquireResult.kind === "ACTIVE_CONFLICT") {
-		runDb.close();
-		emitRunLockedError(
-			new RunLockedError(
-				`Run is locked by PID ${acquireResult.ownerPid}, lease until ${new Date(acquireResult.leaseUntilEpochMs).toISOString()}`,
-				{
-					ownerPid: acquireResult.ownerPid,
-					acquiredAtEpochMs: nowEpoch,
-					leaseUntilEpochMs: acquireResult.leaseUntilEpochMs,
-					runId,
-				},
-			),
-			config,
-			runId,
-			logger,
-		);
-		doExit(2);
-	}
-
-	if (acquireResult.kind !== "ACQUIRED") {
-		runDb.close();
-		throw new ProtocolError(
-			`Failed to acquire ownership: ${acquireResult.kind}`,
-			{ runId, orchestratorName: config.name },
-		);
-	}
-
-	const handle = acquireResult.handle;
-	const initialState: StateFile<S> = {
+	const initialRecord: Record<string, unknown> = {
 		schemaVersion: STATE_SCHEMA_VERSION,
 		runId,
 		orchestratorName: config.name,
@@ -405,47 +306,51 @@ async function runInitialMode<S extends object>(
 		usedLabels: [],
 	};
 
-	// Establish the initial authoritative state under the current fence.
-	// Re-read the clock *now* — the process may have been suspended
-	// between acquisition and this call.
-	const initNowEpochMs = clock.nowEpochMs();
-	const initNowIso = clock.nowWallIso();
-
-	const initResult = initializeStateUnderFence({
+	const bootstrapResult = bootstrapNewRunAtomic({
 		db: runDb.connection,
-		handle,
-		initialState: initialState as unknown as Record<string, unknown>,
-		nowEpochMs: initNowEpochMs,
-		nowIso: initNowIso,
+		runId,
+		orchestratorName: config.name,
+		nowEpochMs: nowEpoch,
+		nowIso,
+		leaseDurationMs: 30 * 60 * 1000,
+		initialState: initialRecord,
+		stateSchemaVersion: STATE_SCHEMA_VERSION,
+		contentionDeadlineMs: 5000,
 	});
 
-	if (initResult.kind !== "INITIALIZED") {
-		// Release ownership so the next attempt can acquire immediately.
-		const releaseResult = releaseOwnership({ db: runDb.connection, handle });
+	if (bootstrapResult.kind !== "BOOTSTRAPPED") {
 		runDb.close();
-
-		if (
-			releaseResult.kind !== "SUCCESS" &&
-			releaseResult.kind !== "STALE_HANDLE"
-		) {
-			throw new ProtocolError(
-				`Failed to establish initial state: ${initResult.kind} (release also failed: ${releaseResult.kind})`,
-				{
-					runId,
-					orchestratorName: config.name,
-					cause:
-						releaseResult.kind === "DB_FAILURE"
-							? releaseResult.cause
-							: undefined,
-				},
+		if (bootstrapResult.kind === "ACTIVE_CONFLICT") {
+			emitRunLockedError(
+				new RunLockedError(
+					`Run is locked by another process, lease until ${new Date(bootstrapResult.leaseUntilEpochMs).toISOString()}`,
+					{
+						ownerPid: 0,
+						acquiredAtEpochMs: nowEpoch,
+						leaseUntilEpochMs: bootstrapResult.leaseUntilEpochMs,
+						runId,
+					},
+				),
+				config,
+				runId,
+				logger,
 			);
+			doExit(2);
 		}
-
+		if (bootstrapResult.kind === "ALREADY_ESTABLISHED") {
+			throw new ProtocolError("Run already established", {
+				runId,
+				orchestratorName: config.name,
+			});
+		}
 		throw new ProtocolError(
-			`Failed to establish initial state: ${initResult.kind}`,
+			`Failed to bootstrap run: ${bootstrapResult.kind}`,
 			{ runId, orchestratorName: config.name },
 		);
 	}
+
+	const handle = bootstrapResult.handle;
+	const committed = bootstrapResult.committed;
 
 	// Project state.json from the authoritative record under fence
 	// (with correct runIncarnationId, stateRevision, committedFenceToken,
@@ -457,8 +362,8 @@ async function runInitialMode<S extends object>(
 			runDb.connection,
 			handle,
 			runDir,
-			initResult.committed.state.stateRevision,
-			initResult.committed.stateDigest,
+			committed.stateRevision,
+			committed.stateDigest,
 		);
 
 		logger.enableDiskEmit(path.join(runDir, "events.ndjson"));
@@ -503,6 +408,28 @@ async function runInitialMode<S extends object>(
 		throw projectionErr;
 	}
 
+	const initialPhase = config.initial;
+
+	// Build the dispatch state from the committed authoritative record,
+	// NOT from the pre-lock initial values.  This ensures that
+	// lastTransitionAt and startedAt are consistent with what SQLite holds.
+	const committedState = committed.state as Record<string, unknown>;
+	const initialFile: StateFile<S> = {
+		schemaVersion: STATE_SCHEMA_VERSION,
+		runId,
+		orchestratorName: config.name,
+		startedAt: (committedState.startedAt as string) ?? nowIso,
+		startedAtEpochMs: (committedState.startedAtEpochMs as number) ?? nowEpoch,
+		lastTransitionAt: (committedState.lastTransitionAt as string) ?? nowIso,
+		lastTransitionAtEpochMs:
+			(committedState.lastTransitionAtEpochMs as number) ?? nowEpoch,
+		currentPhase: initialPhase,
+		phasesExecuted: 0,
+		accumulatedDurationMs: 0,
+		data: config.initialState,
+		usedLabels: [],
+	};
+
 	const abortController = new AbortController();
 	const ctx: DispatchContext<S> = {
 		config,
@@ -512,10 +439,10 @@ async function runInitialMode<S extends object>(
 		handle,
 		logger,
 		abortController,
-		currentPhase: config.initial,
+		currentPhase: initialPhase,
 		phasesExecuted: 0,
 		accumulatedDurationMs: 0,
-		stateRevision: initResult.committed.state.stateRevision,
+		stateRevision: committed.stateRevision,
 	};
 
 	installSignalHandlers(ctx);
@@ -531,7 +458,7 @@ async function runInitialMode<S extends object>(
 		// best-effort
 	}
 
-	await runDispatchLoop(ctx, initialState);
+	await runDispatchLoop(ctx, initialFile);
 }
 
 async function runResumeMode<S extends object>(
