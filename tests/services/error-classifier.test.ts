@@ -9,6 +9,8 @@ import {
 	ExternalResolutionMissingError,
 	ExternalResolutionSchemaError,
 	InvalidConfigError,
+	LegacyLockMigrationBlockedError,
+	MixedOwnershipProtocolError,
 	PhaseError,
 	ProtocolError,
 	RunLockedError,
@@ -73,6 +75,12 @@ describe("error-classifier acceptance (T-EC-01..14)", () => {
 	});
 	test("T-EC-12 | RunLockedError → permanent", () => {
 		expect(classify(locked)).toBe("permanent");
+	});
+	test("ownership migration guard errors are permanent", () => {
+		expect(classify(new LegacyLockMigrationBlockedError("x"))).toBe(
+			"permanent",
+		);
+		expect(classify(new MixedOwnershipProtocolError("x"))).toBe("permanent");
 	});
 	test("T-EC-13 | bare Error → unknown", () => {
 		expect(classify(new Error("unknown"))).toBe("unknown");

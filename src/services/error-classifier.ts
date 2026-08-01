@@ -41,6 +41,8 @@ export function classify(err: unknown): ErrorCategory {
 		case "persistence_failure":
 		case "artifact_integrity":
 		case "state_migration_blocked":
+		case "legacy_lock_migration_blocked":
+		case "mixed_ownership_protocol_detected":
 			return "permanent";
 	}
 }
