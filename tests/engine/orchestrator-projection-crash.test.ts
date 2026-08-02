@@ -296,7 +296,7 @@ describe("orchestrator projection crash recovery", () => {
 				sentinelFile,
 			});
 			expect(resumed.exitCode).not.toBe(0);
-			expect(resumed.stdout).toContain("resume without pending delegation");
+			expect(resumed.stdout).toContain("Initial dispatch was already claimed");
 			expect(existsSync(sentinelFile)).toBe(false);
 
 			const after = readPersistenceSnapshot(dbPath);
@@ -412,7 +412,7 @@ describe("orchestrator projection crash recovery", () => {
 
 			expect(secondResume.exitCode).not.toBe(0);
 			expect(secondResume.stdout).toContain(
-				"resume without pending delegation",
+				"Initial dispatch was already claimed",
 			);
 			expect(readSentinelEntries(sentinelFile)).toEqual(["start"]);
 		} finally {

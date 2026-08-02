@@ -4,6 +4,8 @@ import {
 	DelegationMissingResultError,
 	DelegationSchemaError,
 	DelegationTimeoutError,
+	IndeterminatePhaseExecutionError,
+	InitialDispatchAlreadyClaimedError,
 	ProtocolError,
 } from "../errors/concrete";
 import { readAndVerifyArtifact } from "../services/artifact-store";
@@ -322,10 +324,25 @@ export async function runHandleResume<S extends object>(
 			return undefined as never;
 		}
 
-		throw new ProtocolError("resume without pending delegation", {
-			runId: ctx.runId,
-			orchestratorName: ctx.config.name,
-		});
+		if (!pendingInitialDispatch && state.phasesExecuted === 0) {
+			throw new InitialDispatchAlreadyClaimedError(
+				"Initial dispatch was already claimed but the phase crashed before producing a delegation or terminal result — replay is intentionally forbidden",
+				{
+					runId: ctx.runId,
+					orchestratorName: ctx.config.name,
+					phase: state.currentPhase,
+				},
+			);
+		}
+
+		throw new IndeterminatePhaseExecutionError(
+			"Resume found no pending delegation and the state cannot be deterministically resumed — the phase may have partially executed",
+			{
+				runId: ctx.runId,
+				orchestratorName: ctx.config.name,
+				phase: state.currentPhase,
+			},
+		);
 	}
 
 	const classification = classifyResultFiles(ctx.runDir, pd);

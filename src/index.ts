@@ -16,6 +16,8 @@ export {
 	ExternalResolutionMalformedError,
 	ExternalResolutionMissingError,
 	ExternalResolutionSchemaError,
+	IndeterminatePhaseExecutionError,
+	InitialDispatchAlreadyClaimedError,
 	InvalidConfigError,
 	LegacyLockMigrationBlockedError,
 	type MigrationBlockReason,

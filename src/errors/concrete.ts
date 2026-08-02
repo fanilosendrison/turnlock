@@ -73,6 +73,33 @@ export class MixedOwnershipProtocolError extends OrchestratorError {
 	readonly kind = "mixed_ownership_protocol_detected" as const;
 }
 
+// ---------------------------------------------------------------------------
+// Indeterminate phase execution errors
+// ---------------------------------------------------------------------------
+
+/**
+ * Raised when a resume finds the state structurally valid but lacking a
+ * pending delegation, and the phase may have already started executing.
+ * Replay is deliberately forbidden because the direct effects of a
+ * partially-executed phase are indeterminate.
+ */
+export class IndeterminatePhaseExecutionError extends OrchestratorError {
+	readonly kind = "indeterminate_phase_execution" as const;
+}
+
+/**
+ * Raised specifically when the one-time initial dispatch authorization was
+ * already consumed but the phase crashed before producing a delegation or
+ * terminal result.
+ *
+ * This is a sub-case of indeterminate phase execution: the runtime knows
+ * the phase was eligible to execute but cannot determine what, if anything,
+ * it did.  Replay is intentionally fail-closed.
+ */
+export class InitialDispatchAlreadyClaimedError extends OrchestratorError {
+	readonly kind = "initial_dispatch_already_claimed" as const;
+}
+
 export interface PersistenceFailureErrorOptions
 	extends OrchestratorErrorOptions {
 	readonly operation: AuthorityOperation;

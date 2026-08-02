@@ -938,9 +938,9 @@ await runOrchestrator<State>({
 				"ERROR",
 				RUN_IDS.resumeWithoutPending,
 			);
-			expect(error.fields.errorKind).toBe("protocol");
+			expect(error.fields.errorKind).toBe("indeterminate_phase_execution");
 			expect(String(error.fields.message)).toContain(
-				"resume without pending delegation",
+				"cannot be deterministically resumed",
 			);
 		} finally {
 			workspace.cleanup();

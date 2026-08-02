@@ -19,7 +19,9 @@ export type OrchestratorErrorKind =
 	| "artifact_integrity"
 	| "state_migration_blocked"
 	| "legacy_lock_migration_blocked"
-	| "mixed_ownership_protocol_detected";
+	| "mixed_ownership_protocol_detected"
+	| "indeterminate_phase_execution"
+	| "initial_dispatch_already_claimed";
 
 export interface OrchestratorErrorOptions {
 	readonly cause?: unknown;
