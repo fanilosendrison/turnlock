@@ -17,7 +17,13 @@
 // and the parent polls for it.
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { STATE_SCHEMA_VERSION } from "../../src/constants";
 import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
@@ -30,6 +36,11 @@ import {
 	migrateLegacyRunAtomic,
 } from "../../src/persistence/sqlite/run-bootstrap";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
+import {
+	isSubprocessAlive,
+	killAndWaitForSigkill,
+	killSubprocessIfAlive,
+} from "../helpers/crash-worker-process";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 
 // ---------------------------------------------------------------------------
@@ -86,7 +97,10 @@ function assertAllThreeTablesPresent(db: ReturnType<typeof openRunDatabase>) {
 	expect(state.cnt).toBe(1);
 }
 
-function assertThreeTableCoherence(db: ReturnType<typeof openRunDatabase>) {
+function assertThreeTableCoherence(
+	db: ReturnType<typeof openRunDatabase>,
+	runId: string,
+) {
 	const incRow = db.connection
 		.prepare("SELECT incarnation_id FROM run_incarnation WHERE singleton = 1")
 		.get() as { incarnation_id: string };
@@ -111,6 +125,9 @@ function assertThreeTableCoherence(db: ReturnType<typeof openRunDatabase>) {
 		committed_by_owner_token: string;
 		committed_by_fence_token: number | bigint;
 	};
+
+	expect(incRow.incarnation_id).toBe(`incarnation-${runId}`);
+	expect(ownRow.owner_token).toBe(`owner-${runId}`);
 
 	// incarnation_id matches across all three tables.
 	expect(ownRow.incarnation_id).toBe(incRow.incarnation_id);
@@ -193,7 +210,6 @@ async function spawnAndKillAtPoint(
 ): Promise<{
 	stdout: string;
 	stderr: string;
-	exitSignal: NodeJS.Signals | null;
 }> {
 	const child = Bun.spawn({
 		cmd: ["bun", "run", WORKER_PATH, ...args],
@@ -201,33 +217,21 @@ async function spawnAndKillAtPoint(
 		stderr: "pipe",
 	});
 
-	// Wait for the signal file to appear.
-	const signalContent = await waitForSignalFile(signalFile, timeoutMs);
-
-	// Verify the child is still alive.
 	try {
-		if (child.pid !== undefined) {
-			process.kill(child.pid, 0);
+		const signalContent = await waitForSignalFile(signalFile, timeoutMs);
+		if (!isSubprocessAlive(child)) {
+			throw new Error(
+				`Child died before SIGKILL. Signal content: ${signalContent}`,
+			);
 		}
-	} catch {
-		throw new Error(
-			`Child died before SIGKILL. Signal content: ${signalContent}`,
-		);
+
+		await killAndWaitForSigkill(child, "bootstrap crash worker");
+		const stdout = await new Response(child.stdout).text();
+		const stderr = await new Response(child.stderr).text();
+		return { stdout, stderr };
+	} finally {
+		await killSubprocessIfAlive(child, "bootstrap crash worker");
 	}
-
-	// Send SIGKILL.
-	child.kill("SIGKILL");
-
-	// Wait for the child to exit, collecting stdout/stderr.
-	await child.exited;
-	const stdout = await new Response(child.stdout).text();
-	const stderr = await new Response(child.stderr).text();
-
-	return {
-		stdout,
-		stderr,
-		exitSignal: child.killed ? ("SIGKILL" as NodeJS.Signals) : null,
-	};
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +242,12 @@ describe("bootstrap pre-commit crash", () => {
 	for (const point of PRE_COMMIT_POINTS) {
 		test(`SIGKILL at ${point} — zero durable rows`, async () => {
 			const dir = makeTempDir("crash-bootstrap-");
-			const dbPath = join(dir, "turnlock.sqlite3");
+			const runDir = join(
+				dir,
+				"runs",
+				"crash-test",
+				`crash-${point.toLowerCase().replace(/_/g, "-")}`,
+			);
 			const signalFile = join(dir, "signal.json");
 			const runId = `crash-${point.toLowerCase().replace(/_/g, "-")}`;
 
@@ -247,8 +256,8 @@ describe("bootstrap pre-commit crash", () => {
 				// bootstrap, reach the fault point, signal, and block.
 				await spawnAndKillAtPoint(
 					[
-						"--db-path",
-						dbPath,
+						"--run-dir",
+						runDir,
 						"--mode",
 						"BOOTSTRAP",
 						"--crash-point",
@@ -267,7 +276,7 @@ describe("bootstrap pre-commit crash", () => {
 				// Reopen the DB and verify all three tables are empty.
 				const reopened = openRunDatabase({
 					driver: bunSqliteDriver,
-					dbPath,
+					dbPath: join(runDir, "turnlock.sqlite3"),
 					busyTimeoutMs: 500,
 				});
 
@@ -280,7 +289,7 @@ describe("bootstrap pre-commit crash", () => {
 				// Verify a fresh bootstrap can succeed on the same DB.
 				const retry = openRunDatabase({
 					driver: bunSqliteDriver,
-					dbPath,
+					dbPath: join(runDir, "turnlock.sqlite3"),
 					busyTimeoutMs: 500,
 				});
 
@@ -335,15 +344,15 @@ describe("bootstrap pre-commit crash", () => {
 describe("bootstrap post-commit crash", () => {
 	test("SIGKILL at AFTER_COMMIT_BEFORE_HANDLE — durable state, no handle", async () => {
 		const dir = makeTempDir("crash-postcommit-");
-		const dbPath = join(dir, "turnlock.sqlite3");
+		const runDir = join(dir, "runs", "crash-test", "crash-postcommit");
 		const signalFile = join(dir, "signal.json");
 		const runId = "crash-postcommit";
 
 		try {
 			const { stdout } = await spawnAndKillAtPoint(
 				[
-					"--db-path",
-					dbPath,
+					"--run-dir",
+					runDir,
 					"--mode",
 					"BOOTSTRAP",
 					"--crash-point",
@@ -367,13 +376,13 @@ describe("bootstrap post-commit crash", () => {
 			// Reopen — all three tables must be populated.
 			const reopened = openRunDatabase({
 				driver: bunSqliteDriver,
-				dbPath,
+				dbPath: join(runDir, "turnlock.sqlite3"),
 				busyTimeoutMs: 500,
 			});
 
 			try {
 				assertAllThreeTablesPresent(reopened);
-				assertThreeTableCoherence(reopened);
+				assertThreeTableCoherence(reopened, runId);
 			} finally {
 				reopened.close();
 			}
@@ -381,7 +390,7 @@ describe("bootstrap post-commit crash", () => {
 			// Verify orphaned lease: immediate attempt → ACTIVE_CONFLICT.
 			const conflict = openRunDatabase({
 				driver: bunSqliteDriver,
-				dbPath,
+				dbPath: join(runDir, "turnlock.sqlite3"),
 				busyTimeoutMs: 500,
 			});
 
@@ -424,7 +433,7 @@ describe("bootstrap post-commit crash", () => {
 
 			const takeover = openRunDatabase({
 				driver: bunSqliteDriver,
-				dbPath,
+				dbPath: join(runDir, "turnlock.sqlite3"),
 				busyTimeoutMs: 500,
 			});
 
@@ -478,12 +487,13 @@ describe("bootstrap post-commit crash", () => {
 describe("legacy migration crash", () => {
 	test("migration pre-commit SIGKILL — zero rows, state.json intact", async () => {
 		const dir = makeTempDir("crash-migration-pre-");
-		const dbPath = join(dir, "turnlock.sqlite3");
+		const runDir = join(dir, "runs", "crash-test", "crash-migration-pre");
 		const signalFile = join(dir, "signal.json");
-		const legacyStatePath = join(dir, "state.json");
+		const legacyStatePath = join(runDir, "state.json");
 		const runId = "crash-migration-pre";
 
 		// Write legacy state.json.
+		mkdirSync(runDir, { recursive: true });
 		const stateJson = legacyState({ currentPhase: "legacy-crash-pre" });
 		const stateJsonBytes = Buffer.from(JSON.stringify(stateJson), "utf-8");
 		writeFileSync(legacyStatePath, stateJsonBytes);
@@ -491,8 +501,8 @@ describe("legacy migration crash", () => {
 		try {
 			await spawnAndKillAtPoint(
 				[
-					"--db-path",
-					dbPath,
+					"--run-dir",
+					runDir,
 					"--mode",
 					"MIGRATION",
 					"--crash-point",
@@ -518,7 +528,7 @@ describe("legacy migration crash", () => {
 			// Verify tables empty.
 			const reopened = openRunDatabase({
 				driver: bunSqliteDriver,
-				dbPath,
+				dbPath: join(runDir, "turnlock.sqlite3"),
 				busyTimeoutMs: 500,
 			});
 
@@ -534,12 +544,13 @@ describe("legacy migration crash", () => {
 
 	test("migration post-commit SIGKILL — durable state, legacy timestamps preserved", async () => {
 		const dir = makeTempDir("crash-migration-post-");
-		const dbPath = join(dir, "turnlock.sqlite3");
+		const runDir = join(dir, "runs", "crash-test", "crash-migration-post");
 		const signalFile = join(dir, "signal.json");
-		const legacyStatePath = join(dir, "state.json");
+		const legacyStatePath = join(runDir, "state.json");
 		const runId = "crash-migration-post";
 
 		const stateJson = legacyState({ currentPhase: "legacy-crash-post" });
+		mkdirSync(runDir, { recursive: true });
 		writeFileSync(
 			legacyStatePath,
 			Buffer.from(JSON.stringify(stateJson), "utf-8"),
@@ -548,8 +559,8 @@ describe("legacy migration crash", () => {
 		try {
 			const { stdout } = await spawnAndKillAtPoint(
 				[
-					"--db-path",
-					dbPath,
+					"--run-dir",
+					runDir,
 					"--mode",
 					"MIGRATION",
 					"--crash-point",
@@ -575,13 +586,13 @@ describe("legacy migration crash", () => {
 			// Reopen — all three tables populated.
 			const reopened = openRunDatabase({
 				driver: bunSqliteDriver,
-				dbPath,
+				dbPath: join(runDir, "turnlock.sqlite3"),
 				busyTimeoutMs: 500,
 			});
 
 			try {
 				assertAllThreeTablesPresent(reopened);
-				assertThreeTableCoherence(reopened);
+				assertThreeTableCoherence(reopened, runId);
 
 				// Legacy timestamps preserved in incarnation.
 				const incRow = reopened.connection
@@ -624,7 +635,7 @@ describe("legacy migration crash", () => {
 			// Re-migration should detect already established.
 			const retry = openRunDatabase({
 				driver: bunSqliteDriver,
-				dbPath,
+				dbPath: join(runDir, "turnlock.sqlite3"),
 				busyTimeoutMs: 500,
 			});
 
@@ -685,14 +696,14 @@ describe("legacy migration crash", () => {
 describe("no handle received before kill", () => {
 	test("pre-commit crash — child never receives BOOTSTRAPPED", async () => {
 		const dir = makeTempDir("crash-nohandle-");
-		const dbPath = join(dir, "turnlock.sqlite3");
+		const runDir = join(dir, "runs", "crash-test", "crash-nohandle");
 		const signalFile = join(dir, "signal.json");
 
 		try {
 			const { stdout } = await spawnAndKillAtPoint(
 				[
-					"--db-path",
-					dbPath,
+					"--run-dir",
+					runDir,
 					"--mode",
 					"BOOTSTRAP",
 					"--crash-point",
