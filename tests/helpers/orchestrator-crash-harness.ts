@@ -1,6 +1,11 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+	isSubprocessAlive,
+	killAndWaitForSigkill,
+	killSubprocessIfAlive,
+} from "./crash-worker-process";
 
 export const CRASH_TEST_ORCHESTRATOR_NAME = "crash-orchestrator-test";
 
@@ -58,7 +63,7 @@ export interface PersistenceSnapshot {
 }
 
 export interface WorkerOutput {
-	readonly exitCode: number | undefined;
+	readonly exitCode: number;
 	readonly stdout: string;
 	readonly stderr: string;
 }
@@ -236,12 +241,10 @@ export type RunningCrashWorker = ReturnType<typeof spawnWorker>;
 export async function killAndCollect(
 	worker: RunningCrashWorker,
 ): Promise<WorkerOutput> {
-	try {
-		worker.child.kill("SIGKILL");
-	} catch {
-		// The process may already have exited after an assertion failure.
-	}
-	const exitCode = await worker.child.exited.catch(() => undefined);
+	const exitCode = await killAndWaitForSigkill(
+		worker.child,
+		"orchestrator crash worker",
+	);
 	const [stdout, stderr] = await Promise.all([worker.stdout, worker.stderr]);
 	return { exitCode, stdout, stderr };
 }
@@ -265,10 +268,9 @@ async function waitForLiveWorkerSignal(
 }
 
 function assertWorkerIsAlive(worker: RunningCrashWorker): void {
-	if (worker.child.pid === undefined) {
-		throw new Error("Worker has no process id");
+	if (!isSubprocessAlive(worker.child)) {
+		throw new Error("Worker is not alive");
 	}
-	process.kill(worker.child.pid, 0);
 }
 
 export async function crashInitialModeAt(
@@ -291,6 +293,7 @@ export async function crashInitialModeAt(
 		"--fault-point",
 		faultPoint,
 	]);
+	let failure: unknown;
 
 	try {
 		const signal = await waitForLiveWorkerSignal(worker, signalFile);
@@ -298,11 +301,15 @@ export async function crashInitialModeAt(
 		const output = await killAndCollect(worker);
 		return { signal, ...output };
 	} catch (error) {
-		const output = await killAndCollect(worker);
-		throw new Error(
-			`Initial crash worker failed: ${error instanceof Error ? error.message : String(error)}; stdout=${JSON.stringify(output.stdout)}; stderr=${JSON.stringify(output.stderr)}`,
-		);
+		failure = error;
+	} finally {
+		await killSubprocessIfAlive(worker.child, "orchestrator crash worker");
 	}
+
+	const [stdout, stderr] = await Promise.all([worker.stdout, worker.stderr]);
+	throw new Error(
+		`Initial crash worker failed: ${failure instanceof Error ? failure.message : String(failure)}; stdout=${JSON.stringify(stdout)}; stderr=${JSON.stringify(stderr)}`,
+	);
 }
 
 export async function spawnPublicResumeAtPhase(
@@ -323,15 +330,24 @@ export async function spawnPublicResumeAtPhase(
 		"--run-id",
 		runId,
 	]);
+	let handedOff = false;
+	let failure: unknown;
 
 	try {
 		const signal = await waitForLiveWorkerSignal(worker, phaseSignalFile);
 		assertWorkerIsAlive(worker);
+		handedOff = true;
 		return { worker, signal };
 	} catch (error) {
-		const output = await killAndCollect(worker);
-		throw new Error(
-			`Resume worker failed: ${error instanceof Error ? error.message : String(error)}; stdout=${JSON.stringify(output.stdout)}; stderr=${JSON.stringify(output.stderr)}`,
-		);
+		failure = error;
+	} finally {
+		if (!handedOff) {
+			await killSubprocessIfAlive(worker.child, "orchestrator crash worker");
+		}
 	}
+
+	const [stdout, stderr] = await Promise.all([worker.stdout, worker.stderr]);
+	throw new Error(
+		`Resume worker failed: ${failure instanceof Error ? failure.message : String(failure)}; stdout=${JSON.stringify(stdout)}; stderr=${JSON.stringify(stderr)}`,
+	);
 }
