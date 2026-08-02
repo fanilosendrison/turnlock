@@ -5,6 +5,7 @@ import {
 	isSubprocessAlive,
 	killAndWaitForSigkill,
 	killSubprocessIfAlive,
+	waitForExitWithTimeout,
 } from "./crash-worker-process";
 
 export const CRASH_TEST_ORCHESTRATOR_NAME = "crash-orchestrator-test";
@@ -312,12 +313,17 @@ export async function crashInitialModeAt(
 	);
 }
 
+export interface PublicResumeOptions {
+	readonly sentinelFile?: string;
+}
+
 export async function spawnPublicResumeAtPhase(
 	runDirRoot: string,
 	runId: string,
 	phaseSignalFile: string,
+	options: PublicResumeOptions = {},
 ): Promise<{ worker: RunningCrashWorker; signal: WorkerSignal }> {
-	const worker = spawnWorker([
+	const args = [
 		"--worker-mode",
 		"resume",
 		"--run-dir-root",
@@ -329,7 +335,11 @@ export async function spawnPublicResumeAtPhase(
 		"--resume",
 		"--run-id",
 		runId,
-	]);
+	];
+	if (options.sentinelFile !== undefined) {
+		args.push("--sentinel-file", options.sentinelFile);
+	}
+	const worker = spawnWorker(args);
 	let handedOff = false;
 	let failure: unknown;
 
@@ -350,4 +360,71 @@ export async function spawnPublicResumeAtPhase(
 	throw new Error(
 		`Resume worker failed: ${failure instanceof Error ? failure.message : String(failure)}; stdout=${JSON.stringify(stdout)}; stderr=${JSON.stringify(stderr)}`,
 	);
+}
+
+export async function runInitialToCompletion(
+	runDirRoot: string,
+	runId: string,
+	options: PublicResumeOptions = {},
+): Promise<WorkerOutput> {
+	const args = [
+		"--worker-mode",
+		"initial",
+		"--run-dir-root",
+		runDirRoot,
+		"--orchestrator-name",
+		CRASH_TEST_ORCHESTRATOR_NAME,
+		"--phase-completion",
+		"done",
+		"--run-id",
+		runId,
+	];
+	if (options.sentinelFile !== undefined) {
+		args.push("--sentinel-file", options.sentinelFile);
+	}
+	const worker = spawnWorker(args);
+	try {
+		const exitCode = await waitForExitWithTimeout(
+			worker.child,
+			"completed initial worker",
+		);
+		const [stdout, stderr] = await Promise.all([worker.stdout, worker.stderr]);
+		return { exitCode, stdout, stderr };
+	} finally {
+		await killSubprocessIfAlive(worker.child, "completed initial worker");
+	}
+}
+
+export async function runPublicResumeToCompletion(
+	runDirRoot: string,
+	runId: string,
+	options: PublicResumeOptions = {},
+): Promise<WorkerOutput> {
+	const args = [
+		"--worker-mode",
+		"resume",
+		"--run-dir-root",
+		runDirRoot,
+		"--orchestrator-name",
+		CRASH_TEST_ORCHESTRATOR_NAME,
+		"--phase-completion",
+		"done",
+		"--resume",
+		"--run-id",
+		runId,
+	];
+	if (options.sentinelFile !== undefined) {
+		args.push("--sentinel-file", options.sentinelFile);
+	}
+	const worker = spawnWorker(args);
+	try {
+		const exitCode = await waitForExitWithTimeout(
+			worker.child,
+			"completed public resume worker",
+		);
+		const [stdout, stderr] = await Promise.all([worker.stdout, worker.stderr]);
+		return { exitCode, stdout, stderr };
+	} finally {
+		await killSubprocessIfAlive(worker.child, "completed public resume worker");
+	}
 }

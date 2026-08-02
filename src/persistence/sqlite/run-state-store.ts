@@ -8,6 +8,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
 	PENDING_INITIAL_DISPATCH_STATE_FIELD,
+	PENDING_INITIAL_DISPATCH_VERSION,
+	PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
 	STATE_SCHEMA_VERSION,
 } from "../../constants";
 import {
@@ -84,6 +86,22 @@ export interface CommitStateParams<S extends object> {
 
 export type CommitStateResult =
 	| { readonly kind: "COMMITTED"; readonly committed: CommittedState<object> }
+	| { readonly kind: "STALE_HANDLE" }
+	| { readonly kind: "EXPIRED_HANDLE" }
+	| { readonly kind: "REVISION_CONFLICT" }
+	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
+
+export interface ClaimInitialDispatchParams {
+	readonly db: SqliteConnection;
+	readonly handle: LockHandle;
+	/** Optional clock for lease-critical timestamp capture after BEGIN IMMEDIATE. */
+	readonly leaseClockEpochMs?: () => number;
+}
+
+/** Result of consuming the one-time authorization to invoke the first phase. */
+export type ClaimInitialDispatchResult =
+	| { readonly kind: "CLAIMED"; readonly committed: CommittedState<object> }
+	| { readonly kind: "INITIAL_DISPATCH_NOT_PENDING" }
 	| { readonly kind: "STALE_HANDLE" }
 	| { readonly kind: "EXPIRED_HANDLE" }
 	| { readonly kind: "REVISION_CONFLICT" }
@@ -183,6 +201,12 @@ SELECT
 FROM run_state rs
 JOIN run_incarnation ri ON ri.incarnation_id = rs.incarnation_id
 WHERE rs.singleton = 1
+`;
+
+const READ_RAW_STATE_JSON_SQL = `
+SELECT state_json
+FROM run_state
+WHERE singleton = 1
 `;
 
 // ---------------------------------------------------------------------------
@@ -540,6 +564,207 @@ export function commitState<S extends object>(
 	}
 }
 
+function diagnoseClaimInitialDispatchUpdateFailure(
+	db: SqliteConnection,
+	handle: LockHandle,
+	lockEpochMs: number,
+): ClaimInitialDispatchResult {
+	const ownershipRow = db
+		.prepare(
+			`SELECT ownership_status, owner_token, fence_token, lease_until_epoch_ms
+			 FROM run_ownership WHERE singleton = 1`,
+		)
+		.get() as
+		| {
+				ownership_status: string;
+				owner_token: string | null;
+				fence_token: number | bigint;
+				lease_until_epoch_ms: number | null;
+		  }
+		| undefined;
+
+	if (ownershipRow === undefined) {
+		return {
+			kind: "DB_FAILURE",
+			cause: new DbIntegrityError(
+				"ownership row missing during initial dispatch claim",
+			),
+		};
+	}
+	if (ownershipRow.ownership_status !== "HELD") {
+		return { kind: "STALE_HANDLE" };
+	}
+	if (ownershipRow.owner_token !== handle.ownerToken) {
+		return { kind: "STALE_HANDLE" };
+	}
+	if (bigintFromRow(ownershipRow.fence_token) !== handle.fenceToken) {
+		return { kind: "STALE_HANDLE" };
+	}
+	if (
+		ownershipRow.lease_until_epoch_ms === null ||
+		lockEpochMs >= ownershipRow.lease_until_epoch_ms
+	) {
+		return { kind: "EXPIRED_HANDLE" };
+	}
+
+	const stateRow = db
+		.prepare("SELECT state_revision FROM run_state WHERE singleton = 1")
+		.get() as { state_revision: number | bigint } | undefined;
+	if (stateRow === undefined) {
+		return {
+			kind: "DB_FAILURE",
+			cause: new DbIntegrityError(
+				"state row missing during initial dispatch claim",
+			),
+		};
+	}
+	if (bigintFromRow(stateRow.state_revision) !== 0n) {
+		return { kind: "REVISION_CONFLICT" };
+	}
+
+	return {
+		kind: "DB_FAILURE",
+		cause: new DbIntegrityError(
+			"initial dispatch claim failed for unknown reason",
+		),
+	};
+}
+
+/**
+ * Atomically consume the one-time authorization to invoke a run's initial
+ * phase. A crash after this commit is deliberately fail-closed: no successor
+ * may infer that invoking the phase is safe.
+ */
+export function claimInitialDispatchUnderFence(
+	params: ClaimInitialDispatchParams,
+): ClaimInitialDispatchResult {
+	const { db, handle } = params;
+
+	try {
+		beginImmediate(db);
+	} catch (error) {
+		return { kind: "DB_FAILURE", cause: error };
+	}
+
+	const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
+	const lockIso = new Date(lockEpochMs).toISOString();
+
+	try {
+		const current = readAuthoritativeState<object>(db);
+		if (current.state === null) {
+			rollback(db);
+			return {
+				kind: "DB_FAILURE",
+				cause: new DbIntegrityError(
+					"state row missing during initial dispatch claim",
+				),
+			};
+		}
+		if (current.state.stateRevision !== "0") {
+			rollback(db);
+			return { kind: "REVISION_CONFLICT" };
+		}
+		if (!current.pendingInitialDispatch) {
+			rollback(db);
+			return { kind: "INITIAL_DISPATCH_NOT_PENDING" };
+		}
+
+		const rawStateRow = db.prepare(READ_RAW_STATE_JSON_SQL).get() as
+			| { state_json: string }
+			| undefined;
+		if (rawStateRow === undefined) {
+			rollback(db);
+			return {
+				kind: "DB_FAILURE",
+				cause: new DbIntegrityError(
+					"raw state row missing during initial dispatch claim",
+				),
+			};
+		}
+
+		const parsedState = JSON.parse(rawStateRow.state_json) as unknown;
+		if (
+			typeof parsedState !== "object" ||
+			parsedState === null ||
+			Array.isArray(parsedState)
+		) {
+			throw new DbIntegrityError(
+				"state_json must be an object during initial dispatch claim",
+			);
+		}
+		const stateWithoutPendingInitialDispatch = parsedState as Record<
+			string,
+			unknown
+		>;
+		if (
+			stateWithoutPendingInitialDispatch[
+				PENDING_INITIAL_DISPATCH_STATE_FIELD
+			] !== true ||
+			stateWithoutPendingInitialDispatch[
+				PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD
+			] !== PENDING_INITIAL_DISPATCH_VERSION
+		) {
+			rollback(db);
+			return { kind: "INITIAL_DISPATCH_NOT_PENDING" };
+		}
+		delete stateWithoutPendingInitialDispatch[
+			PENDING_INITIAL_DISPATCH_STATE_FIELD
+		];
+		delete stateWithoutPendingInitialDispatch[
+			PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD
+		];
+
+		const nextStateJson = JSON.stringify(stateWithoutPendingInitialDispatch);
+		const nextStateDigest = computeDigest(nextStateJson);
+		const claimedRow = db.prepare(COMMIT_STATE_SQL).get({
+			":schema_version": current.state.schemaVersion,
+			":state_json": nextStateJson,
+			":state_digest": nextStateDigest,
+			":owner_token": handle.ownerToken,
+			":fence_token": handle.fenceToken,
+			":now_epoch": lockEpochMs,
+			":now_iso": lockIso,
+			":incarnation_id": handle.incarnationId,
+			":expected_revision": 0n,
+		}) as unknown | undefined;
+
+		if (claimedRow === undefined) {
+			rollback(db);
+			return diagnoseClaimInitialDispatchUpdateFailure(db, handle, lockEpochMs);
+		}
+
+		const claimed = readAuthoritativeState<object>(db);
+		if (claimed.state === null || claimed.digest === null) {
+			throw new DbIntegrityError(
+				"claimed initial dispatch state could not be re-read",
+			);
+		}
+		if (claimed.state.stateRevision !== "1" || claimed.pendingInitialDispatch) {
+			throw new DbIntegrityError(
+				"initial dispatch claim did not produce revision 1 without its marker",
+			);
+		}
+
+		try {
+			commit(db);
+		} catch (error) {
+			rollback(db);
+			return { kind: "DB_FAILURE", cause: error };
+		}
+
+		return {
+			kind: "CLAIMED",
+			committed: {
+				state: claimed.state,
+				stateDigest: claimed.digest,
+			},
+		};
+	} catch (error) {
+		rollback(db);
+		return { kind: "DB_FAILURE", cause: error };
+	}
+}
+
 export interface ReadStateResult<S extends object> {
 	readonly state: StateRecord<S> | null;
 	readonly digest: string | null;
@@ -607,7 +832,9 @@ export function readAuthoritativeState<S extends object>(
 		state,
 		digest: row.state_digest,
 		pendingInitialDispatch:
-			parsed[PENDING_INITIAL_DISPATCH_STATE_FIELD] === true,
+			parsed[PENDING_INITIAL_DISPATCH_STATE_FIELD] === true &&
+			parsed[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD] ===
+				PENDING_INITIAL_DISPATCH_VERSION,
 	};
 }
 

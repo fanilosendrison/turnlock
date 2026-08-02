@@ -18,6 +18,7 @@ import { reemitDelegationAttempt } from "./delegation-reemit";
 import { runDispatchLoop } from "./dispatch-loop";
 import { runExternalRequestResume } from "./external-request-resume";
 import {
+	claimInitialDispatchWithProjection,
 	projectCanonicalArtifactFenced,
 	releaseOwnershipFromContext,
 } from "./state-commit";
@@ -313,9 +314,10 @@ export async function runHandleResume<S extends object>(
 			state.terminalResult === undefined;
 
 		if (isPristineBootstrap) {
-			// Bootstrap committed before the first phase became durable. Resume
-			// from SQLite's authoritative currentPhase, never config.initial or
-			// the repairable state.json projection.
+			// Claim the one-time bootstrap authorization before invoking the
+			// phase. A crash after this durable transition is intentionally
+			// fail-closed rather than replaying an indeterminate direct effect.
+			claimInitialDispatchWithProjection(ctx);
 			await runDispatchLoop(ctx, state);
 			return undefined as never;
 		}

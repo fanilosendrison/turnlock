@@ -2,6 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
 	PENDING_INITIAL_DISPATCH_STATE_FIELD,
+	PENDING_INITIAL_DISPATCH_VERSION,
+	PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
 	STATE_SCHEMA_VERSION,
 } from "../constants";
 import {
@@ -52,6 +54,7 @@ import {
 	validateExternalRunId,
 } from "./preflight";
 import { installSignalHandlers } from "./signal-handlers";
+import { claimInitialDispatchWithProjection } from "./state-commit";
 
 const DB_FILENAME = "turnlock.sqlite3";
 
@@ -59,6 +62,8 @@ export interface RunOrchestratorInternalHooks {
 	afterBootstrapResult?(): void;
 	beforeInitialProjection?(): void;
 	afterInitialProjection?(): void;
+	beforeInitialDispatchClaim?(): void;
+	afterInitialDispatchClaim?(): void;
 }
 
 export interface RunOrchestratorInternalDependencies {
@@ -323,6 +328,8 @@ async function runInitialMode<S extends object>(
 		data: config.initialState,
 		usedLabels: [],
 		[PENDING_INITIAL_DISPATCH_STATE_FIELD]: true,
+		[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD]:
+			PENDING_INITIAL_DISPATCH_VERSION,
 	};
 
 	const bootstrapResult = bootstrapNewRunAtomic({
@@ -371,12 +378,49 @@ async function runInitialMode<S extends object>(
 	const handle = bootstrapResult.handle;
 	const committed = bootstrapResult.committed;
 
-	// Project state.json from the authoritative record under fence
-	// (with correct runIncarnationId, stateRevision, committedFenceToken,
-	// and digest).
-	// Wrap every injectable post-bootstrap boundary in the same cleanup scope:
-	// an injected exception releases ownership, while SIGKILL deliberately
-	// leaves the durable lease for takeover after expiry.
+	// Build the dispatch state from the committed authoritative record, never
+	// from the pre-lock config values. The private initial-dispatch marker is
+	// intentionally omitted from StateFile and remains SQLite-only evidence.
+	const committedState = committed.state as Record<string, unknown>;
+	const initialFile: StateFile<S> = {
+		schemaVersion:
+			(committedState.schemaVersion as typeof STATE_SCHEMA_VERSION) ??
+			STATE_SCHEMA_VERSION,
+		runId: (committedState.runId as string) ?? runId,
+		orchestratorName:
+			(committedState.orchestratorName as string) ?? config.name,
+		startedAt: (committedState.startedAt as string) ?? nowIso,
+		startedAtEpochMs: (committedState.startedAtEpochMs as number) ?? nowEpoch,
+		lastTransitionAt: (committedState.lastTransitionAt as string) ?? nowIso,
+		lastTransitionAtEpochMs:
+			(committedState.lastTransitionAtEpochMs as number) ?? nowEpoch,
+		currentPhase: (committedState.currentPhase as string) ?? config.initial,
+		phasesExecuted: (committedState.phasesExecuted as number) ?? 0,
+		accumulatedDurationMs:
+			(committedState.accumulatedDurationMs as number) ?? 0,
+		data: (committedState.data as S) ?? config.initialState,
+		usedLabels: (committedState.usedLabels as readonly string[]) ?? [],
+	};
+	const initialPhase = initialFile.currentPhase;
+
+	const abortController = new AbortController();
+	const ctx: DispatchContext<S> = {
+		config,
+		runId,
+		runDir,
+		runDb,
+		handle,
+		logger,
+		abortController,
+		currentPhase: initialPhase,
+		phasesExecuted: initialFile.phasesExecuted,
+		accumulatedDurationMs: initialFile.accumulatedDurationMs,
+		stateRevision: committed.stateRevision,
+	};
+
+	// Every post-bootstrap boundary, including the durable claim, has one
+	// cleanup owner. SIGKILL deliberately bypasses this path so the successor
+	// must take over only after the lease expires.
 	try {
 		dependencies.hooks?.afterBootstrapResult?.();
 		dependencies.hooks?.beforeInitialProjection?.();
@@ -392,95 +436,57 @@ async function runInitialMode<S extends object>(
 		dependencies.hooks?.afterInitialProjection?.();
 
 		logger.enableDiskEmit(path.join(runDir, "events.ndjson"));
-
 		logger.emit({
 			eventType: "orchestrator_start",
 			runId,
 			orchestratorName: config.name,
-			initialPhase: config.initial,
+			initialPhase,
 			timestamp: nowIso,
 		});
-	} catch (projectionErr) {
-		// State is already committed in SQLite.  Release ownership so the
-		// next --resume can acquire immediately.
+
+		installSignalHandlers(ctx);
+		try {
+			cleanupOldRuns(
+				cwd,
+				config.name,
+				config.retentionDays ?? 7,
+				runId,
+				config.runDirRoot,
+			);
+		} catch {
+			// best-effort
+		}
+
+		dependencies.hooks?.beforeInitialDispatchClaim?.();
+		claimInitialDispatchWithProjection(ctx);
+		dependencies.hooks?.afterInitialDispatchClaim?.();
+	} catch (setupErr) {
 		const releaseResult = releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
 
-		// If release also failed, surface both errors so the ownership
-		// leak is observable.
 		if (
 			releaseResult.kind !== "SUCCESS" &&
 			releaseResult.kind !== "STALE_HANDLE"
 		) {
 			throw new ProtocolError(
-				"Initial post-bootstrap step failed and ownership release also failed",
+				"Initial setup or dispatch claim failed and ownership release also failed",
 				{
 					runId,
 					orchestratorName: config.name,
 					cause: new AggregateError(
 						[
-							projectionErr,
+							setupErr,
 							releaseResult.kind === "DB_FAILURE"
 								? releaseResult.cause
 								: new Error(releaseResult.kind),
 						],
-						"post-bootstrap step and release both failed",
+						"initial setup and release both failed",
 					),
 				},
 			);
 		}
 
-		throw projectionErr;
-	}
-
-	const initialPhase = config.initial;
-
-	// Build the dispatch state from the committed authoritative record,
-	// NOT from the pre-lock initial values.  This ensures that
-	// lastTransitionAt and startedAt are consistent with what SQLite holds.
-	const committedState = committed.state as Record<string, unknown>;
-	const initialFile: StateFile<S> = {
-		schemaVersion: STATE_SCHEMA_VERSION,
-		runId,
-		orchestratorName: config.name,
-		startedAt: (committedState.startedAt as string) ?? nowIso,
-		startedAtEpochMs: (committedState.startedAtEpochMs as number) ?? nowEpoch,
-		lastTransitionAt: (committedState.lastTransitionAt as string) ?? nowIso,
-		lastTransitionAtEpochMs:
-			(committedState.lastTransitionAtEpochMs as number) ?? nowEpoch,
-		currentPhase: initialPhase,
-		phasesExecuted: 0,
-		accumulatedDurationMs: 0,
-		data: config.initialState,
-		usedLabels: [],
-	};
-
-	const abortController = new AbortController();
-	const ctx: DispatchContext<S> = {
-		config,
-		runId,
-		runDir,
-		runDb,
-		handle,
-		logger,
-		abortController,
-		currentPhase: initialPhase,
-		phasesExecuted: 0,
-		accumulatedDurationMs: 0,
-		stateRevision: committed.stateRevision,
-	};
-
-	installSignalHandlers(ctx);
-	try {
-		cleanupOldRuns(
-			cwd,
-			config.name,
-			config.retentionDays ?? 7,
-			runId,
-			config.runDirRoot,
-		);
-	} catch {
-		// best-effort
+		throw setupErr;
 	}
 
 	await runDispatchLoop(ctx, initialFile);

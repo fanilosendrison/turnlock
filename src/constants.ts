@@ -6,6 +6,14 @@ export const EXTERNAL_REQUEST_MANIFEST_VERSION = 1 as const;
 export const PENDING_INITIAL_DISPATCH_STATE_FIELD =
 	"__turnlockPendingInitialDispatch" as const;
 
+/**
+ * Versioned alongside the pending-dispatch marker so rows written before the
+ * durable-claim protocol are fail-closed rather than replayed on upgrade.
+ */
+export const PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD =
+	"__turnlockPendingInitialDispatchVersion" as const;
+export const PENDING_INITIAL_DISPATCH_VERSION = 1 as const;
+
 export const MAX_EVENT_FIELD_LENGTH = 200;
 export const MAX_EXTERNAL_LABEL_LENGTH = 173;
 

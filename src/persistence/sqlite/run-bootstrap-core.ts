@@ -12,7 +12,10 @@
 // exposes these hooks.
 
 import { createHash } from "node:crypto";
-import { PENDING_INITIAL_DISPATCH_STATE_FIELD } from "../../constants";
+import {
+	PENDING_INITIAL_DISPATCH_STATE_FIELD,
+	PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
+} from "../../constants";
 import { generateRunId } from "../../services/run-id";
 import { DbIntegrityError } from "./errors";
 import {
@@ -753,6 +756,7 @@ export function migrateLegacyRunAtomicCore(
 	// Legacy state is untrusted migration input and must never manufacture the
 	// engine-only evidence that authorizes first-phase crash recovery.
 	delete initialStateForDb[PENDING_INITIAL_DISPATCH_STATE_FIELD];
+	delete initialStateForDb[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD];
 	const initialStateJson = JSON.stringify(initialStateForDb);
 
 	const deadlineMs = performance.now() + contentionDeadlineMs;

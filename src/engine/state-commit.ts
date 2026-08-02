@@ -14,6 +14,7 @@ import {
 	ArtifactIntegrityError,
 	AuthorityLostError,
 	PersistenceFailureError,
+	ProtocolError,
 	StateRevisionConflictError,
 } from "../errors/concrete";
 import {
@@ -29,6 +30,7 @@ import {
 	type CommittedState,
 	projectAuthoritativeStateFenced,
 	type StateRecord,
+	claimInitialDispatchUnderFence as sqliteClaimInitialDispatchUnderFence,
 	commitState as sqliteCommitState,
 } from "../persistence/sqlite/run-state-store";
 import { readAndVerifyArtifact } from "../services/artifact-store";
@@ -175,6 +177,89 @@ export function commitStateWithProjection<S extends object>(
 				cause: result.cause,
 				...errorOpts(ctx),
 			});
+
+		default:
+			return assertNever(result);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// claimInitialDispatchWithProjection — strict, orThrow
+// ---------------------------------------------------------------------------
+
+/**
+ * Consume the one-time initial-dispatch authorization durably, then project
+ * the claimed authority before a phase can execute. A crash after this call
+ * must be treated as an indeterminate freely executing phase and fail closed.
+ */
+export function claimInitialDispatchWithProjection(ctx: {
+	readonly runDb: RunDatabase;
+	readonly handle: LockHandle;
+	readonly runDir: string;
+	readonly config?: { readonly name?: string };
+	readonly runId: string;
+	readonly currentPhase?: string | null;
+	stateRevision: string;
+}): CommittedState<object> {
+	const result = sqliteClaimInitialDispatchUnderFence({
+		db: ctx.runDb.connection,
+		handle: ctx.handle,
+		leaseClockEpochMs: () => defaultClock.nowEpochMs(),
+	});
+
+	switch (result.kind) {
+		case "CLAIMED":
+			ctx.stateRevision = result.committed.state.stateRevision;
+			projectAuthoritativeStateFenced(
+				ctx.runDb.connection,
+				ctx.handle,
+				ctx.runDir,
+				result.committed.state.stateRevision,
+				result.committed.stateDigest,
+			);
+			return result.committed;
+
+		case "INITIAL_DISPATCH_NOT_PENDING":
+			throw new ProtocolError(
+				"Initial dispatch claim rejected: no claimable initial dispatch marker",
+				errorOpts(ctx),
+			);
+
+		case "STALE_HANDLE":
+			throw new AuthorityLostError(
+				"Initial dispatch claim rejected because the ownership handle is stale",
+				{
+					operation: "state_commit",
+					reason: "STALE_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+
+		case "EXPIRED_HANDLE":
+			throw new AuthorityLostError(
+				"Initial dispatch claim rejected because the ownership lease expired",
+				{
+					operation: "state_commit",
+					reason: "EXPIRED_HANDLE",
+					...errorOpts(ctx),
+				},
+			);
+
+		case "REVISION_CONFLICT":
+			throw new StateRevisionConflictError(
+				"Initial dispatch claim requires authoritative state revision 0",
+				errorOpts(ctx),
+			);
+
+		case "DB_FAILURE":
+			throw new PersistenceFailureError(
+				"SQLite initial dispatch claim failed",
+				{
+					operation: "state_commit",
+					cause: result.cause,
+					...errorOpts(ctx),
+				},
+			);
 
 		default:
 			return assertNever(result);

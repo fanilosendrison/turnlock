@@ -7,7 +7,10 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { PENDING_INITIAL_DISPATCH_STATE_FIELD } from "../../src/constants";
+import {
+	PENDING_INITIAL_DISPATCH_STATE_FIELD,
+	PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
+} from "../../src/constants";
 import {
 	CRASH_TEST_ORCHESTRATOR_NAME,
 	crashInitialModeAt,
@@ -15,6 +18,8 @@ import {
 	killAndCollect,
 	type PersistenceSnapshot,
 	readPersistenceSnapshot,
+	runInitialToCompletion,
+	runPublicResumeToCompletion,
 	spawnPublicResumeAtPhase,
 	type WorkerSignal,
 } from "../helpers/orchestrator-crash-harness";
@@ -23,7 +28,13 @@ import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 const STATE_FILENAME = "state.json";
 const TEMP_STATE_FILENAME = "state.json.tmp";
 
-function assertAuthorityUnchangedAcrossResume(
+function readSentinelEntries(sentinelFile: string): readonly string[] {
+	return readFileSync(sentinelFile, "utf-8")
+		.split("\n")
+		.filter((entry) => entry.length > 0);
+}
+
+function assertInitialDispatchClaimCommittedOnResume(
 	before: PersistenceSnapshot,
 	after: PersistenceSnapshot,
 ): void {
@@ -36,9 +47,22 @@ function assertAuthorityUnchangedAcrossResume(
 	expect(BigInt(after.ownership.fenceToken)).toBe(
 		BigInt(before.ownership.fenceToken) + 1n,
 	);
-	expect(after.state).toEqual(before.state);
-	expect(after.state.revision).toBe("0");
-	expect(after.state.committedByFenceToken).toBe("1");
+	expect(after.state.count).toBe(1);
+	expect(after.state.incarnationId).toBe(before.state.incarnationId);
+	expect(after.state.revision).toBe("1");
+	expect(after.state.committedByFenceToken).toBe(after.ownership.fenceToken);
+	if (after.ownership.ownerToken === null) {
+		throw new Error("resumed worker must hold an ownership token");
+	}
+	expect(after.state.committedByOwnerToken).toBe(after.ownership.ownerToken);
+
+	const expectedClaimedState = JSON.parse(before.state.json) as Record<
+		string,
+		unknown
+	>;
+	delete expectedClaimedState[PENDING_INITIAL_DISPATCH_STATE_FIELD];
+	delete expectedClaimedState[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD];
+	expect(JSON.parse(after.state.json)).toEqual(expectedClaimedState);
 }
 
 async function assertPublicResumeRepairsFromSqlite(params: {
@@ -81,7 +105,7 @@ async function assertPublicResumeRepairsFromSqlite(params: {
 		expect(resumed.signal).toEqual(expectedPhaseSignal);
 
 		const after = readPersistenceSnapshot(params.dbPath);
-		assertAuthorityUnchangedAcrossResume(params.before, after);
+		assertInitialDispatchClaimCommittedOnResume(params.before, after);
 
 		expect(existsSync(statePath)).toBe(true);
 		expect(existsSync(temporaryStatePath)).toBe(false);
@@ -93,10 +117,15 @@ async function assertPublicResumeRepairsFromSqlite(params: {
 		expect(projected.orchestratorName).toBe(CRASH_TEST_ORCHESTRATOR_NAME);
 		expect(projected.runIncarnationId).toBe(params.before.incarnation.id);
 		expect(projected.currentPhase).toBe("start");
-		expect(projected.stateRevision).toBe("0");
-		expect(projected.committedFenceToken).toBe("1");
-		expect(projected.stateDigest).toBe(params.before.state.digest);
+		expect(projected.stateRevision).toBe("1");
+		expect(projected.committedFenceToken).toBe(
+			after.state.committedByFenceToken,
+		);
+		expect(projected.stateDigest).toBe(after.state.digest);
 		expect(projected).not.toHaveProperty(PENDING_INITIAL_DISPATCH_STATE_FIELD);
+		expect(projected).not.toHaveProperty(
+			PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
+		);
 		expect(projected.data).toEqual(expectedState);
 	} finally {
 		output = await killAndCollect(resumed.worker);
@@ -158,6 +187,234 @@ describe("orchestrator projection crash recovery", () => {
 				dbPath,
 				before,
 			});
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("SIGKILL before the initial dispatch claim permits one public resume", async () => {
+		const dir = makeTempDir("initial-dispatch-preclaim-crash-");
+		const runDirRoot = join(dir, "runs");
+		const runId = "01HX0000000000000000000005";
+		const runDir = join(runDirRoot, CRASH_TEST_ORCHESTRATOR_NAME, runId);
+		const dbPath = join(runDir, "turnlock.sqlite3");
+		const initialSignalFile = join(dir, "initial-signal.json");
+		const phaseSignalFile = join(dir, "phase-signal.json");
+		const sentinelFile = join(dir, "phase-sentinel.txt");
+
+		try {
+			const crashed = await crashInitialModeAt(
+				runDirRoot,
+				runId,
+				initialSignalFile,
+				"BEFORE_INITIAL_DISPATCH_CLAIM",
+			);
+			expect(crashed.signal).toMatchObject({
+				type: "FAULT_POINT_REACHED",
+				point: "BEFORE_INITIAL_DISPATCH_CLAIM",
+			});
+
+			const before = readPersistenceSnapshot(dbPath);
+			expect(before.state.revision).toBe("0");
+			const beforeClaim = JSON.parse(before.state.json) as Record<
+				string,
+				unknown
+			>;
+			expect(beforeClaim[PENDING_INITIAL_DISPATCH_STATE_FIELD]).toBe(true);
+			expect(beforeClaim[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD]).toBe(1);
+
+			expireOnlyOwnershipLease(dbPath);
+			const resumed = await spawnPublicResumeAtPhase(
+				runDirRoot,
+				runId,
+				phaseSignalFile,
+				{ sentinelFile },
+			);
+			let output: Awaited<ReturnType<typeof killAndCollect>> | undefined;
+			try {
+				expect(resumed.signal).toMatchObject({
+					type: "PHASE_ENTERED",
+					phase: "start",
+					runId,
+				});
+				expect(readSentinelEntries(sentinelFile)).toEqual(["start"]);
+
+				const after = readPersistenceSnapshot(dbPath);
+				expect(after.state.revision).toBe("1");
+				const claimed = JSON.parse(after.state.json) as Record<string, unknown>;
+				expect(claimed).not.toHaveProperty(
+					PENDING_INITIAL_DISPATCH_STATE_FIELD,
+				);
+				expect(claimed).not.toHaveProperty(
+					PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
+				);
+			} finally {
+				output = await killAndCollect(resumed.worker);
+			}
+			expect(output.exitCode).not.toBe(0);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("SIGKILL after the initial dispatch claim refuses resume before phase entry", async () => {
+		const dir = makeTempDir("initial-dispatch-postclaim-crash-");
+		const runDirRoot = join(dir, "runs");
+		const runId = "01HX0000000000000000000006";
+		const runDir = join(runDirRoot, CRASH_TEST_ORCHESTRATOR_NAME, runId);
+		const dbPath = join(runDir, "turnlock.sqlite3");
+		const initialSignalFile = join(dir, "initial-signal.json");
+		const sentinelFile = join(dir, "phase-sentinel.txt");
+
+		try {
+			const crashed = await crashInitialModeAt(
+				runDirRoot,
+				runId,
+				initialSignalFile,
+				"AFTER_INITIAL_DISPATCH_CLAIM",
+			);
+			expect(crashed.signal).toMatchObject({
+				type: "FAULT_POINT_REACHED",
+				point: "AFTER_INITIAL_DISPATCH_CLAIM",
+			});
+
+			const claimed = readPersistenceSnapshot(dbPath);
+			expect(claimed.state.revision).toBe("1");
+			const claimedState = JSON.parse(claimed.state.json) as Record<
+				string,
+				unknown
+			>;
+			expect(claimedState).not.toHaveProperty(
+				PENDING_INITIAL_DISPATCH_STATE_FIELD,
+			);
+			expect(claimedState).not.toHaveProperty(
+				PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
+			);
+
+			expireOnlyOwnershipLease(dbPath);
+			const resumed = await runPublicResumeToCompletion(runDirRoot, runId, {
+				sentinelFile,
+			});
+			expect(resumed.exitCode).not.toBe(0);
+			expect(resumed.stdout).toContain("resume without pending delegation");
+			expect(existsSync(sentinelFile)).toBe(false);
+
+			const after = readPersistenceSnapshot(dbPath);
+			expect(after.state.revision).toBe("1");
+			expect(after.state.json).toBe(claimed.state.json);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("normal initial execution claims revision 1 before its durable phase result", async () => {
+		const dir = makeTempDir("initial-dispatch-normal-");
+		const runDirRoot = join(dir, "runs");
+		const runId = "01HX0000000000000000000007";
+		const runDir = join(runDirRoot, CRASH_TEST_ORCHESTRATOR_NAME, runId);
+		const dbPath = join(runDir, "turnlock.sqlite3");
+		const sentinelFile = join(dir, "phase-sentinel.txt");
+
+		try {
+			const completed = await runInitialToCompletion(runDirRoot, runId, {
+				sentinelFile,
+			});
+			expect(completed.exitCode).toBe(0);
+			expect(completed.stdout).toContain("@@TURNLOCK@@");
+			expect(readSentinelEntries(sentinelFile)).toEqual(["start"]);
+
+			const state = readPersistenceSnapshot(dbPath);
+			expect(state.state.revision).toBe("2");
+			const authoritativeState = JSON.parse(state.state.json) as Record<
+				string,
+				unknown
+			>;
+			expect(authoritativeState.phasesExecuted).toBe(1);
+			expect(authoritativeState).toHaveProperty("terminalResult");
+			expect(authoritativeState).not.toHaveProperty(
+				PENDING_INITIAL_DISPATCH_STATE_FIELD,
+			);
+			expect(authoritativeState).not.toHaveProperty(
+				PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
+			);
+			const projectedState = JSON.parse(
+				readFileSync(join(runDir, STATE_FILENAME), "utf-8"),
+			) as Record<string, unknown>;
+			expect(projectedState.stateRevision).toBe("2");
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("refuses a second public resume after SIGKILL interrupts the first freely executing phase", async () => {
+		const dir = makeTempDir("initial-phase-replay-crash-");
+		const runDirRoot = join(dir, "runs");
+		const runId = "01HX0000000000000000000004";
+		const runDir = join(runDirRoot, CRASH_TEST_ORCHESTRATOR_NAME, runId);
+		const dbPath = join(runDir, "turnlock.sqlite3");
+		const initialSignalFile = join(dir, "initial-signal.json");
+		const phaseSignalFile = join(dir, "phase-signal.json");
+		const sentinelFile = join(dir, "phase-sentinel.txt");
+
+		try {
+			const crashed = await crashInitialModeAt(
+				runDirRoot,
+				runId,
+				initialSignalFile,
+				"AFTER_INITIAL_PROJECTION",
+			);
+			expect(crashed.signal).toEqual({
+				type: "FAULT_POINT_REACHED",
+				point: "AFTER_INITIAL_PROJECTION",
+				observedPoints: [
+					"AFTER_BOOTSTRAP_RESULT",
+					"BEFORE_INITIAL_PROJECTION",
+					"AFTER_TEMP_FILE_WRITE",
+					"AFTER_TEMP_FILE_FSYNC",
+					"AFTER_RENAME",
+					"BEFORE_DIRECTORY_FSYNC",
+					"AFTER_INITIAL_PROJECTION",
+				],
+			});
+			expect(crashed.exitCode).not.toBe(0);
+
+			expireOnlyOwnershipLease(dbPath);
+			const firstResume = await spawnPublicResumeAtPhase(
+				runDirRoot,
+				runId,
+				phaseSignalFile,
+				{ sentinelFile },
+			);
+			let firstResumeOutput:
+				| Awaited<ReturnType<typeof killAndCollect>>
+				| undefined;
+			try {
+				expect(firstResume.signal).toMatchObject({
+					type: "PHASE_ENTERED",
+					phase: "start",
+					runId,
+				});
+				expect(readSentinelEntries(sentinelFile)).toEqual(["start"]);
+			} finally {
+				firstResumeOutput = await killAndCollect(firstResume.worker);
+			}
+			expect(firstResumeOutput.exitCode).not.toBe(0);
+			expect(firstResumeOutput.stdout).toBe("");
+
+			expireOnlyOwnershipLease(dbPath);
+			const secondResume = await runPublicResumeToCompletion(
+				runDirRoot,
+				runId,
+				{
+					sentinelFile,
+				},
+			);
+
+			expect(secondResume.exitCode).not.toBe(0);
+			expect(secondResume.stdout).toContain(
+				"resume without pending delegation",
+			);
+			expect(readSentinelEntries(sentinelFile)).toEqual(["start"]);
 		} finally {
 			cleanupTempDir(dir);
 		}

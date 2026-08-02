@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 import {
 	type RunOrchestratorInternalDependencies,
 	runOrchestratorInternal,
@@ -17,7 +17,9 @@ interface WorkerState {
 type LifecycleFaultPoint =
 	| "AFTER_BOOTSTRAP_RESULT"
 	| "BEFORE_INITIAL_PROJECTION"
-	| "AFTER_INITIAL_PROJECTION";
+	| "AFTER_INITIAL_PROJECTION"
+	| "BEFORE_INITIAL_DISPATCH_CLAIM"
+	| "AFTER_INITIAL_DISPATCH_CLAIM";
 
 type WorkerFaultPoint = LifecycleFaultPoint | ProjectionFaultPoint;
 
@@ -77,6 +79,8 @@ async function main(): Promise<void> {
 	const runId = requiredArg(args, "run-id");
 	const orchestratorName = requiredArg(args, "orchestrator-name");
 	const phaseSignalFile = args["phase-signal-file"];
+	const sentinelFile = args["sentinel-file"];
+	const phaseCompletion = args["phase-completion"];
 
 	const initialMode = workerMode === "initial";
 	const config: OrchestratorConfig<WorkerState> = {
@@ -89,28 +93,41 @@ async function main(): Promise<void> {
 		runDirRoot,
 		phases: {
 			start: async (state, io) => {
-				if (phaseSignalFile === undefined) {
-					throw new Error("Missing --phase-signal-file for start phase");
+				if (sentinelFile !== undefined) {
+					appendFileSync(sentinelFile, "start\n", { encoding: "utf-8" });
 				}
-				signalAndBlock(phaseSignalFile, {
-					type: "PHASE_ENTERED",
-					phase: "start",
-					runId: io.runId,
-					runDir: io.runDir,
-					state,
-				});
+				if (phaseSignalFile !== undefined) {
+					signalAndBlock(phaseSignalFile, {
+						type: "PHASE_ENTERED",
+						phase: "start",
+						runId: io.runId,
+						runDir: io.runDir,
+						state,
+					});
+				}
+				if (phaseCompletion === "done") {
+					return io.done({ source: "crash-worker" });
+				}
+				throw new Error(
+					"start phase needs --phase-signal-file or --phase-completion done",
+				);
 			},
 			decoy: async (state, io) => {
-				if (phaseSignalFile === undefined) {
-					throw new Error("Missing --phase-signal-file for decoy phase");
+				if (phaseSignalFile !== undefined) {
+					signalAndBlock(phaseSignalFile, {
+						type: "PHASE_ENTERED",
+						phase: "decoy",
+						runId: io.runId,
+						runDir: io.runDir,
+						state,
+					});
 				}
-				signalAndBlock(phaseSignalFile, {
-					type: "PHASE_ENTERED",
-					phase: "decoy",
-					runId: io.runId,
-					runDir: io.runDir,
-					state,
-				});
+				if (phaseCompletion === "done") {
+					return io.done({ source: "crash-worker" });
+				}
+				throw new Error(
+					"decoy phase needs --phase-signal-file or --phase-completion done",
+				);
 			},
 		},
 	};
@@ -123,8 +140,18 @@ async function main(): Promise<void> {
 		throw new Error(`Unknown --worker-mode: ${workerMode}`);
 	}
 
+	const faultPointArgument = args["fault-point"];
+	if (faultPointArgument === undefined) {
+		await runOrchestratorInternal(
+			config,
+			{ resume: false, runId, rest: [] },
+			{},
+		);
+		return;
+	}
+
 	const signalFile = requiredArg(args, "signal-file");
-	const faultPoint = requiredArg(args, "fault-point") as WorkerFaultPoint;
+	const faultPoint = faultPointArgument as WorkerFaultPoint;
 	const observedPoints: WorkerFaultPoint[] = [];
 
 	function reach(point: WorkerFaultPoint): void {
@@ -143,6 +170,8 @@ async function main(): Promise<void> {
 			afterBootstrapResult: () => reach("AFTER_BOOTSTRAP_RESULT"),
 			beforeInitialProjection: () => reach("BEFORE_INITIAL_PROJECTION"),
 			afterInitialProjection: () => reach("AFTER_INITIAL_PROJECTION"),
+			beforeInitialDispatchClaim: () => reach("BEFORE_INITIAL_DISPATCH_CLAIM"),
+			afterInitialDispatchClaim: () => reach("AFTER_INITIAL_DISPATCH_CLAIM"),
 		},
 		projectionDependencies: {
 			onFaultPoint: reach,
