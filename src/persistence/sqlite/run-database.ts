@@ -19,10 +19,13 @@ export interface RunDatabase {
 }
 
 function configurePragmas(db: SqliteConnection, busyTimeoutMs: number): void {
+	// journal_mode may need an exclusive lock while another process is opening
+	// the same run DB. Install the busy handler first so that startup races are
+	// bounded retries rather than immediate SQLITE_BUSY failures.
+	db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
 	db.exec(`PRAGMA journal_mode = WAL`);
 	db.exec(`PRAGMA synchronous = FULL`);
 	db.exec(`PRAGMA foreign_keys = ON`);
-	db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
 }
 
 function initializeSchema(db: SqliteConnection): void {

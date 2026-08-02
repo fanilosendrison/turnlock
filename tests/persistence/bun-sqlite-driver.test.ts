@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
 import { CURRENT_SCHEMA_VERSION } from "../../src/persistence/sqlite/schema";
+import type {
+	SqliteConnection,
+	SqliteDriver,
+} from "../../src/persistence/sqlite/sqlite-driver";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
 
 describe("bun-sqlite driver", () => {
@@ -73,6 +77,38 @@ describe("run-database", () => {
 		} finally {
 			cleanupTempDir(dir);
 		}
+	});
+
+	test("installs busy_timeout before WAL can contend", () => {
+		const executed: string[] = [];
+		let closed = false;
+		const connection: SqliteConnection = {
+			exec: (sql) => {
+				executed.push(sql);
+			},
+			prepare: () => ({
+				run: () => ({ changes: 1 }),
+				get: <T>() => ({ schema_version: CURRENT_SCHEMA_VERSION }) as T,
+				all: <T>() => [] as T[],
+			}),
+			close: () => {
+				closed = true;
+			},
+		};
+		const driver: SqliteDriver = {
+			open: () => connection,
+		};
+
+		const runDb = openRunDatabase({
+			driver,
+			dbPath: "ignored.sqlite3",
+			busyTimeoutMs: 321,
+		});
+
+		expect(executed[0]).toBe("PRAGMA busy_timeout = 321");
+		expect(executed[1]).toBe("PRAGMA journal_mode = WAL");
+		runDb.close();
+		expect(closed).toBe(true);
 	});
 
 	test("WAL and synchronous pragmas are set", () => {
