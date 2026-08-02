@@ -25,8 +25,8 @@ import {
 	migrateLegacyRunAtomic,
 } from "../../src/persistence/sqlite/run-bootstrap";
 import {
-	bootstrapNewRunAtomicCore,
 	type BootstrapFaultPoint,
+	bootstrapNewRunAtomicCore,
 	InjectedBootstrapFailure,
 	migrateLegacyRunAtomicCore,
 } from "../../src/persistence/sqlite/run-bootstrap-core";
@@ -917,7 +917,11 @@ describe("bootstrap primitive fault injection", () => {
 				}
 			} finally {
 				// runDb may already be closed; best-effort cleanup.
-				try { ctx.runDb.close(); } catch { /* ok */ }
+				try {
+					ctx.runDb.close();
+				} catch {
+					/* ok */
+				}
 				ctx.cleanup();
 			}
 		});
@@ -943,10 +947,7 @@ describe("legacy migration primitive fault injection", () => {
 
 			// Write a real legacy state.json file to capture its bytes.
 			const stateJsonPath = join(ctx.dir, "state.json");
-			const stateJsonBytes = Buffer.from(
-				JSON.stringify(legacyState),
-				"utf-8",
-			);
+			const stateJsonBytes = Buffer.from(JSON.stringify(legacyState), "utf-8");
 			require("node:fs").writeFileSync(stateJsonPath, stateJsonBytes);
 
 			try {
@@ -1034,7 +1035,11 @@ describe("legacy migration primitive fault injection", () => {
 					reopened.close();
 				}
 			} finally {
-				try { ctx.runDb.close(); } catch { /* ok */ }
+				try {
+					ctx.runDb.close();
+				} catch {
+					/* ok */
+				}
 				ctx.cleanup();
 			}
 		});
@@ -1814,7 +1819,6 @@ describe("incarnation identity", () => {
 		ctx.cleanup();
 	});
 
-
 	// -----------------------------------------------------------------------
 	// Test X — candidate is stable across a real SQLITE_BUSY retry
 	// -----------------------------------------------------------------------
@@ -1925,7 +1929,11 @@ describe("incarnation identity", () => {
 				handle: result.handle,
 			});
 		} finally {
-			try { blockerDb.exec("ROLLBACK"); } catch { /* already released */ }
+			try {
+				blockerDb.exec("ROLLBACK");
+			} catch {
+				/* already released */
+			}
 			reopened.close();
 			blockerDb.close();
 			ctx.cleanup();
