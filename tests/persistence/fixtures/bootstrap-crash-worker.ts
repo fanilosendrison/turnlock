@@ -9,15 +9,21 @@
 //
 // Usage:
 //   bun run tests/persistence/fixtures/bootstrap-crash-worker.ts \
-//     --db-path <path> \
+//     --run-dir <path> \
 //     --mode BOOTSTRAP|MIGRATION \
 //     --crash-point <BootstrapFaultPoint> \
 //     --run-id <runId> \
 //     --orchestrator-name <name> \
 //     --signal-file <path> \
 //     [--legacy-state-file <path>]
+//
+// The database path is derived from --run-dir:
+//   dbPath = runDir + "/turnlock.sqlite3"
+// This matches the production convention in runInitialMode().
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { STATE_SCHEMA_VERSION } from "../../../src/constants";
 import { bunSqliteDriver } from "../../../src/persistence/sqlite/bun-sqlite-driver";
 import {
 	type BootstrapFaultPoint,
@@ -33,16 +39,15 @@ import { openRunDatabase } from "../../../src/persistence/sqlite/run-database";
 function parseArgs(argv: string[]) {
 	const args: Record<string, string> = {};
 	for (let i = 0; i < argv.length; i++) {
-		const arg = argv[i]!;
-		if (arg.startsWith("--")) {
-			const key = arg.slice(2);
-			const value: string | undefined = argv[i + 1];
-			if (value !== undefined && !value.startsWith("--")) {
-				args[key] = value;
-				i++;
-			} else {
-				args[key] = "true";
-			}
+		const arg = argv[i];
+		if (arg === undefined || !arg.startsWith("--")) continue;
+		const key = arg.slice(2);
+		const value: string | undefined = argv[i + 1];
+		if (value !== undefined && !value.startsWith("--")) {
+			args[key] = value;
+			i++;
+		} else {
+			args[key] = "true";
 		}
 	}
 	return args;
@@ -52,7 +57,6 @@ function parseArgs(argv: string[]) {
 // Constants (deterministic, shared with tests)
 // ---------------------------------------------------------------------------
 
-const STATE_SCHEMA_VERSION = 4; // from constants.ts
 const LEASE_MS = 30 * 60 * 1000;
 const NOW_EPOCH = 1_000_000_000_000;
 const NOW_ISO = "2001-09-09T01:46:40.000Z";
@@ -82,6 +86,14 @@ function makeInitialState(
 	};
 }
 
+function makeWorkerIdGenerator(runId: string): () => string {
+	let idIndex = 0;
+	return () => {
+		idIndex++;
+		return idIndex === 1 ? `owner-${runId}` : `incarnation-${runId}`;
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -89,7 +101,7 @@ function makeInitialState(
 function main() {
 	const args = parseArgs(process.argv.slice(2));
 
-	const dbPath = args["db-path"];
+	const runDir = args["run-dir"];
 	const mode = args.mode;
 	const crashPoint = args["crash-point"] as BootstrapFaultPoint;
 	const runId = args["run-id"];
@@ -98,7 +110,7 @@ function main() {
 	const legacyStateFile = args["legacy-state-file"];
 
 	if (
-		!dbPath ||
+		!runDir ||
 		!mode ||
 		!crashPoint ||
 		!runId ||
@@ -106,10 +118,12 @@ function main() {
 		!signalFile
 	) {
 		process.stderr.write(
-			"Missing required arguments. Need: --db-path --mode --crash-point --run-id --orchestrator-name --signal-file\n",
+			"Missing required arguments. Need: --run-dir --mode --crash-point --run-id --orchestrator-name --signal-file\n",
 		);
 		process.exit(1);
 	}
+
+	const validatedSignalFile = signalFile;
 
 	if (mode !== "BOOTSTRAP" && mode !== "MIGRATION") {
 		process.stderr.write(
@@ -122,6 +136,12 @@ function main() {
 		process.stderr.write("MIGRATION mode requires --legacy-state-file\n");
 		process.exit(1);
 	}
+
+	// Ensure the RUN_DIR exists, then derive the database path from it.
+	// This matches the production convention in runInitialMode():
+	//   const dbPath = path.join(runDir, "turnlock.sqlite3");
+	mkdirSync(runDir, { recursive: true });
+	const dbPath = join(runDir, "turnlock.sqlite3");
 
 	// Open the database — schema is created if needed.
 	const runDb = openRunDatabase({
@@ -140,7 +160,7 @@ function main() {
 				point,
 			});
 			process.stdout.write(`${msg}\n`);
-			writeFileSync(signalFile!, point, "utf-8");
+			writeFileSync(validatedSignalFile, point, "utf-8");
 
 			// Block the thread until killed by SIGKILL.
 			// Atomics.wait blocks synchronously — no microtasks,
@@ -166,7 +186,7 @@ function main() {
 					contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 				},
 				{
-					generateId: () => `worker-${runId}`,
+					generateId: makeWorkerIdGenerator(runId),
 					onFaultPoint: signalAndBlock,
 				},
 			);
@@ -207,7 +227,7 @@ function main() {
 					contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 				},
 				{
-					generateId: () => `worker-${runId}`,
+					generateId: makeWorkerIdGenerator(runId),
 					onFaultPoint: signalAndBlock,
 				},
 			);
