@@ -20,7 +20,7 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "bun test",
     "test:crash": "bun test tests/persistence/bootstrap-crash.integration.test.ts tests/engine/orchestrator-projection-crash.test.ts",
-    "test:tl-f-001-bootstrap-proof": "bun test tests/persistence/bootstrap-atomicity.test.ts tests/persistence/bootstrap-commit-failure.test.ts tests/persistence/bootstrap-crash.integration.test.ts tests/engine/orchestrator-projection-crash.test.ts",
+    "test:tl-f-001-bootstrap-proof": "bun test tests/persistence/bootstrap-atomicity.test.ts tests/persistence/bootstrap-commit-failure.test.ts tests/persistence/bootstrap-crash.integration.test.ts tests/persistence/initial-dispatch-marker.test.ts tests/engine/orchestrator-projection-crash.test.ts",
     "lint": "biome check src/ tests/",
     "lint:fix": "biome check --write src/ tests/",
     "typecheck": "tsc --noEmit",
