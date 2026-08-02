@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import {
+	LEGACY_PENDING_INITIAL_DISPATCH_STATE_FIELD,
+	LEGACY_PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
 	PENDING_INITIAL_DISPATCH_STATE_FIELD,
 	PENDING_INITIAL_DISPATCH_VERSION,
 	PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
@@ -238,6 +240,77 @@ describe("pending initial dispatch persistence marker", () => {
 
 			const read = readAuthoritativeState(runDb.connection);
 			expect(read.pendingInitialDispatch).toBe(false);
+			releaseOwnership({ db: runDb.connection, handle: result.handle });
+		} finally {
+			runDb.close();
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("legacy field names are recognised and stripped on claim", () => {
+		const dir = makeTempDir("legacy-field-compat-");
+		const runDb = openRunDatabase({
+			driver: bunSqliteDriver,
+			dbPath: join(dir, "turnlock.sqlite3"),
+			busyTimeoutMs: 500,
+		});
+		try {
+			// Simulate a database created by a v0.10.0 build that wrote the
+			// legacy field names before the rename to ClaimV1.
+			const legacyState = makeInitialState("01HX0000000000000000000014");
+			delete legacyState[PENDING_INITIAL_DISPATCH_STATE_FIELD];
+			delete legacyState[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD];
+			legacyState[LEGACY_PENDING_INITIAL_DISPATCH_STATE_FIELD] = true;
+			legacyState[LEGACY_PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD] =
+				PENDING_INITIAL_DISPATCH_VERSION;
+
+			const result = bootstrapNewRunAtomic({
+				db: runDb.connection,
+				runId: "01HX0000000000000000000014",
+				orchestratorName: "initial-dispatch-marker-test",
+				nowEpochMs: NOW_EPOCH_MS,
+				nowIso: NOW_ISO,
+				leaseDurationMs: LEASE_DURATION_MS,
+				leaseClockEpochMs: () => NOW_EPOCH_MS,
+				initialState: legacyState,
+				stateSchemaVersion: STATE_SCHEMA_VERSION,
+				contentionDeadlineMs: 2_000,
+			});
+			expect(result.kind).toBe("BOOTSTRAPPED");
+			if (result.kind !== "BOOTSTRAPPED") return;
+
+			// Current build must recognise the legacy marker.
+			const read = readAuthoritativeState(runDb.connection);
+			expect(read.pendingInitialDispatch).toBe(true);
+
+			// Claim must strip both old and new field names.
+			const claim = claimInitialDispatchUnderFence({
+				db: runDb.connection,
+				handle: result.handle,
+				leaseClockEpochMs: () => NOW_EPOCH_MS,
+			});
+			expect(claim.kind).toBe("CLAIMED");
+
+			const claimedRead = readAuthoritativeState(runDb.connection);
+			expect(claimedRead.pendingInitialDispatch).toBe(false);
+
+			const rawClaimed = runDb.connection
+				.prepare("SELECT state_json FROM run_state WHERE singleton = 1")
+				.get() as { state_json: string };
+			const parsed = JSON.parse(rawClaimed.state_json) as Record<
+				string,
+				unknown
+			>;
+			expect(parsed).not.toHaveProperty(
+				LEGACY_PENDING_INITIAL_DISPATCH_STATE_FIELD,
+			);
+			expect(parsed).not.toHaveProperty(
+				LEGACY_PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
+			);
+			expect(parsed).not.toHaveProperty(
+				PENDING_INITIAL_DISPATCH_STATE_FIELD,
+			);
+
 			releaseOwnership({ db: runDb.connection, handle: result.handle });
 		} finally {
 			runDb.close();

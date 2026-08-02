@@ -2,17 +2,39 @@ export const PROTOCOL_VERSION = 3 as const;
 export const STATE_SCHEMA_VERSION = 4 as const;
 export const EXTERNAL_REQUEST_MANIFEST_VERSION = 1 as const;
 
-/** Internal SQLite state_json marker; never included in state.json projections. */
+/**
+ * Internal SQLite state_json marker; never included in state.json projections.
+ *
+ * The field name was deliberately changed from the original
+ * "__turnlockPendingInitialDispatch" (v0.10.0) so that builds predating the
+ * durable-claim protocol (commits 8cca8357..0c4bd3fa) cannot recognise it.
+ * Those builds executed the initial phase directly when they saw the old
+ * boolean marker, without first consuming a durable claim — a downgrade from
+ * a current build to one of those builds would replay the phase.
+ *
+ * By writing only the new field name, downgrades fail closed: the old binary
+ * sees no marker and refuses resume with "no pending delegation".
+ */
 export const PENDING_INITIAL_DISPATCH_STATE_FIELD =
-	"__turnlockPendingInitialDispatch" as const;
+	"__turnlockInitialDispatchClaimV1" as const;
 
 /**
- * Versioned alongside the pending-dispatch marker so rows written before the
- * durable-claim protocol are fail-closed rather than replayed on upgrade.
+ * Paired version field for the V1 dispatch-claim marker.
+ * Also renamed from the original "__turnlockPendingInitialDispatchVersion".
  */
 export const PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD =
-	"__turnlockPendingInitialDispatchVersion" as const;
+	"__turnlockInitialDispatchClaimV1Version" as const;
 export const PENDING_INITIAL_DISPATCH_VERSION = 1 as const;
+
+/**
+ * Original field names from v0.10.0 (before the durable-claim protocol).
+ * Reads must recognise these for backward compatibility with databases
+ * created before the rename.  New writes never use them.
+ */
+export const LEGACY_PENDING_INITIAL_DISPATCH_STATE_FIELD =
+	"__turnlockPendingInitialDispatch" as const;
+export const LEGACY_PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD =
+	"__turnlockPendingInitialDispatchVersion" as const;
 
 export const MAX_EVENT_FIELD_LENGTH = 200;
 export const MAX_EXTERNAL_LABEL_LENGTH = 173;

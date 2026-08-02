@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+	LEGACY_PENDING_INITIAL_DISPATCH_STATE_FIELD,
+	LEGACY_PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
 	PENDING_INITIAL_DISPATCH_STATE_FIELD,
 	PENDING_INITIAL_DISPATCH_VERSION,
 	PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
@@ -149,6 +151,46 @@ function bigintFromRow(value: unknown): bigint {
 
 function computeDigest(jsonStr: string): string {
 	return `sha256:${createHash("sha256").update(jsonStr).digest("hex")}`;
+}
+
+/**
+ * Recognise a pending initial-dispatch marker written by either the current
+ * build (new field names) or a v0.10.0 build (legacy field names).
+ *
+ * Both pairs must be present and version-matched; an unversioned legacy
+ * boolean alone is not sufficient (fail-closed against pre-claim builds
+ * that only wrote the boolean).
+ */
+function isPendingInitialDispatchV1(parsed: Record<string, unknown>): boolean {
+	const newMarker =
+		parsed[PENDING_INITIAL_DISPATCH_STATE_FIELD] === true &&
+		parsed[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD] ===
+			PENDING_INITIAL_DISPATCH_VERSION;
+	const legacyMarker =
+		parsed[LEGACY_PENDING_INITIAL_DISPATCH_STATE_FIELD] === true &&
+		parsed[LEGACY_PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD] ===
+			PENDING_INITIAL_DISPATCH_VERSION;
+	return newMarker || legacyMarker;
+}
+
+/** True when any recognised marker pair (new or legacy) is present. */
+function hasAnyPendingInitialDispatchMarker(
+	parsed: Record<string, unknown>,
+): boolean {
+	return isPendingInitialDispatchV1(parsed);
+}
+
+/**
+ * Remove every known form of the pending-dispatch marker from the state
+ * object so the committed row is clean regardless of which build created it.
+ */
+function stripAllPendingInitialDispatchMarkers(
+	state: Record<string, unknown>,
+): void {
+	delete state[PENDING_INITIAL_DISPATCH_STATE_FIELD];
+	delete state[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD];
+	delete state[LEGACY_PENDING_INITIAL_DISPATCH_STATE_FIELD];
+	delete state[LEGACY_PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD];
 }
 
 // ---------------------------------------------------------------------------
@@ -697,22 +739,12 @@ export function claimInitialDispatchUnderFence(
 			unknown
 		>;
 		if (
-			stateWithoutPendingInitialDispatch[
-				PENDING_INITIAL_DISPATCH_STATE_FIELD
-			] !== true ||
-			stateWithoutPendingInitialDispatch[
-				PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD
-			] !== PENDING_INITIAL_DISPATCH_VERSION
+			!hasAnyPendingInitialDispatchMarker(stateWithoutPendingInitialDispatch)
 		) {
 			rollback(db);
 			return { kind: "INITIAL_DISPATCH_NOT_PENDING" };
 		}
-		delete stateWithoutPendingInitialDispatch[
-			PENDING_INITIAL_DISPATCH_STATE_FIELD
-		];
-		delete stateWithoutPendingInitialDispatch[
-			PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD
-		];
+		stripAllPendingInitialDispatchMarkers(stateWithoutPendingInitialDispatch);
 
 		const nextStateJson = JSON.stringify(stateWithoutPendingInitialDispatch);
 		const nextStateDigest = computeDigest(nextStateJson);
@@ -831,10 +863,7 @@ export function readAuthoritativeState<S extends object>(
 	return {
 		state,
 		digest: row.state_digest,
-		pendingInitialDispatch:
-			parsed[PENDING_INITIAL_DISPATCH_STATE_FIELD] === true &&
-			parsed[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD] ===
-				PENDING_INITIAL_DISPATCH_VERSION,
+		pendingInitialDispatch: isPendingInitialDispatchV1(parsed),
 	};
 }
 
