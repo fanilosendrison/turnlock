@@ -88,9 +88,10 @@ docs/consumers/claude-code/EXECUTION-FLOW-WALKTHROUGH.md
 docs/consumers/claude-code/UX-VISION-AND-GAPS.md
 docs/formalizing-fsm-builder/
 
-# ---------- turnlock run artifacts (default root + legacy Claude Code override) ----------
+# ---------- turnlock and Pi run artifacts (kept outside source worktrees) ----------
 .turnlock/
 .claude/run/
+.pi-subagents/
 AGENTS.md
 !/docs
 /docs/*
