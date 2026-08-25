@@ -1,4 +1,4 @@
-import type { OrchestratorErrorKind } from "../errors/base";
+import type { OrchestratorErrorKind } from "../errors/base.ts";
 
 export interface OrchestratorLogger {
 	emit(event: OrchestratorEvent): void;

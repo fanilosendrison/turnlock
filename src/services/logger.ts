@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
-import type { OrchestratorEvent, OrchestratorLogger } from "../types/events";
-import type { LoggingPolicy } from "../types/policies";
+import type { OrchestratorEvent, OrchestratorLogger } from "../types/events.ts";
+import type { LoggingPolicy } from "../types/policies.ts";
 
 export interface InternalLogger extends OrchestratorLogger {
 	enableDiskEmit(eventsNdjsonPath: string): void;

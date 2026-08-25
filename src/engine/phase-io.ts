@@ -3,13 +3,13 @@ import {
 	DelegationMissingResultError,
 	DelegationSchemaError,
 	ProtocolError,
-} from "../errors/concrete";
-import { clock } from "../services/clock";
-import { refreshLock } from "../services/lock";
-import type { PendingDelegationRecord } from "../services/state-io";
-import { summarizeZodError, validateResult } from "../services/validator";
-import type { PhaseIO, PhaseResult } from "../types/phase";
-import type { DispatchContext, LoadedResults } from "./context";
+} from "../errors/concrete.ts";
+import { clock } from "../services/clock.ts";
+import { refreshLock } from "../services/lock.ts";
+import type { PendingDelegationRecord } from "../services/state-io.ts";
+import { summarizeZodError, validateResult } from "../services/validator.ts";
+import type { PhaseIO, PhaseResult } from "../types/phase.ts";
+import type { DispatchContext, LoadedResults } from "./context.ts";
 
 export interface PhaseIOGuards {
 	readonly committed: { value: boolean };

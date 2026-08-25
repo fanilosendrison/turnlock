@@ -1,12 +1,12 @@
 import * as fs from "node:fs";
-import { RunLockedError } from "../errors/concrete";
-import type { Clock } from "../types/config";
-import type { OrchestratorLogger } from "../types/events";
-import { generateRunId } from "./run-id";
+import { RunLockedError } from "../errors/concrete.ts";
+import type { Clock } from "../types/config.ts";
+import type { OrchestratorLogger } from "../types/events.ts";
+import { generateRunId } from "./run-id.ts";
 
-export { DEFAULT_IDLE_LEASE_MS } from "../constants";
+export { DEFAULT_IDLE_LEASE_MS } from "../constants.ts";
 
-import { DEFAULT_IDLE_LEASE_MS } from "../constants";
+import { DEFAULT_IDLE_LEASE_MS } from "../constants.ts";
 
 export interface LockFile {
 	readonly ownerPid: number;

@@ -1,11 +1,11 @@
-import type { OrchestratorError } from "../errors/base";
-import type { RetryPolicy } from "../types/policies";
+import type { OrchestratorError } from "../errors/base.ts";
+import type { RetryPolicy } from "../types/policies.ts";
 
 export {
 	DEFAULT_BACKOFF_BASE_MS,
 	DEFAULT_MAX_ATTEMPTS,
 	DEFAULT_MAX_BACKOFF_MS,
-} from "../constants";
+} from "../constants.ts";
 
 export type { RetryPolicy };
 

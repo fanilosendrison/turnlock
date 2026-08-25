@@ -1,9 +1,9 @@
-export { batchBinding } from "./batch";
-export { promptBinding } from "./prompt";
+export { batchBinding } from "./batch.ts";
+export { promptBinding } from "./prompt.ts";
 export type {
 	DelegationBinding,
 	DelegationContext,
 	DelegationManifest,
 	DelegationManifestJob,
-} from "./types";
-export { MANIFEST_VERSION } from "./types";
+} from "./types.ts";
+export { MANIFEST_VERSION } from "./types.ts";

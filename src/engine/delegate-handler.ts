@@ -4,21 +4,25 @@ import {
 	DEFAULT_MAX_ATTEMPTS,
 	DEFAULT_MAX_BACKOFF_MS,
 	DEFAULT_TIMEOUT_MS,
-} from "../constants";
-import { InvalidConfigError, ProtocolError } from "../errors/concrete";
-import { clock } from "../services/clock";
-import { releaseLock } from "../services/lock";
+} from "../constants.ts";
+import { InvalidConfigError, ProtocolError } from "../errors/concrete.ts";
+import { clock } from "../services/clock.ts";
+import { releaseLock } from "../services/lock.ts";
 import {
 	type PendingDelegationRecord,
 	type StateFile,
 	writeStateAtomic,
-} from "../services/state-io";
+} from "../services/state-io.ts";
 import type {
 	BatchDelegationRequest,
 	DelegationRequest,
-} from "../types/delegation";
-import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
-import { selectBinding } from "./shared";
+} from "../types/delegation.ts";
+import {
+	type DispatchContext,
+	doExit,
+	writeFileSyncAtomic,
+} from "./context.ts";
+import { selectBinding } from "./shared.ts";
 
 export async function handleDelegate<S extends object>(
 	ctx: DispatchContext<S>,

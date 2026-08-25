@@ -1,35 +1,35 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { STATE_SCHEMA_VERSION } from "../constants";
+import { STATE_SCHEMA_VERSION } from "../constants.ts";
 import {
 	InvalidConfigError,
 	ProtocolError,
 	RunLockedError,
 	StateMissingError,
-} from "../errors/concrete";
-import { clock } from "../services/clock";
-import { acquireLock, type LockHandle } from "../services/lock";
-import { createLogger } from "../services/logger";
-import { cleanupOldRuns, resolveRunDir } from "../services/run-dir";
-import { generateRunId } from "../services/run-id";
+} from "../errors/concrete.ts";
+import { clock } from "../services/clock.ts";
+import { acquireLock, type LockHandle } from "../services/lock.ts";
+import { createLogger } from "../services/logger.ts";
+import { cleanupOldRuns, resolveRunDir } from "../services/run-dir.ts";
+import { generateRunId } from "../services/run-id.ts";
 import {
 	readState,
 	type StateFile,
 	writeStateAtomic,
-} from "../services/state-io";
-import { summarizeZodError, validateResult } from "../services/validator";
-import type { OrchestratorConfig } from "../types/config";
-import { type DispatchContext, doExit, isTestExitSignal } from "./context";
-import { runDispatchLoop } from "./dispatch-loop";
-import { emitRunLockedError, handleTopLevelError } from "./error-emitter";
-import { runHandleResume } from "./handle-resume";
+} from "../services/state-io.ts";
+import { summarizeZodError, validateResult } from "../services/validator.ts";
+import type { OrchestratorConfig } from "../types/config.ts";
+import { type DispatchContext, doExit, isTestExitSignal } from "./context.ts";
+import { runDispatchLoop } from "./dispatch-loop.ts";
+import { emitRunLockedError, handleTopLevelError } from "./error-emitter.ts";
+import { runHandleResume } from "./handle-resume.ts";
 import {
 	type ParsedArgv,
 	parseArgv,
 	validateConfig,
 	validateExternalRunId,
-} from "./preflight";
-import { installSignalHandlers } from "./signal-handlers";
+} from "./preflight.ts";
+import { installSignalHandlers } from "./signal-handlers.ts";
 
 async function runInitialMode<S extends object>(
 	config: OrchestratorConfig<S>,

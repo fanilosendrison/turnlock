@@ -1,0 +1,73 @@
+name: Node ESM package
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  bun-regression:
+    name: Bun 1.3.14 regression on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Validate historical runtime
+        run: |
+          bun run typecheck
+          bun run lint
+          bun test
+
+  node-package:
+    name: Node ${{ matrix.node }} package on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+        node:
+          - 22.19.0
+          - 24.x
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Validate the published package surface
+        run: npm run test:node-package
+
+      - name: Build the release tarball
+        run: npm pack --pack-destination "$RUNNER_TEMP"

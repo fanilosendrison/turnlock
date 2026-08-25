@@ -1,6 +1,6 @@
 {
   "name": "turnlock",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Durable finite-state-machine runtime for TypeScript. Snapshot-authoritative state, in-band stdout protocol, POSIX-grade I/O discipline. Host-agnostic: suspends by terminating its process and resumes from disk.",
   "type": "module",
   "main": "./dist/index.js",
@@ -18,7 +18,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "bun test",
+    "test:node-package": "npm run build && tsc -p tests/package/tsconfig.consumer.json && node --test tests/package/node-esm-distribution.test.mjs",
     "lint": "biome check src/ tests/",
+    "prepack": "npm run test:node-package",
     "lint:fix": "biome check --write src/ tests/",
     "typecheck": "tsc --noEmit",
     "changelog": "git-cliff --output CHANGELOG.md"

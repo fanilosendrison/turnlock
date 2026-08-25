@@ -1,12 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ZodSchema } from "zod";
-import { STATE_SCHEMA_VERSION } from "../constants";
+import { STATE_SCHEMA_VERSION } from "../constants.ts";
 import {
 	StateCorruptedError,
 	StateVersionMismatchError,
-} from "../errors/concrete";
-import { summarizeZodError } from "./validator";
+} from "../errors/concrete.ts";
+import { summarizeZodError } from "./validator.ts";
 
 export interface PendingDelegationRecord {
 	readonly label: string;

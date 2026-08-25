@@ -1,4 +1,4 @@
-import type { OrchestratorLogger } from "./events";
+import type { OrchestratorLogger } from "./events.ts";
 
 export interface RetryPolicy {
 	readonly maxAttempts: number;

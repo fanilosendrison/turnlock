@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION } from "../constants";
+import { PROTOCOL_VERSION } from "../constants.ts";
 
 export type ProtocolAction = "DELEGATE" | "DONE" | "ERROR" | "ABORTED";
 

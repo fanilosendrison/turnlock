@@ -2,17 +2,17 @@ import {
 	DelegationSchemaError,
 	PhaseError,
 	ProtocolError,
-} from "../errors/concrete";
-import { clock } from "../services/clock";
-import { refreshLock } from "../services/lock";
-import { resolveRetryDecision } from "../services/retry-resolver";
-import type { StateFile } from "../services/state-io";
-import type { PhaseResult } from "../types/phase";
-import type { DispatchContext, LoadedResults } from "./context";
-import { handleDelegate } from "./delegate-handler";
-import { reemitDelegationAttempt } from "./delegation-reemit";
-import { buildPhaseIO, type PhaseIOGuards } from "./phase-io";
-import { emitFatalError, handleDone, handleFail } from "./terminal-handlers";
+} from "../errors/concrete.ts";
+import { clock } from "../services/clock.ts";
+import { refreshLock } from "../services/lock.ts";
+import { resolveRetryDecision } from "../services/retry-resolver.ts";
+import type { StateFile } from "../services/state-io.ts";
+import type { PhaseResult } from "../types/phase.ts";
+import type { DispatchContext, LoadedResults } from "./context.ts";
+import { handleDelegate } from "./delegate-handler.ts";
+import { reemitDelegationAttempt } from "./delegation-reemit.ts";
+import { buildPhaseIO, type PhaseIOGuards } from "./phase-io.ts";
+import { emitFatalError, handleDone, handleFail } from "./terminal-handlers.ts";
 
 function deepFreeze<T>(obj: T): T {
 	if (obj === null || typeof obj !== "object") return obj;

@@ -1,4 +1,4 @@
-import { OrchestratorError, type OrchestratorErrorOptions } from "./base";
+import { OrchestratorError, type OrchestratorErrorOptions } from "./base.ts";
 
 export class InvalidConfigError extends OrchestratorError {
 	readonly kind = "invalid_config" as const;

@@ -1,6 +1,6 @@
-import { InvalidConfigError } from "../errors/concrete";
-import { isValidRunId } from "../services/run-id";
-import type { OrchestratorConfig } from "../types/config";
+import { InvalidConfigError } from "../errors/concrete.ts";
+import { isValidRunId } from "../services/run-id.ts";
+import type { OrchestratorConfig } from "../types/config.ts";
 
 export interface ParsedArgv {
 	readonly resume: boolean;

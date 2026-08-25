@@ -1,12 +1,12 @@
 import * as path from "node:path";
-import { writeProtocolBlock } from "../services/protocol";
-import type { PromptDelegationRequest } from "../types/delegation";
+import { writeProtocolBlock } from "../services/protocol.ts";
+import type { PromptDelegationRequest } from "../types/delegation.ts";
 import type {
 	DelegationBinding,
 	DelegationContext,
 	DelegationManifest,
-} from "./types";
-import { MANIFEST_VERSION } from "./types";
+} from "./types.ts";
+import { MANIFEST_VERSION } from "./types.ts";
 
 export const promptBinding: DelegationBinding<PromptDelegationRequest> = {
 	kind: "prompt",

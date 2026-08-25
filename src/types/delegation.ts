@@ -1,4 +1,4 @@
-import type { RetryPolicy, TimeoutPolicy } from "./policies";
+import type { RetryPolicy, TimeoutPolicy } from "./policies.ts";
 
 export type DelegationRequest =
 	| PromptDelegationRequest

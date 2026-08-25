@@ -1,5 +1,5 @@
-import type { OrchestratorError } from "../errors/base";
-import { AbortedError, PhaseError } from "../errors/concrete";
+import type { OrchestratorError } from "../errors/base.ts";
+import { AbortedError, PhaseError } from "../errors/concrete.ts";
 
 export type ErrorCategory = "transient" | "permanent" | "abort" | "unknown";
 

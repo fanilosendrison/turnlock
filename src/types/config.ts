@@ -1,6 +1,6 @@
 import type { ZodSchema } from "zod";
-import type { Phase } from "./phase";
-import type { LoggingPolicy, RetryPolicy, TimeoutPolicy } from "./policies";
+import type { Phase } from "./phase.ts";
+import type { LoggingPolicy, RetryPolicy, TimeoutPolicy } from "./policies.ts";
 
 export interface OrchestratorConfig<State extends object = object> {
 	readonly name: string;

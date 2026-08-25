@@ -1,18 +1,22 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { DelegationManifest } from "../bindings/types";
-import { MANIFEST_VERSION } from "../constants";
-import { AbortedError, ProtocolError } from "../errors/concrete";
-import { abortableSleep } from "../services/abortable-sleep";
-import { clock } from "../services/clock";
-import { releaseLock } from "../services/lock";
+import type { DelegationManifest } from "../bindings/types.ts";
+import { MANIFEST_VERSION } from "../constants.ts";
+import { AbortedError, ProtocolError } from "../errors/concrete.ts";
+import { abortableSleep } from "../services/abortable-sleep.ts";
+import { clock } from "../services/clock.ts";
+import { releaseLock } from "../services/lock.ts";
 import {
 	type PendingDelegationRecord,
 	type StateFile,
 	writeStateAtomic,
-} from "../services/state-io";
-import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
-import { reconstructManifest, selectBinding } from "./shared";
+} from "../services/state-io.ts";
+import {
+	type DispatchContext,
+	doExit,
+	writeFileSyncAtomic,
+} from "./context.ts";
+import { reconstructManifest, selectBinding } from "./shared.ts";
 
 export async function reemitDelegationAttempt<S extends object>(
 	ctx: DispatchContext<S>,

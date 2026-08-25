@@ -1,4 +1,4 @@
-import type { Clock } from "../types/config";
+import type { Clock } from "../types/config.ts";
 
 export type { Clock };
 

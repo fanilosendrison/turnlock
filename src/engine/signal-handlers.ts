@@ -1,8 +1,8 @@
-import { AbortedError } from "../errors/concrete";
-import { clock } from "../services/clock";
-import { releaseLock } from "../services/lock";
-import { writeProtocolBlock } from "../services/protocol";
-import { type DispatchContext, doExit } from "./context";
+import { AbortedError } from "../errors/concrete.ts";
+import { clock } from "../services/clock.ts";
+import { releaseLock } from "../services/lock.ts";
+import { writeProtocolBlock } from "../services/protocol.ts";
+import { type DispatchContext, doExit } from "./context.ts";
 
 export function installSignalHandlers<S extends object>(
 	ctx: DispatchContext<S>,

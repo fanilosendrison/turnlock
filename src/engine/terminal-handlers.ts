@@ -1,12 +1,16 @@
 import * as path from "node:path";
-import { STATE_SCHEMA_VERSION } from "../constants";
-import { enrich, OrchestratorError } from "../errors/base";
-import { PhaseError } from "../errors/concrete";
-import { clock } from "../services/clock";
-import { releaseLock } from "../services/lock";
-import { writeProtocolBlock } from "../services/protocol";
-import { type StateFile, writeStateAtomic } from "../services/state-io";
-import { type DispatchContext, doExit, writeFileSyncAtomic } from "./context";
+import { STATE_SCHEMA_VERSION } from "../constants.ts";
+import { enrich, OrchestratorError } from "../errors/base.ts";
+import { PhaseError } from "../errors/concrete.ts";
+import { clock } from "../services/clock.ts";
+import { releaseLock } from "../services/lock.ts";
+import { writeProtocolBlock } from "../services/protocol.ts";
+import { type StateFile, writeStateAtomic } from "../services/state-io.ts";
+import {
+	type DispatchContext,
+	doExit,
+	writeFileSyncAtomic,
+} from "./context.ts";
 
 export async function emitFatalError<S extends object>(
 	ctx: DispatchContext<S>,

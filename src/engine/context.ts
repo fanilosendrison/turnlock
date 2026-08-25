@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
-import type { LockHandle } from "../services/lock";
-import type { InternalLogger } from "../services/logger";
-import type { OrchestratorConfig } from "../types/config";
+import type { LockHandle } from "../services/lock.ts";
+import type { InternalLogger } from "../services/logger.ts";
+import type { OrchestratorConfig } from "../types/config.ts";
 
 export interface DispatchContext<S extends object> {
 	readonly config: OrchestratorConfig<S>;

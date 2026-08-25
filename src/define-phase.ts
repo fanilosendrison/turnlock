@@ -1,4 +1,4 @@
-import type { Phase } from "./types/phase";
+import type { Phase } from "./types/phase.ts";
 
 export function definePhase<State extends object = object, Output = unknown>(
 	fn: Phase<State, Output>,

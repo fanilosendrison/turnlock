@@ -1,11 +1,11 @@
 import type { ZodSchema } from "zod";
-import type { Clock } from "./config";
+import type { Clock } from "./config.ts";
 import type {
 	BatchDelegationRequest,
 	DelegationRequest,
 	PromptDelegationRequest,
-} from "./delegation";
-import type { OrchestratorLogger } from "./events";
+} from "./delegation.ts";
+import type { OrchestratorLogger } from "./events.ts";
 
 export type Phase<State extends object = object, Output = unknown> = (
 	state: State,

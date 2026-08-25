@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { InvalidConfigError } from "../errors/concrete";
+import { InvalidConfigError } from "../errors/concrete.ts";
 
 const DEFAULT_RUN_DIR_ROOT = path.join(".turnlock", "runs");
 const RUN_DIR_ROOT_ENV_VAR = "TURNLOCK_RUN_DIR_ROOT";

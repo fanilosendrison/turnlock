@@ -1,4 +1,4 @@
-import { AbortedError } from "../errors/concrete";
+import { AbortedError } from "../errors/concrete.ts";
 
 export function abortableSleep(
 	delayMs: number,

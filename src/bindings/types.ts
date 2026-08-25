@@ -1,6 +1,6 @@
-import type { DelegationRequest } from "../types/delegation";
+import type { DelegationRequest } from "../types/delegation.ts";
 
-export { MANIFEST_VERSION } from "../constants";
+export { MANIFEST_VERSION } from "../constants.ts";
 
 export interface DelegationContext {
 	readonly runId: string;
