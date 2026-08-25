@@ -18,7 +18,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "bun test",
-    "test:node-package": "npm run build && tsc -p tests/package/tsconfig.consumer.json && node --test tests/package/node-esm-distribution.test.mjs",
+    "test:node-package": "npm run build && tsc -p tests/package/tsconfig.consumer.json && node --test tests/package/node-esm-distribution.node.mjs",
     "lint": "biome check src/ tests/",
     "prepack": "npm run test:node-package",
     "lint:fix": "biome check --write src/ tests/",
