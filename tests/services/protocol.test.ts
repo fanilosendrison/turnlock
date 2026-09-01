@@ -1,14 +1,14 @@
+import assert from "node:assert/strict";
 // NIB-T §4 — protocol writer/parser (T-PR-01..26, P-PR-a..d)
-import { describe, expect, test } from "bun:test";
+import { describe, test } from "node:test";
 import {
 	parseProtocolBlock,
 	writeProtocolBlock,
-} from "../../src/services/protocol";
-import { loadFixture } from "../helpers/fixture-loader";
+} from "../../src/services/protocol.js";
+import { loadFixture } from "../helpers/fixture-loader.js";
 
 const RID = "01HX0000000000000000000001";
 const RCMD = "bun run ./main.ts --run-id 01HX0000000000000000000001 --resume";
-
 describe("writeProtocolBlock DELEGATE (T-PR-01..03)", () => {
 	test("T-PR-01 | prompt", () => {
 		const out = writeProtocolBlock("DELEGATE", {
@@ -18,11 +18,11 @@ describe("writeProtocolBlock DELEGATE (T-PR-01..03)", () => {
 			kind: "prompt",
 			resumeCmd: RCMD,
 		});
-		expect(out).toContain("@@TURNLOCK@@");
-		expect(out).toContain("@@END@@");
-		expect(out).toContain("action: DELEGATE");
-		expect(out).toContain("kind: prompt");
-		expect(out).toContain("manifest: /abs/path.json");
+		assert.ok(out.includes("@@TURNLOCK@@"));
+		assert.ok(out.includes("@@END@@"));
+		assert.ok(out.includes("action: DELEGATE"));
+		assert.ok(out.includes("kind: prompt"));
+		assert.ok(out.includes("manifest: /abs/path.json"));
 	});
 	test("T-PR-02 | batch", () => {
 		const out = writeProtocolBlock("DELEGATE", {
@@ -32,7 +32,7 @@ describe("writeProtocolBlock DELEGATE (T-PR-01..03)", () => {
 			kind: "batch",
 			resumeCmd: RCMD,
 		});
-		expect(out).toContain("kind: batch");
+		assert.ok(out.includes("kind: batch"));
 	});
 	test("T-PR-03 | prompt with alternate orchestrator", () => {
 		const out = writeProtocolBlock("DELEGATE", {
@@ -42,10 +42,9 @@ describe("writeProtocolBlock DELEGATE (T-PR-01..03)", () => {
 			kind: "prompt",
 			resumeCmd: RCMD,
 		});
-		expect(out).toContain("kind: prompt");
+		assert.ok(out.includes("kind: prompt"));
 	});
 });
-
 describe("writeProtocolBlock REQUEST_EXTERNAL", () => {
 	test("writes every stable external request field", () => {
 		const out = writeProtocolBlock("REQUEST_EXTERNAL", {
@@ -57,15 +56,13 @@ describe("writeProtocolBlock REQUEST_EXTERNAL", () => {
 			result: "/run/external-results/push-repo.json",
 			resumeCmd: RCMD,
 		});
-
-		expect(out).toContain("action: REQUEST_EXTERNAL");
-		expect(out).toContain(`request_id: ${RID}/push-repo`);
-		expect(out).toContain("request_type: git.push");
-		expect(out).toContain("manifest: /run/external-requests/push-repo.json");
-		expect(out).toContain("result: /run/external-results/push-repo.json");
+		assert.ok(out.includes("action: REQUEST_EXTERNAL"));
+		assert.ok(out.includes(`request_id: ${RID}/push-repo`));
+		assert.ok(out.includes("request_type: git.push"));
+		assert.ok(out.includes("manifest: /run/external-requests/push-repo.json"));
+		assert.ok(out.includes("result: /run/external-results/push-repo.json"));
 	});
 });
-
 describe("writeProtocolBlock DONE (T-PR-04..05)", () => {
 	test("T-PR-04 | done full fields", () => {
 		const out = writeProtocolBlock("DONE", {
@@ -76,10 +73,10 @@ describe("writeProtocolBlock DONE (T-PR-04..05)", () => {
 			phasesExecuted: 5,
 			durationMs: 12345,
 		});
-		expect(out).toContain("action: DONE");
-		expect(out).toContain("success: true");
-		expect(out).toContain("phases_executed: 5");
-		expect(out).toContain("duration_ms: 12345");
+		assert.ok(out.includes("action: DONE"));
+		assert.ok(out.includes("success: true"));
+		assert.ok(out.includes("phases_executed: 5"));
+		assert.ok(out.includes("duration_ms: 12345"));
 	});
 	test("T-PR-05 | phases_executed: 0 not omitted", () => {
 		const out = writeProtocolBlock("DONE", {
@@ -90,10 +87,9 @@ describe("writeProtocolBlock DONE (T-PR-04..05)", () => {
 			phasesExecuted: 0,
 			durationMs: 0,
 		});
-		expect(out).toContain("phases_executed: 0");
+		assert.ok(out.includes("phases_executed: 0"));
 	});
 });
-
 describe("writeProtocolBlock ERROR (T-PR-06..10)", () => {
 	test("T-PR-06 | error with phase", () => {
 		const out = writeProtocolBlock("ERROR", {
@@ -104,10 +100,10 @@ describe("writeProtocolBlock ERROR (T-PR-06..10)", () => {
 			phase: "consolidate",
 			phasesExecuted: 4,
 		});
-		expect(out).toContain("action: ERROR");
-		expect(out).toContain("error_kind: delegation_schema");
-		expect(out).toContain("phase: consolidate");
-		expect(out).toContain("phases_executed: 4");
+		assert.ok(out.includes("action: ERROR"));
+		assert.ok(out.includes("error_kind: delegation_schema"));
+		assert.ok(out.includes("phase: consolidate"));
+		assert.ok(out.includes("phases_executed: 4"));
 	});
 	test("T-PR-07 | preflight error runId/phase null", () => {
 		const out = writeProtocolBlock("ERROR", {
@@ -118,9 +114,9 @@ describe("writeProtocolBlock ERROR (T-PR-06..10)", () => {
 			phase: null,
 			phasesExecuted: 0,
 		});
-		expect(out).toContain("run_id: null");
-		expect(out).toContain("phase: null");
-		expect(out).toContain("error_kind: invalid_config");
+		assert.ok(out.includes("run_id: null"));
+		assert.ok(out.includes("phase: null"));
+		assert.ok(out.includes("error_kind: invalid_config"));
 	});
 	test("T-PR-08 | run_locked with path-like message", () => {
 		const out = writeProtocolBlock("ERROR", {
@@ -131,7 +127,7 @@ describe("writeProtocolBlock ERROR (T-PR-06..10)", () => {
 			phase: null,
 			phasesExecuted: 0,
 		});
-		expect(out).toContain("error_kind: run_locked");
+		assert.ok(out.includes("error_kind: run_locked"));
 	});
 	test(`T-PR-09 | message containing " escaped`, () => {
 		const out = writeProtocolBlock("ERROR", {
@@ -142,7 +138,7 @@ describe("writeProtocolBlock ERROR (T-PR-06..10)", () => {
 			phase: null,
 			phasesExecuted: 0,
 		});
-		expect(out).toContain('\\"');
+		assert.ok(out.includes('\\"'));
 	});
 	test(`T-PR-10 | message containing \\n escaped`, () => {
 		const out = writeProtocolBlock("ERROR", {
@@ -153,10 +149,9 @@ describe("writeProtocolBlock ERROR (T-PR-06..10)", () => {
 			phase: null,
 			phasesExecuted: 0,
 		});
-		expect(out).toContain("\\n");
+		assert.ok(out.includes("\\n"));
 	});
 });
-
 describe("writeProtocolBlock ABORTED (T-PR-11..12)", () => {
 	test("T-PR-11 | SIGINT with phase", () => {
 		const out = writeProtocolBlock("ABORTED", {
@@ -165,9 +160,9 @@ describe("writeProtocolBlock ABORTED (T-PR-11..12)", () => {
 			signal: "SIGINT",
 			phase: "dispatch-reviews",
 		});
-		expect(out).toContain("action: ABORTED");
-		expect(out).toContain("signal: SIGINT");
-		expect(out).toContain("phase: dispatch-reviews");
+		assert.ok(out.includes("action: ABORTED"));
+		assert.ok(out.includes("signal: SIGINT"));
+		assert.ok(out.includes("phase: dispatch-reviews"));
 	});
 	test("T-PR-12 | SIGTERM phase null", () => {
 		const out = writeProtocolBlock("ABORTED", {
@@ -176,106 +171,109 @@ describe("writeProtocolBlock ABORTED (T-PR-11..12)", () => {
 			signal: "SIGTERM",
 			phase: null,
 		});
-		expect(out).toContain("signal: SIGTERM");
-		expect(out).toContain("phase: null");
+		assert.ok(out.includes("signal: SIGTERM"));
+		assert.ok(out.includes("phase: null"));
 	});
 });
-
 describe("parseProtocolBlock happy (T-PR-13..19)", () => {
 	test("T-PR-13 | DELEGATE full", () => {
 		const parsed = parseProtocolBlock(
 			loadFixture("protocol/delegate-prompt.txt"),
 		);
-		expect(parsed).not.toBeNull();
-		expect(parsed?.action).toBe("DELEGATE");
-		expect(parsed?.fields.kind).toBe("prompt");
+		assert.notStrictEqual(parsed, null);
+		assert.strictEqual(parsed?.action, "DELEGATE");
+		assert.strictEqual(parsed?.fields.kind, "prompt");
 	});
 	test("parses REQUEST_EXTERNAL fields", () => {
 		const parsed = parseProtocolBlock(
 			loadFixture("protocol/request-external.txt"),
 		);
-		expect(parsed?.action).toBe("REQUEST_EXTERNAL");
-		expect(parsed?.fields.requestId).toBe(`${RID}/push-repo`);
-		expect(parsed?.fields.requestType).toBe("git.push");
-		expect(parsed?.fields.result).toBe("/tmp/external-results/push-repo.json");
+		assert.strictEqual(parsed?.action, "REQUEST_EXTERNAL");
+		assert.strictEqual(parsed?.fields.requestId, `${RID}/push-repo`);
+		assert.strictEqual(parsed?.fields.requestType, "git.push");
+		assert.strictEqual(
+			parsed?.fields.result,
+			"/tmp/external-results/push-repo.json",
+		);
 	});
 	test("T-PR-14 | DONE full", () => {
 		const parsed = parseProtocolBlock(loadFixture("protocol/done-minimal.txt"));
-		expect(parsed?.action).toBe("DONE");
-		expect(parsed?.fields.success).toBe(true);
-		expect(parsed?.fields.phasesExecuted).toBe(3);
-		expect(parsed?.fields.durationMs).toBe(1234);
+		assert.strictEqual(parsed?.action, "DONE");
+		assert.strictEqual(parsed?.fields.success, true);
+		assert.strictEqual(parsed?.fields.phasesExecuted, 3);
+		assert.strictEqual(parsed?.fields.durationMs, 1234);
 	});
 	test("T-PR-15 | ERROR preflight runId=null", () => {
 		const parsed = parseProtocolBlock(
 			loadFixture("protocol/error-preflight.txt"),
 		);
-		expect(parsed?.runId).toBeNull();
+		assert.strictEqual(parsed?.runId, null);
 	});
 	test("T-PR-16 | ERROR phase=null", () => {
 		const parsed = parseProtocolBlock(
 			loadFixture("protocol/error-preflight.txt"),
 		);
-		expect(parsed?.fields.phase).toBeNull();
+		assert.strictEqual(parsed?.fields.phase, null);
 	});
 	test("T-PR-17 | ABORTED", () => {
 		const parsed = parseProtocolBlock(
 			loadFixture("protocol/aborted-sigint.txt"),
 		);
-		expect(parsed?.action).toBe("ABORTED");
-		expect(parsed?.fields.signal).toBe("SIGINT");
+		assert.strictEqual(parsed?.action, "ABORTED");
+		assert.strictEqual(parsed?.fields.signal, "SIGINT");
 	});
 	test("T-PR-18 | success string → boolean", () => {
 		const parsed = parseProtocolBlock(loadFixture("protocol/done-minimal.txt"));
-		expect(parsed?.fields.success).toBe(true);
-		expect(typeof parsed?.fields.success).toBe("boolean");
+		assert.strictEqual(parsed?.fields.success, true);
+		assert.strictEqual(typeof parsed?.fields.success, "boolean");
 	});
 	test("T-PR-19 | phases_executed → number", () => {
 		const parsed = parseProtocolBlock(loadFixture("protocol/done-minimal.txt"));
-		expect(typeof parsed?.fields.phasesExecuted).toBe("number");
+		assert.strictEqual(typeof parsed?.fields.phasesExecuted, "number");
 	});
 });
-
 describe("parseProtocolBlock rejects (T-PR-20..24)", () => {
 	test("T-PR-20 | no block → null", () => {
-		expect(parseProtocolBlock("plain text\nno markers")).toBeNull();
+		assert.strictEqual(parseProtocolBlock("plain text\nno markers"), null);
 	});
 	test("T-PR-21 | no @@END@@ → null", () => {
-		expect(
+		assert.strictEqual(
 			parseProtocolBlock(loadFixture("protocol/malformed-missing-end.txt")),
-		).toBeNull();
+			null,
+		);
 	});
 	test("T-PR-22 | missing @@TURNLOCK@@ → null", () => {
-		expect(parseProtocolBlock("version: 3\nrun_id: X\n@@END@@")).toBeNull();
+		assert.strictEqual(
+			parseProtocolBlock("version: 3\nrun_id: X\n@@END@@"),
+			null,
+		);
 	});
 	test("T-PR-23 | version incompatible → null", () => {
 		const s =
 			"\n@@TURNLOCK@@\nversion: 1\nrun_id: X\norchestrator: y\naction: DONE\n@@END@@\n";
-		expect(parseProtocolBlock(s)).toBeNull();
+		assert.strictEqual(parseProtocolBlock(s), null);
 	});
 	test("T-PR-24 | unknown action → null", () => {
 		const s =
 			"\n@@TURNLOCK@@\nversion: 3\nrun_id: X\norchestrator: y\naction: FOOBAR\n@@END@@\n";
-		expect(parseProtocolBlock(s)).toBeNull();
+		assert.strictEqual(parseProtocolBlock(s), null);
 	});
 });
-
 describe("parseProtocolBlock multiplicity (T-PR-25..26)", () => {
 	test("T-PR-25 | two blocks → returns first", () => {
 		const parsed = parseProtocolBlock(
 			loadFixture("protocol/malformed-double-block.txt"),
 		);
-		expect(parsed).not.toBeNull();
-		expect(parsed?.fields.output).toBe("/tmp/out1.json");
+		assert.notStrictEqual(parsed, null);
+		assert.strictEqual(parsed?.fields.output, "/tmp/out1.json");
 	});
 	test("T-PR-26 | tolerates noise before block", () => {
 		const noisy = `stray log line\nanother\n${loadFixture("protocol/done-minimal.txt")}`;
 		const parsed = parseProtocolBlock(noisy);
-		expect(parsed).not.toBeNull();
-		expect(parsed?.action).toBe("DONE");
+		assert.notStrictEqual(parsed, null);
+		assert.strictEqual(parsed?.action, "DONE");
 	});
 });
-
 describe("protocol properties (P-PR-a..d)", () => {
 	test("P-PR-a | round-trip DELEGATE", () => {
 		const block = writeProtocolBlock("DELEGATE", {
@@ -286,9 +284,9 @@ describe("protocol properties (P-PR-a..d)", () => {
 			resumeCmd: RCMD,
 		});
 		const parsed = parseProtocolBlock(block);
-		expect(parsed).not.toBeNull();
-		expect(parsed?.action).toBe("DELEGATE");
-		expect(parsed?.fields.kind).toBe("prompt");
+		assert.notStrictEqual(parsed, null);
+		assert.strictEqual(parsed?.action, "DELEGATE");
+		assert.strictEqual(parsed?.fields.kind, "prompt");
 	});
 	test("P-PR-b | pure (same input → same output)", () => {
 		const fields = {
@@ -299,7 +297,8 @@ describe("protocol properties (P-PR-a..d)", () => {
 			phasesExecuted: 1,
 			durationMs: 100,
 		};
-		expect(writeProtocolBlock("DONE", fields)).toBe(
+		assert.strictEqual(
+			writeProtocolBlock("DONE", fields),
 			writeProtocolBlock("DONE", fields),
 		);
 	});
@@ -312,8 +311,8 @@ describe("protocol properties (P-PR-a..d)", () => {
 			phasesExecuted: 1,
 			durationMs: 10,
 		});
-		expect(out.match(/@@TURNLOCK@@/g)?.length).toBe(1);
-		expect(out.match(/@@END@@/g)?.length).toBe(1);
+		assert.strictEqual(out.match(/@@TURNLOCK@@/g)?.length, 1);
+		assert.strictEqual(out.match(/@@END@@/g)?.length, 1);
 	});
 	test("P-PR-d | required fields always present", () => {
 		const out = writeProtocolBlock("DONE", {
@@ -324,9 +323,9 @@ describe("protocol properties (P-PR-a..d)", () => {
 			phasesExecuted: 1,
 			durationMs: 10,
 		});
-		expect(out).toMatch(/version: \d+/);
-		expect(out).toMatch(/run_id: /);
-		expect(out).toMatch(/orchestrator: /);
-		expect(out).toMatch(/action: /);
+		assert.match(out, /version: \d+/);
+		assert.match(out, /run_id: /);
+		assert.match(out, /orchestrator: /);
+		assert.match(out, /action: /);
 	});
 });

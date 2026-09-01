@@ -4,7 +4,6 @@ export interface ControlledSignal {
 	abortAfter(ms: number, reason?: unknown): void;
 	emitOsSignal(sig: "SIGINT" | "SIGTERM"): void;
 }
-
 export function createControlledSignal(): ControlledSignal {
 	const controller = new AbortController();
 	return {

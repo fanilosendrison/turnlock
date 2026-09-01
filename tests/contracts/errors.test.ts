@@ -1,10 +1,11 @@
+import assert from "node:assert/strict";
 // NIB-T §27.6 — error classes (C-ER-01..03)
-import { describe, expect, test } from "bun:test";
+import { describe, test } from "node:test";
 import {
 	InvalidConfigError,
 	OrchestratorError,
 	RunLockedError,
-} from "../../src/index";
+} from "../../src/index.js";
 
 describe("[GREEN-L1] error classes (C-ER-01..03)", () => {
 	test("C-ER-01 | RunLockedError public props", () => {
@@ -13,9 +14,9 @@ describe("[GREEN-L1] error classes (C-ER-01..03)", () => {
 			acquiredAtEpochMs: 100,
 			leaseUntilEpochMs: 200,
 		});
-		expect(err.ownerPid).toBe(12345);
-		expect(err.acquiredAtEpochMs).toBe(100);
-		expect(err.leaseUntilEpochMs).toBe(200);
+		assert.strictEqual(err.ownerPid, 12345);
+		assert.strictEqual(err.acquiredAtEpochMs, 100);
+		assert.strictEqual(err.leaseUntilEpochMs, 200);
 	});
 	test("C-ER-02 | OrchestratorError public opts", () => {
 		const err = new InvalidConfigError("x", {
@@ -23,17 +24,17 @@ describe("[GREEN-L1] error classes (C-ER-01..03)", () => {
 			orchestratorName: "O",
 			phase: "P",
 		});
-		expect(err.runId).toBe("R");
-		expect(err.orchestratorName).toBe("O");
-		expect(err.phase).toBe("P");
+		assert.strictEqual(err.runId, "R");
+		assert.strictEqual(err.orchestratorName, "O");
+		assert.strictEqual(err.phase, "P");
 	});
 	test("C-ER-03 | throw + instanceof working", () => {
 		try {
 			throw new InvalidConfigError("x");
 		} catch (err) {
-			expect(err).toBeInstanceOf(InvalidConfigError);
-			expect(err).toBeInstanceOf(OrchestratorError);
-			expect(err).toBeInstanceOf(Error);
+			assert.ok(err instanceof InvalidConfigError);
+			assert.ok(err instanceof OrchestratorError);
+			assert.ok(err instanceof Error);
 		}
 	});
 });

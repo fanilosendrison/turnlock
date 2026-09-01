@@ -1,16 +1,16 @@
+import assert from "node:assert/strict";
 // NIB-T §14 — BatchBinding (T-BT-01..08, P-BT-a/b/c)
-import { describe, expect, test } from "bun:test";
-import { batchBinding } from "../../src/bindings/batch";
+import { describe, test } from "node:test";
+import { batchBinding } from "../../src/bindings/batch.js";
 import type {
 	DelegationContext,
 	DelegationManifest,
 	DelegationManifestJob,
-} from "../../src/bindings/types";
-import { InvalidConfigError } from "../../src/errors/concrete";
-import type { BatchDelegationRequest } from "../../src/types/delegation";
+} from "../../src/bindings/types.js";
+import { InvalidConfigError } from "../../src/errors/concrete.js";
+import type { BatchDelegationRequest } from "../../src/types/delegation.js";
 
 const RUN_DIR = "/tmp/.turnlock/runs/orch/01HX";
-
 function makeContext(
 	overrides: Partial<DelegationContext> = {},
 ): DelegationContext {
@@ -23,13 +23,12 @@ function makeContext(
 		maxAttempts: 3,
 		emittedAt: "2026-04-19T12:00:00.000Z",
 		emittedAtEpochMs: 0,
-		timeoutMs: 600_000,
-		deadlineAtEpochMs: 600_000,
+		timeoutMs: 600000,
+		deadlineAtEpochMs: 600000,
 		runDir: RUN_DIR,
 		...overrides,
 	};
 }
-
 function makeRequest(
 	jobCount: number,
 	label = "batch",
@@ -44,28 +43,29 @@ function makeRequest(
 		label,
 	};
 }
-
 function expectJobs(
 	manifest: DelegationManifest,
 ): readonly DelegationManifestJob[] {
-	expect(manifest.jobs).toBeDefined();
+	assert.notStrictEqual(manifest.jobs, undefined);
 	return manifest.jobs ?? [];
 }
-
 describe("BatchBinding.buildManifest (T-BT-01..05)", () => {
 	test("T-BT-01 | 1 job manifest", () => {
 		const m = batchBinding.buildManifest(makeRequest(1), makeContext());
-		expect(m.kind).toBe("batch");
-		expect(m.jobs).toHaveLength(1);
-		expect(m.resultPath).toBeUndefined();
-		expect(m.jobs?.[0]?.resultPath).toBe(`${RUN_DIR}/results/batch-0/j1.json`);
+		assert.strictEqual(m.kind, "batch");
+		assert.strictEqual(expectJobs(m).length, 1);
+		assert.strictEqual(m.resultPath, undefined);
+		assert.strictEqual(
+			m.jobs?.[0]?.resultPath,
+			`${RUN_DIR}/results/batch-0/j1.json`,
+		);
 	});
 	test("T-BT-02 | 3 jobs", () => {
 		const m = batchBinding.buildManifest(makeRequest(3), makeContext());
 		const jobs = expectJobs(m);
-		expect(jobs).toHaveLength(3);
+		assert.strictEqual(jobs.length, 3);
 		for (const job of jobs) {
-			expect(job.resultPath).toContain(`${RUN_DIR}/results/batch-0/`);
+			assert.ok(job.resultPath.includes(`${RUN_DIR}/results/batch-0/`));
 		}
 	});
 	test("T-BT-03 | binding does not enforce unique job IDs", () => {
@@ -76,7 +76,7 @@ describe("BatchBinding.buildManifest (T-BT-01..05)", () => {
 				{ id: "j1", prompt: "b" },
 			],
 		};
-		expect(() => batchBinding.buildManifest(req, makeContext())).not.toThrow();
+		assert.doesNotThrow(() => batchBinding.buildManifest(req, makeContext()));
 	});
 	test("T-BT-04 | 0 jobs → InvalidConfigError", () => {
 		const req: BatchDelegationRequest = {
@@ -85,7 +85,8 @@ describe("BatchBinding.buildManifest (T-BT-01..05)", () => {
 			jobs: [],
 			label: "batch",
 		};
-		expect(() => batchBinding.buildManifest(req, makeContext())).toThrow(
+		assert.throws(
+			() => batchBinding.buildManifest(req, makeContext()),
 			InvalidConfigError,
 		);
 	});
@@ -94,10 +95,11 @@ describe("BatchBinding.buildManifest (T-BT-01..05)", () => {
 			makeRequest(3),
 			makeContext({ attempt: 2 }),
 		);
-		expect(expectJobs(m)[0]?.resultPath).toContain("batch-2/");
+		const firstJob = expectJobs(m)[0];
+		if (firstJob === undefined) assert.fail("expected the first batch job");
+		assert.ok(firstJob.resultPath.includes("batch-2/"));
 	});
 });
-
 describe("BatchBinding.buildProtocolBlock (T-BT-06..08)", () => {
 	test("T-BT-06 | bloc DELEGATE batch", () => {
 		const m = batchBinding.buildManifest(makeRequest(3), makeContext());
@@ -106,27 +108,27 @@ describe("BatchBinding.buildProtocolBlock (T-BT-06..08)", () => {
 			"/tmp/delegations/batch-0.json",
 			"cmd",
 		);
-		expect(b).toContain("kind: batch");
+		assert.ok(b.includes("kind: batch"));
 	});
 	test("T-BT-07 | 5 jobs end-to-end disjoint paths", () => {
 		const m = batchBinding.buildManifest(makeRequest(5), makeContext());
 		const paths = new Set(expectJobs(m).map((j) => j.resultPath));
-		expect(paths.size).toBe(5);
+		assert.strictEqual(paths.size, 5);
 	});
 	test("T-BT-08 | 20 jobs build fast & disjoint", () => {
 		const start = Date.now();
 		const m = batchBinding.buildManifest(makeRequest(20), makeContext());
-		expect(Date.now() - start).toBeLessThan(200);
+		assert.ok(Date.now() - start < 200);
 		const paths = new Set(expectJobs(m).map((j) => j.resultPath));
-		expect(paths.size).toBe(20);
+		assert.strictEqual(paths.size, 20);
 	});
 });
-
 describe("BatchBinding properties (P-BT-a..c)", () => {
 	test("P-BT-a | pure", () => {
 		const ctx = makeContext();
 		const req = makeRequest(3);
-		expect(batchBinding.buildManifest(req, ctx)).toEqual(
+		assert.deepStrictEqual(
+			batchBinding.buildManifest(req, ctx),
 			batchBinding.buildManifest(req, ctx),
 		);
 	});
@@ -136,12 +138,12 @@ describe("BatchBinding properties (P-BT-a..c)", () => {
 			makeContext({ attempt: 1 }),
 		);
 		for (const job of expectJobs(m)) {
-			expect(job.resultPath).toMatch(/\/results\/batch-1\/j\d+\.json$/);
+			assert.match(job.resultPath, /\/results\/batch-1\/j\d+\.json$/);
 		}
 	});
 	test("P-BT-c | two distinct jobs have disjoint paths", () => {
 		const m = batchBinding.buildManifest(makeRequest(5), makeContext());
 		const paths = expectJobs(m).map((j) => j.resultPath);
-		expect(new Set(paths).size).toBe(paths.length);
+		assert.strictEqual(new Set(paths).size, paths.length);
 	});
 });

@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { isJsonValue } from "../../src/services/json-value";
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+import { isJsonValue } from "../../src/services/json-value.js";
 
 describe("JSON value validation", () => {
 	test("accepts every recursive JSON value shape", () => {
@@ -11,12 +12,10 @@ describe("JSON value validation", () => {
 			[null, "text", 42, false, { nested: [1, 2, 3] }],
 			{ repository: "/repo", options: { force: false }, tags: ["a"] },
 		];
-
 		for (const value of values) {
-			expect(isJsonValue(value)).toBe(true);
+			assert.strictEqual(isJsonValue(value), true);
 		}
 	});
-
 	test("rejects values that JSON serialization would lose or rewrite", () => {
 		const sparse: unknown[] = [];
 		sparse[1] = "value";
@@ -32,18 +31,15 @@ describe("JSON value validation", () => {
 			sparse,
 			new Date("2026-01-01T00:00:00.000Z"),
 		];
-
 		for (const value of values) {
-			expect(isJsonValue(value)).toBe(false);
+			assert.strictEqual(isJsonValue(value), false);
 		}
 	});
-
 	test("rejects cyclic objects but accepts repeated non-cyclic references", () => {
 		const cyclic: Record<string, unknown> = {};
 		cyclic.self = cyclic;
 		const shared = { value: 1 };
-
-		expect(isJsonValue(cyclic)).toBe(false);
-		expect(isJsonValue({ first: shared, second: shared })).toBe(true);
+		assert.strictEqual(isJsonValue(cyclic), false);
+		assert.strictEqual(isJsonValue({ first: shared, second: shared }), true);
 	});
 });

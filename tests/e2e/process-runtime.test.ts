@@ -1,11 +1,14 @@
-// Process-level coverage for Turnlock's stdout protocol, run directory, resume, retry, lock, and signal contract.
-import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DelegationManifest } from "../../src/bindings/types";
-import type { ProtocolAction } from "../../src/services/protocol";
-import type { StateFile } from "../../src/services/state-io";
-import type { OrchestratorEvent } from "../../src/types/events";
+// Process-level coverage for Turnlock's stdout protocol, run directory, resume, retry, lock, and signal contract.
+import { describe, test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
+import type { DelegationManifest } from "../../src/bindings/types.js";
+import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
+import type { ProtocolAction } from "../../src/services/protocol.js";
+import type { StateFile } from "../../src/services/state-io.js";
+import type { OrchestratorEvent } from "../../src/types/events.js";
 import {
 	buildEntrypointSource,
 	countProtocolBlocks,
@@ -19,7 +22,7 @@ import {
 	writeBatchResults,
 	writeMalformedPromptResult,
 	writePromptResult,
-} from "../helpers/e2e-process";
+} from "../helpers/e2e-process.js";
 
 const RUN_IDS = {
 	done: "01HX0000000000000000000001",
@@ -41,57 +44,55 @@ const RUN_IDS = {
 	missingState: "01HX0000000000000000000017",
 	failAfterDelegate: "01HX0000000000000000000020",
 } as const;
-
 function eventTypes(events: readonly OrchestratorEvent[]): string[] {
 	return events.map((event) => event.eventType);
 }
-
 function expectProtocol(
 	stdout: string,
 	action: ProtocolAction,
 	runId: string | null,
 ) {
-	expect(countProtocolBlocks(stdout)).toBe(1);
+	assert.strictEqual(countProtocolBlocks(stdout), 1);
 	const block = parseSingleProtocolBlock(stdout);
-	expect(block.action).toBe(action);
-	expect(block.runId).toBe(runId);
+	assert.strictEqual(block.action, action);
+	assert.strictEqual(block.runId, runId);
 	return block;
 }
-
 function expectLockReleased(runDir: string): void {
 	// SQLite-based ownership replaces the file lock.  The DB row is
 	// set to FREE on release; verify by checking the ownership status.
 	const dbPath = join(runDir, "turnlock.sqlite3");
 	if (existsSync(dbPath)) {
-		const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
-		const db = new Database(dbPath, { readonly: true });
+		const db = nodeSqliteDriver.open(dbPath);
 		try {
 			const row = db
-				.query("SELECT ownership_status FROM run_ownership WHERE singleton = 1")
-				.get() as { ownership_status: string } | undefined;
-			expect(row?.ownership_status ?? "FREE").toBe("FREE");
+				.prepare(
+					"SELECT ownership_status FROM run_ownership WHERE singleton = 1",
+				)
+				.get() as
+				| {
+						ownership_status: string;
+				  }
+				| undefined;
+			assert.strictEqual(row?.ownership_status ?? "FREE", "FREE");
 		} finally {
 			db.close();
 		}
 	}
 }
-
 function expectNoProtocolOnStderr(stderr: string): void {
-	expect(stderr).not.toContain("@@TURNLOCK@@");
+	assert.ok(!stderr.includes("@@TURNLOCK@@"));
 }
-
 function baseResumeCommandSource(): string {
-	return '(runId) => "bun " + import.meta.path + " --run-id " + runId + " --resume"';
+	return '(runId) => "node " + import.meta.filename + " --run-id " + runId + " --resume"';
 }
-
 function expectLastTransitionMatchesManifest(
 	state: StateFile<object>,
 	manifest: DelegationManifest,
 ): void {
-	expect(state.lastTransitionAt).toBe(manifest.emittedAt);
-	expect(state.lastTransitionAtEpochMs).toBe(manifest.emittedAtEpochMs);
+	assert.strictEqual(state.lastTransitionAt, manifest.emittedAt);
+	assert.strictEqual(state.lastTransitionAtEpochMs, manifest.emittedAtEpochMs);
 }
-
 describe("process E2E initial terminal and delegation flows", () => {
 	test("initial DONE exits 0 with protocol-only stdout and durable terminal artifacts", async () => {
 		const workspace = createE2EWorkspace();
@@ -111,35 +112,37 @@ await runOrchestrator<State>({
 });
 `),
 		);
-
 		try {
 			const result = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
 				RUN_IDS.done,
 			]);
-			expect(result.exitCode).toBe(0);
+			assert.strictEqual(result.exitCode, 0);
 			expectNoProtocolOnStderr(result.stderr);
 			const block = expectProtocol(result.stdout, "DONE", RUN_IDS.done);
-
 			const runDir = workspace.runDir("e2e-done", RUN_IDS.done);
-			expect(block.fields.output).toBe(join(runDir, "output.json"));
-			expect(
-				readJsonFile<{ ok: boolean; count: number }>(
-					join(runDir, "output.json"),
-				),
-			).toEqual({
-				ok: true,
-				count: 1,
-			});
-			const state = readStateFile<{ count: number }>(runDir);
-			expect(state.runId).toBe(RUN_IDS.done);
-			expect(state.currentPhase).toBe("start");
-			expect(state.phasesExecuted).toBe(1);
-			expect(state.lastTransitionAt).toBe(state.startedAt);
-			expect(state.lastTransitionAtEpochMs).toBe(state.startedAtEpochMs);
-			expect("pendingDelegation" in state).toBe(false);
+			assert.strictEqual(block.fields.output, join(runDir, "output.json"));
+			assert.deepStrictEqual(
+				readJsonFile<{
+					ok: boolean;
+					count: number;
+				}>(join(runDir, "output.json")),
+				{
+					ok: true,
+					count: 1,
+				},
+			);
+			const state = readStateFile<{
+				count: number;
+			}>(runDir);
+			assert.strictEqual(state.runId, RUN_IDS.done);
+			assert.strictEqual(state.currentPhase, "start");
+			assert.strictEqual(state.phasesExecuted, 1);
+			assert.strictEqual(state.lastTransitionAt, state.startedAt);
+			assert.strictEqual(state.lastTransitionAtEpochMs, state.startedAtEpochMs);
+			assert.strictEqual("pendingDelegation" in state, false);
 			expectLockReleased(runDir);
-			expect(eventTypes(readEvents(runDir))).toEqual([
+			assert.deepStrictEqual(eventTypes(readEvents(runDir)), [
 				"orchestrator_start",
 				"phase_start",
 				"phase_end",
@@ -149,7 +152,6 @@ await runOrchestrator<State>({
 			workspace.cleanup();
 		}
 	});
-
 	test("initial DELEGATE snapshots next state, manifest, pending delegation, and releases lock", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -171,21 +173,19 @@ await runOrchestrator<State>({
 });
 `),
 		);
-
 		try {
 			const result = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
 				RUN_IDS.delegate,
 			]);
-			expect(result.exitCode).toBe(0);
+			assert.strictEqual(result.exitCode, 0);
 			expectNoProtocolOnStderr(result.stderr);
 			const block = expectProtocol(result.stdout, "DELEGATE", RUN_IDS.delegate);
-			expect(block.fields.kind).toBe("prompt");
-
+			assert.strictEqual(block.fields.kind, "prompt");
 			const runDir = workspace.runDir("e2e-delegate", RUN_IDS.delegate);
 			const manifestPath = String(block.fields.manifest);
 			const manifest = readManifestFile(manifestPath);
-			expect(manifest).toMatchObject({
+			assert.partialDeepStrictEqual(manifest, {
 				runId: RUN_IDS.delegate,
 				orchestratorName: "e2e-delegate",
 				phase: "start",
@@ -196,18 +196,21 @@ await runOrchestrator<State>({
 				worker: "reviewer",
 				prompt: "inspect",
 			});
-			expect(manifest.resultPath).toBe(
+			assert.strictEqual(
+				manifest.resultPath,
 				join(runDir, "results", "review-0.json"),
 			);
-
-			const state = readStateFile<{ count: number }>(runDir);
-			expect(state.data).toEqual({ count: 1 });
-			expect(state.usedLabels).toEqual(["review"]);
+			const state = readStateFile<{
+				count: number;
+			}>(runDir);
+			assert.deepStrictEqual(state.data, { count: 1 });
+			assert.deepStrictEqual(state.usedLabels, ["review"]);
 			expectLastTransitionMatchesManifest(state, manifest);
-			expect(state.pendingDelegation?.emittedAtEpochMs).toBe(
+			assert.strictEqual(
+				state.pendingDelegation?.emittedAtEpochMs,
 				manifest.emittedAtEpochMs,
 			);
-			expect(state.pendingDelegation).toMatchObject({
+			assert.partialDeepStrictEqual(state.pendingDelegation, {
 				label: "review",
 				kind: "prompt",
 				resumeAt: "finish",
@@ -215,7 +218,7 @@ await runOrchestrator<State>({
 				/* manifestArtifact checked below */
 			});
 			expectLockReleased(runDir);
-			expect(eventTypes(readEvents(runDir))).toEqual([
+			assert.deepStrictEqual(eventTypes(readEvents(runDir)), [
 				"orchestrator_start",
 				"phase_start",
 				"phase_end",
@@ -226,7 +229,6 @@ await runOrchestrator<State>({
 		}
 	});
 });
-
 describe("process E2E resume flows", () => {
 	test("prompt resume consumes result, validates it, clears pending delegation, and emits DONE", async () => {
 		const workspace = createE2EWorkspace();
@@ -252,13 +254,12 @@ await runOrchestrator<State>({
 });
 `),
 		);
-
 		try {
 			const initial = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
 				RUN_IDS.promptResume,
 			]);
-			expect(initial.exitCode).toBe(0);
+			assert.strictEqual(initial.exitCode, 0);
 			const initialBlock = expectProtocol(
 				initial.stdout,
 				"DELEGATE",
@@ -272,31 +273,33 @@ await runOrchestrator<State>({
 				String(initialBlock.fields.manifest),
 			);
 			writePromptResult(runDir, "answer", 0, { verdict: "clean" });
-
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.promptResume,
 			]);
-			expect(resumed.exitCode).toBe(0);
+			assert.strictEqual(resumed.exitCode, 0);
 			const done = expectProtocol(resumed.stdout, "DONE", RUN_IDS.promptResume);
-			expect(
-				readJsonFile<{ count: number; verdict: string }>(
-					done.fields.output as string,
-				),
-			).toEqual({
-				count: 1,
-				verdict: "clean",
-			});
-
-			const state = readStateFile<{ count: number }>(runDir);
-			expect("pendingDelegation" in state).toBe(false);
-			expect(state.currentPhase).toBe("finish");
-			expect(state.phasesExecuted).toBe(2);
-			expect(state.usedLabels).toEqual(["answer"]);
+			assert.deepStrictEqual(
+				readJsonFile<{
+					count: number;
+					verdict: string;
+				}>(done.fields.output as string),
+				{
+					count: 1,
+					verdict: "clean",
+				},
+			);
+			const state = readStateFile<{
+				count: number;
+			}>(runDir);
+			assert.strictEqual("pendingDelegation" in state, false);
+			assert.strictEqual(state.currentPhase, "finish");
+			assert.strictEqual(state.phasesExecuted, 2);
+			assert.deepStrictEqual(state.usedLabels, ["answer"]);
 			expectLastTransitionMatchesManifest(state, initialManifest);
 			expectLockReleased(runDir);
-			expect(eventTypes(readEvents(runDir))).toEqual([
+			assert.deepStrictEqual(eventTypes(readEvents(runDir)), [
 				"orchestrator_start",
 				"phase_start",
 				"phase_end",
@@ -311,7 +314,6 @@ await runOrchestrator<State>({
 			workspace.cleanup();
 		}
 	});
-
 	test("batch resume preserves job order and wrong consume method fails closed", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -350,38 +352,38 @@ await runOrchestrator<State>({
 });
 `),
 		);
-
 		try {
 			const initial = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
 				RUN_IDS.batchResume,
 			]);
-			expect(initial.exitCode).toBe(0);
+			assert.strictEqual(initial.exitCode, 0);
 			expectProtocol(initial.stdout, "DELEGATE", RUN_IDS.batchResume);
 			const runDir = workspace.runDir("e2e-batch-resume", RUN_IDS.batchResume);
 			writeBatchResults(runDir, "jobs", 0, {
 				second: { score: 2 },
 				first: { score: 1 },
 			});
-
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.batchResume,
 			]);
-			expect(resumed.exitCode).toBe(0);
+			assert.strictEqual(resumed.exitCode, 0);
 			const done = expectProtocol(resumed.stdout, "DONE", RUN_IDS.batchResume);
-			expect(
-				readJsonFile<{ scores: number[] }>(done.fields.output as string),
-			).toEqual({
-				scores: [1, 2],
-			});
-
+			assert.deepStrictEqual(
+				readJsonFile<{
+					scores: number[];
+				}>(done.fields.output as string),
+				{
+					scores: [1, 2],
+				},
+			);
 			const wrongInitial = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
 				RUN_IDS.batchWrongConsume,
 			]);
-			expect(wrongInitial.exitCode).toBe(0);
+			assert.strictEqual(wrongInitial.exitCode, 0);
 			const wrongRunDir = workspace.runDir(
 				"e2e-batch-resume",
 				RUN_IDS.batchWrongConsume,
@@ -395,21 +397,20 @@ await runOrchestrator<State>({
 				["--resume", "--run-id", RUN_IDS.batchWrongConsume],
 				{ env: { WRONG_CONSUME: "1" } },
 			);
-			expect(wrongResume.exitCode).toBe(1);
+			assert.strictEqual(wrongResume.exitCode, 1);
 			const error = expectProtocol(
 				wrongResume.stdout,
 				"ERROR",
 				RUN_IDS.batchWrongConsume,
 			);
-			expect(error.fields.errorKind).toBe("protocol");
-			expect(String(error.fields.message)).toContain(
-				"use consumePendingBatchResults",
+			assert.strictEqual(error.fields.errorKind, "protocol");
+			assert.ok(
+				String(error.fields.message).includes("use consumePendingBatchResults"),
 			);
 		} finally {
 			workspace.cleanup();
 		}
 	});
-
 	test("multi-delegation ping-pong drives three real resume cycles before DONE", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -442,63 +443,63 @@ await runOrchestrator<State>({
 });
 `),
 		);
-
 		try {
 			const first = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
 				RUN_IDS.pingPong,
 			]);
-			expect(first.exitCode).toBe(0);
+			assert.strictEqual(first.exitCode, 0);
 			expectProtocol(first.stdout, "DELEGATE", RUN_IDS.pingPong);
 			const runDir = workspace.runDir("e2e-ping-pong", RUN_IDS.pingPong);
 			writePromptResult(runDir, "l1", 0, { value: "one" });
-
 			const second = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.pingPong,
 			]);
-			expect(second.exitCode).toBe(0);
+			assert.strictEqual(second.exitCode, 0);
 			expectProtocol(second.stdout, "DELEGATE", RUN_IDS.pingPong);
 			writePromptResult(runDir, "l2", 0, { value: "two" });
-
 			const third = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.pingPong,
 			]);
-			expect(third.exitCode).toBe(0);
+			assert.strictEqual(third.exitCode, 0);
 			expectProtocol(third.stdout, "DELEGATE", RUN_IDS.pingPong);
 			writePromptResult(runDir, "l3", 0, { value: "three" });
-
 			const terminal = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.pingPong,
 			]);
-			expect(terminal.exitCode).toBe(0);
+			assert.strictEqual(terminal.exitCode, 0);
 			const done = expectProtocol(terminal.stdout, "DONE", RUN_IDS.pingPong);
-			expect(
-				readJsonFile<{ seen: string[] }>(done.fields.output as string),
-			).toEqual({
-				seen: ["one", "two", "three"],
-			});
-
-			const state = readStateFile<{ seen: string[] }>(runDir);
-			expect(state.usedLabels).toEqual(["l1", "l2", "l3"]);
-			expect(state.phasesExecuted).toBe(4);
+			assert.deepStrictEqual(
+				readJsonFile<{
+					seen: string[];
+				}>(done.fields.output as string),
+				{
+					seen: ["one", "two", "three"],
+				},
+			);
+			const state = readStateFile<{
+				seen: string[];
+			}>(runDir);
+			assert.deepStrictEqual(state.usedLabels, ["l1", "l2", "l3"]);
+			assert.strictEqual(state.phasesExecuted, 4);
 			const events = readEvents(runDir);
-			expect(
-				events.filter((event) => event.eventType === "delegation_emit"),
-			).toHaveLength(3);
-			expect(eventTypes(events).at(-1)).toBe("orchestrator_end");
+			assert.strictEqual(
+				events.filter((event) => event.eventType === "delegation_emit").length,
+				3,
+			);
+			assert.strictEqual(eventTypes(events).at(-1), "orchestrator_end");
 			expectLockReleased(runDir);
 		} finally {
 			workspace.cleanup();
 		}
 	});
 });
-
 describe("process E2E retry and timeout behavior", () => {
 	test("malformed result retries to attempt 1 and ignores the stale attempt 0 result", async () => {
 		const workspace = createE2EWorkspace();
@@ -533,13 +534,12 @@ await runOrchestrator<State>({
 });
 `),
 		);
-
 		try {
 			const initial = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
 				RUN_IDS.retry,
 			]);
-			expect(initial.exitCode).toBe(0);
+			assert.strictEqual(initial.exitCode, 0);
 			const initialBlock = expectProtocol(
 				initial.stdout,
 				"DELEGATE",
@@ -550,17 +550,18 @@ await runOrchestrator<State>({
 			);
 			const runDir = workspace.runDir("e2e-retry", RUN_IDS.retry);
 			expectLastTransitionMatchesManifest(
-				readStateFile<{ count: number }>(runDir),
+				readStateFile<{
+					count: number;
+				}>(runDir),
 				initialManifest,
 			);
 			writeMalformedPromptResult(runDir, "retryable", 0, "{not-json");
-
 			const retry = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.retry,
 			]);
-			expect(retry.exitCode).toBe(0);
+			assert.strictEqual(retry.exitCode, 0);
 			const retryBlock = expectProtocol(
 				retry.stdout,
 				"DELEGATE",
@@ -569,18 +570,20 @@ await runOrchestrator<State>({
 			const retryManifest = readManifestFile(
 				String(retryBlock.fields.manifest),
 			);
-			expect(retryManifest.attempt).toBe(1);
-			expect(retryManifest.resultPath).toBe(
+			assert.strictEqual(retryManifest.attempt, 1);
+			assert.strictEqual(
+				retryManifest.resultPath,
 				join(runDir, "results", "retryable-1.json"),
 			);
-			const retryState = readStateFile<{ count: number }>(runDir);
-			expect(retryState.pendingDelegation).toMatchObject({
+			const retryState = readStateFile<{
+				count: number;
+			}>(runDir);
+			assert.partialDeepStrictEqual(retryState.pendingDelegation, {
 				label: "retryable",
 				attempt: 1,
 			});
 			expectLastTransitionMatchesManifest(retryState, retryManifest);
-			expect(eventTypes(readEvents(runDir))).toContain("retry_scheduled");
-
+			assert.ok(eventTypes(readEvents(runDir)).includes("retry_scheduled"));
 			writePromptResult(runDir, "retryable", 0, { verdict: "stale" });
 			writePromptResult(runDir, "retryable", 1, { verdict: "fresh" });
 			const terminal = await workspace.runEntrypoint(entrypoint, [
@@ -588,22 +591,26 @@ await runOrchestrator<State>({
 				"--run-id",
 				RUN_IDS.retry,
 			]);
-			expect(terminal.exitCode).toBe(0);
+			assert.strictEqual(terminal.exitCode, 0);
 			const done = expectProtocol(terminal.stdout, "DONE", RUN_IDS.retry);
-			expect(
-				readJsonFile<{ verdict: string }>(done.fields.output as string),
-			).toEqual({
-				verdict: "fresh",
-			});
+			assert.deepStrictEqual(
+				readJsonFile<{
+					verdict: string;
+				}>(done.fields.output as string),
+				{
+					verdict: "fresh",
+				},
+			);
 			expectLastTransitionMatchesManifest(
-				readStateFile<{ count: number }>(runDir),
+				readStateFile<{
+					count: number;
+				}>(runDir),
 				retryManifest,
 			);
 		} finally {
 			workspace.cleanup();
 		}
 	});
-
 	test("exhausted schema retry emits ERROR without a replacement attempt", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -637,32 +644,31 @@ await runOrchestrator<State>({
 });
 `),
 		);
-
 		try {
 			const initial = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
 				RUN_IDS.retryExhausted,
 			]);
-			expect(initial.exitCode).toBe(0);
+			assert.strictEqual(initial.exitCode, 0);
 			const runDir = workspace.runDir(
 				"e2e-retry-exhausted",
 				RUN_IDS.retryExhausted,
 			);
 			writeMalformedPromptResult(runDir, "retryable", 0, "{not-json");
-
 			const failed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.retryExhausted,
 			]);
-			expect(failed.exitCode).toBe(1);
+			assert.strictEqual(failed.exitCode, 1);
 			const error = expectProtocol(
 				failed.stdout,
 				"ERROR",
 				RUN_IDS.retryExhausted,
 			);
-			expect(error.fields.errorKind).toBe("delegation_schema");
-			expect(existsSync(join(runDir, "delegations", "retryable-1.json"))).toBe(
+			assert.strictEqual(error.fields.errorKind, "delegation_schema");
+			assert.strictEqual(
+				existsSync(join(runDir, "delegations", "retryable-1.json")),
 				false,
 			);
 			expectLockReleased(runDir);
@@ -670,7 +676,6 @@ await runOrchestrator<State>({
 			workspace.cleanup();
 		}
 	});
-
 	test("missing result after deadline retries according to timeout policy", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -705,28 +710,29 @@ await runOrchestrator<State>({
 });
 `),
 		);
-
 		try {
 			const initial = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
 				RUN_IDS.timeout,
 			]);
-			expect(initial.exitCode).toBe(0);
-			await Bun.sleep(25);
-
+			assert.strictEqual(initial.exitCode, 0);
+			await sleep(25);
 			const retry = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.timeout,
 			]);
-			expect(retry.exitCode).toBe(0);
+			assert.strictEqual(retry.exitCode, 0);
 			const block = expectProtocol(retry.stdout, "DELEGATE", RUN_IDS.timeout);
-			expect(readManifestFile(String(block.fields.manifest)).attempt).toBe(1);
+			assert.strictEqual(
+				readManifestFile(String(block.fields.manifest)).attempt,
+				1,
+			);
 			const runDir = workspace.runDir("e2e-timeout", RUN_IDS.timeout);
 			const retryEvent = readEvents(runDir).find(
 				(event) => event.eventType === "retry_scheduled",
 			);
-			expect(retryEvent).toMatchObject({
+			assert.partialDeepStrictEqual(retryEvent, {
 				eventType: "retry_scheduled",
 				reason: "transient_timeout",
 				attempt: 1,
@@ -737,7 +743,6 @@ await runOrchestrator<State>({
 		}
 	});
 });
-
 describe("process E2E signal and lock behavior", () => {
 	function blockingEntrypoint(orchestratorName: string): string {
 		return buildEntrypointSource(`
@@ -750,15 +755,16 @@ await runOrchestrator<State>({
 	resumeCommand: ${baseResumeCommandSource()},
 	phases: {
 		block: definePhase<State>(async (_state, io) => {
-			await Bun.write(io.runDir + "/phase-started", "1");
-			await new Promise(() => undefined);
+			await writeFile(io.runDir + "/phase-started", "1");
+			await new Promise<void>(() => {
+				setInterval(() => undefined, 1_000);
+			});
 			return io.done({ unreachable: true });
 		}),
 	},
 });
 `);
 	}
-
 	for (const [signal, runId, exitCode] of [
 		["SIGINT", RUN_IDS.sigint, 130],
 		["SIGTERM", RUN_IDS.sigterm, 143],
@@ -774,25 +780,25 @@ await runOrchestrator<State>({
 				"--run-id",
 				runId,
 			]);
-
 			try {
 				await waitForPath(join(runDir, "phase-started"));
 				running.signal(signal);
 				const result = await running.wait();
-				expect(result.exitCode).toBe(exitCode);
+				assert.strictEqual(result.exitCode, exitCode);
 				const block = expectProtocol(result.stdout, "ABORTED", runId);
-				expect(block.fields.signal).toBe(signal);
-				expect(block.fields.phase).toBe("block");
-				const state = readStateFile<{ started: boolean }>(runDir);
-				expect(state.currentPhase).toBe("block");
-				expect(state.data).toEqual({ started: false });
+				assert.strictEqual(block.fields.signal, signal);
+				assert.strictEqual(block.fields.phase, "block");
+				const state = readStateFile<{
+					started: boolean;
+				}>(runDir);
+				assert.strictEqual(state.currentPhase, "block");
+				assert.deepStrictEqual(state.data, { started: false });
 				expectLockReleased(runDir);
 			} finally {
 				workspace.cleanup();
 			}
 		});
 	}
-
 	test("concurrent process with same run id fails with run_locked", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -804,21 +810,19 @@ await runOrchestrator<State>({
 			"--run-id",
 			RUN_IDS.lock,
 		]);
-
 		try {
 			await waitForPath(join(runDir, "phase-started"));
 			const contender = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
 				RUN_IDS.lock,
 			]);
-			expect(contender.exitCode).toBe(2);
+			assert.strictEqual(contender.exitCode, 2);
 			const error = expectProtocol(contender.stdout, "ERROR", RUN_IDS.lock);
-			expect(error.fields.errorKind).toBe("run_locked");
+			assert.strictEqual(error.fields.errorKind, "run_locked");
 			// SQLite ownership replaces file lock; ownership row is HELD.
-
 			owner.signal("SIGTERM");
 			const ownerResult = await owner.wait();
-			expect(ownerResult.exitCode).toBe(143);
+			assert.strictEqual(ownerResult.exitCode, 143);
 			expectProtocol(ownerResult.stdout, "ABORTED", RUN_IDS.lock);
 			expectLockReleased(runDir);
 		} finally {
@@ -826,7 +830,6 @@ await runOrchestrator<State>({
 		}
 	});
 });
-
 describe("process E2E fail-closed error paths", () => {
 	function failureEntrypoint(orchestratorName: string): string {
 		return buildEntrypointSource(`
@@ -857,7 +860,6 @@ await runOrchestrator<State>({
 });
 `);
 	}
-
 	for (const [mode, runId, expectedMessage] of [
 		["throw", RUN_IDS.throw, "boom"],
 		["fail", RUN_IDS.fail, "explicit fail"],
@@ -875,16 +877,15 @@ await runOrchestrator<State>({
 					["--run-id", runId],
 					{ env: { FAIL_MODE: mode } },
 				);
-				expect(result.exitCode).toBe(1);
+				assert.strictEqual(result.exitCode, 1);
 				const block = expectProtocol(result.stdout, "ERROR", runId);
-				expect(String(block.fields.message)).toContain(expectedMessage);
+				assert.ok(String(block.fields.message).includes(expectedMessage));
 				expectLockReleased(workspace.runDir(`e2e-${mode}`, runId));
 			} finally {
 				workspace.cleanup();
 			}
 		});
 	}
-
 	test("resume without pending delegation emits protocol ERROR", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -897,8 +898,7 @@ await runOrchestrator<State>({
 				"--run-id",
 				RUN_IDS.resumeWithoutPending,
 			]);
-			expect(initial.exitCode).toBe(0);
-
+			assert.strictEqual(initial.exitCode, 0);
 			// Corrupt the SQLite state: remove terminalResult so that
 			// resume finds neither a pending delegation nor a terminal result.
 			const runDir = workspace.runDir(
@@ -906,47 +906,50 @@ await runOrchestrator<State>({
 				RUN_IDS.resumeWithoutPending,
 			);
 			const dbPath = join(runDir, "turnlock.sqlite3");
-			const { Database } = await import("bun:sqlite");
-			const db = new Database(dbPath);
+			const db = nodeSqliteDriver.open(dbPath);
 			try {
 				const row = db
-					.query("SELECT state_json FROM run_state WHERE singleton = 1")
-					.get() as { state_json: string } | null;
+					.prepare("SELECT state_json FROM run_state WHERE singleton = 1")
+					.get() as {
+					state_json: string;
+				} | null;
 				if (row) {
 					const parsed = JSON.parse(row.state_json);
 					delete parsed.terminalResult;
 					const newJson = JSON.stringify(parsed);
 					const { createHash } = await import("node:crypto");
 					const newDigest = `sha256:${createHash("sha256").update(newJson).digest("hex")}`;
-					db.run(
+					db.prepare(
 						"UPDATE run_state SET state_json = ?, state_digest = ? WHERE singleton = 1",
-						[newJson, newDigest],
-					);
+					).run(newJson, newDigest);
 				}
 			} finally {
 				db.close();
 			}
-
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.resumeWithoutPending,
 			]);
-			expect(resumed.exitCode).toBe(1);
+			assert.strictEqual(resumed.exitCode, 1);
 			const error = expectProtocol(
 				resumed.stdout,
 				"ERROR",
 				RUN_IDS.resumeWithoutPending,
 			);
-			expect(error.fields.errorKind).toBe("indeterminate_phase_execution");
-			expect(String(error.fields.message)).toContain(
-				"cannot be deterministically resumed",
+			assert.strictEqual(
+				error.fields.errorKind,
+				"indeterminate_phase_execution",
+			);
+			assert.ok(
+				String(error.fields.message).includes(
+					"cannot be deterministically resumed",
+				),
 			);
 		} finally {
 			workspace.cleanup();
 		}
 	});
-
 	test("invalid run id is rejected before run directory creation", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -958,18 +961,18 @@ await runOrchestrator<State>({
 				"--run-id",
 				"invalid/id",
 			]);
-			expect(result.exitCode).toBe(1);
+			assert.strictEqual(result.exitCode, 1);
 			const error = expectProtocol(result.stdout, "ERROR", null);
-			expect(error.fields.errorKind).toBe("invalid_config");
-			expect(error.fields.message).toBe("--run-id must be a ULID");
-			expect(existsSync(join(workspace.runDirRoot, "e2e-invalid-run-id"))).toBe(
+			assert.strictEqual(error.fields.errorKind, "invalid_config");
+			assert.strictEqual(error.fields.message, "--run-id must be a ULID");
+			assert.strictEqual(
+				existsSync(join(workspace.runDirRoot, "e2e-invalid-run-id")),
 				false,
 			);
 		} finally {
 			workspace.cleanup();
 		}
 	});
-
 	test("resume with missing state emits state_missing ERROR", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -982,18 +985,17 @@ await runOrchestrator<State>({
 				"--run-id",
 				RUN_IDS.missingState,
 			]);
-			expect(result.exitCode).toBe(1);
+			assert.strictEqual(result.exitCode, 1);
 			const error = expectProtocol(
 				result.stdout,
 				"ERROR",
 				RUN_IDS.missingState,
 			);
-			expect(error.fields.errorKind).toBe("state_missing");
+			assert.strictEqual(error.fields.errorKind, "state_missing");
 		} finally {
 			workspace.cleanup();
 		}
 	});
-
 	test("fail after delegated resume preserves the last delegation timestamp", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -1023,7 +1025,7 @@ await runOrchestrator<State>({
 				"--run-id",
 				RUN_IDS.failAfterDelegate,
 			]);
-			expect(initial.exitCode).toBe(0);
+			assert.strictEqual(initial.exitCode, 0);
 			const initialBlock = expectProtocol(
 				initial.stdout,
 				"DELEGATE",
@@ -1035,30 +1037,30 @@ await runOrchestrator<State>({
 			);
 			const manifest = readManifestFile(String(initialBlock.fields.manifest));
 			writePromptResult(runDir, "answer", 0, { verdict: "bad" });
-
 			const failed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.failAfterDelegate,
 			]);
-			expect(failed.exitCode).toBe(1);
+			assert.strictEqual(failed.exitCode, 1);
 			const error = expectProtocol(
 				failed.stdout,
 				"ERROR",
 				RUN_IDS.failAfterDelegate,
 			);
-			expect(error.fields.errorKind).toBe("phase_error");
-			expect(String(error.fields.message)).toContain("delegated failure");
-			const finalState = readStateFile<{ count: number }>(runDir);
-			expect(finalState.currentPhase).toBe("finish");
-			expect("pendingDelegation" in finalState).toBe(false);
+			assert.strictEqual(error.fields.errorKind, "phase_error");
+			assert.ok(String(error.fields.message).includes("delegated failure"));
+			const finalState = readStateFile<{
+				count: number;
+			}>(runDir);
+			assert.strictEqual(finalState.currentPhase, "finish");
+			assert.strictEqual("pendingDelegation" in finalState, false);
 			expectLastTransitionMatchesManifest(finalState, manifest);
 			expectLockReleased(runDir);
 		} finally {
 			workspace.cleanup();
 		}
 	});
-
 	test("stdout remains protocol-only even while stderr carries event lines", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -1070,19 +1072,18 @@ await runOrchestrator<State>({
 				"--run-id",
 				"01HX0000000000000000000018",
 			]);
-			expect(result.exitCode).toBe(0);
+			assert.strictEqual(result.exitCode, 0);
 			expectProtocol(result.stdout, "DONE", "01HX0000000000000000000018");
 			expectNoProtocolOnStderr(result.stderr);
 			const stderrLines = result.stderr.trim().split("\n");
-			expect(stderrLines.length).toBeGreaterThan(0);
+			assert.ok(stderrLines.length > 0);
 			for (const line of stderrLines) {
-				expect(() => JSON.parse(line)).not.toThrow();
+				assert.doesNotThrow(() => JSON.parse(line));
 			}
 		} finally {
 			workspace.cleanup();
 		}
 	});
-
 	test("DONE block output path points to the exact output file content", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -1094,13 +1095,14 @@ await runOrchestrator<State>({
 				"--run-id",
 				"01HX0000000000000000000019",
 			]);
-			expect(result.exitCode).toBe(0);
+			assert.strictEqual(result.exitCode, 0);
 			const done = expectProtocol(
 				result.stdout,
 				"DONE",
 				"01HX0000000000000000000019",
 			);
-			expect(readFileSync(done.fields.output as string, "utf-8")).toBe(
+			assert.strictEqual(
+				readFileSync(done.fields.output as string, "utf-8"),
 				'{"ok":true}',
 			);
 		} finally {

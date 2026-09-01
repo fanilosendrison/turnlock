@@ -1,12 +1,10 @@
-const DEFAULT_CRASH_WORKER_EXIT_TIMEOUT_MS = 5_000;
-
+const DEFAULT_CRASH_WORKER_EXIT_TIMEOUT_MS = 5000;
 export interface CrashWorkerSubprocess {
 	readonly pid: number | undefined;
 	readonly exited: Promise<number>;
 	readonly signalCode: NodeJS.Signals | null;
 	kill(signal?: number | NodeJS.Signals): void;
 }
-
 export function isSubprocessAlive(subprocess: CrashWorkerSubprocess): boolean {
 	if (subprocess.pid === undefined) return false;
 	try {
@@ -16,7 +14,6 @@ export function isSubprocessAlive(subprocess: CrashWorkerSubprocess): boolean {
 		return false;
 	}
 }
-
 export function waitForExitWithTimeout(
 	subprocess: CrashWorkerSubprocess,
 	description: string,
@@ -42,7 +39,6 @@ export function waitForExitWithTimeout(
 		);
 	});
 }
-
 export async function killAndWaitForSigkill(
 	subprocess: CrashWorkerSubprocess,
 	description: string,
@@ -56,7 +52,6 @@ export async function killAndWaitForSigkill(
 	}
 	return exitCode;
 }
-
 export async function killSubprocessIfAlive(
 	subprocess: CrashWorkerSubprocess,
 	description: string,

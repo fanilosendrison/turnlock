@@ -1,13 +1,13 @@
-// NIB-T §7 — run-dir (T-RD-01..12, P-RD-a/b)
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, utimesSync } from "node:fs";
 import { join } from "node:path";
-import { InvalidConfigError } from "../../src/errors/concrete";
-import { cleanupOldRuns, resolveRunDir } from "../../src/services/run-dir";
-import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+// NIB-T §7 — run-dir (T-RD-01..12, P-RD-a/b)
+import { afterEach, beforeEach, describe, test } from "node:test";
+import { InvalidConfigError } from "../../src/errors/concrete.js";
+import { cleanupOldRuns, resolveRunDir } from "../../src/services/run-dir.js";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 const DEFAULT_ROOT = join(".turnlock", "runs");
-
 // Env var must not leak across tests — cleared before every test in this file.
 beforeEach(() => {
 	delete process.env.TURNLOCK_RUN_DIR_ROOT;
@@ -15,58 +15,63 @@ beforeEach(() => {
 afterEach(() => {
 	delete process.env.TURNLOCK_RUN_DIR_ROOT;
 });
-
 describe("resolveRunDir (T-RD-01..03, T-RD-09..12)", () => {
 	test("T-RD-01 | composes canonical path with default root", () => {
-		expect(resolveRunDir("/repo", "senior-review", "01HX")).toBe(
+		assert.strictEqual(
+			resolveRunDir("/repo", "senior-review", "01HX"),
 			join("/repo", DEFAULT_ROOT, "senior-review", "01HX"),
 		);
 	});
 	test("T-RD-02 | cwd with spaces", () => {
-		expect(resolveRunDir("/my repo", "foo", "01H")).toBe(
+		assert.strictEqual(
+			resolveRunDir("/my repo", "foo", "01H"),
 			join("/my repo", DEFAULT_ROOT, "foo", "01H"),
 		);
 	});
 	test("T-RD-03 | empty cwd → InvalidConfigError", () => {
-		expect(() => resolveRunDir("", "x", "y")).toThrow(InvalidConfigError);
+		assert.throws(() => resolveRunDir("", "x", "y"), InvalidConfigError);
 	});
 	test("T-RD-09 | relative runDirRoot is joined to cwd", () => {
-		expect(resolveRunDir("/repo", "orch", "id", ".claude/run/cc-orch")).toBe(
+		assert.strictEqual(
+			resolveRunDir("/repo", "orch", "id", ".claude/run/cc-orch"),
 			"/repo/.claude/run/cc-orch/orch/id",
 		);
 	});
 	test("T-RD-10 | absolute runDirRoot ignores cwd prefix", () => {
-		expect(resolveRunDir("/repo", "orch", "id", "/abs/path")).toBe(
+		assert.strictEqual(
+			resolveRunDir("/repo", "orch", "id", "/abs/path"),
 			"/abs/path/orch/id",
 		);
 	});
 	test("T-RD-11 | env var overrides config argument", () => {
 		process.env.TURNLOCK_RUN_DIR_ROOT = ".envroot";
-		expect(resolveRunDir("/repo", "orch", "id", ".configroot")).toBe(
+		assert.strictEqual(
+			resolveRunDir("/repo", "orch", "id", ".configroot"),
 			join("/repo", ".envroot", "orch", "id"),
 		);
 	});
 	test("T-RD-12 | empty env var falls back to config/default", () => {
 		process.env.TURNLOCK_RUN_DIR_ROOT = "";
-		expect(resolveRunDir("/repo", "orch", "id")).toBe(
+		assert.strictEqual(
+			resolveRunDir("/repo", "orch", "id"),
 			join("/repo", DEFAULT_ROOT, "orch", "id"),
 		);
-		expect(resolveRunDir("/repo", "orch", "id", ".custom")).toBe(
+		assert.strictEqual(
+			resolveRunDir("/repo", "orch", "id", ".custom"),
 			join("/repo", ".custom", "orch", "id"),
 		);
 	});
 	test("T-RD-14 | empty config runDirRoot falls back to default", () => {
-		expect(resolveRunDir("/repo", "orch", "id", "")).toBe(
+		assert.strictEqual(
+			resolveRunDir("/repo", "orch", "id", ""),
 			join("/repo", DEFAULT_ROOT, "orch", "id"),
 		);
 	});
 });
-
 function touch(path: string, daysAgo: number): void {
 	const d = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
 	utimesSync(path, d, d);
 }
-
 describe("cleanupOldRuns (T-RD-04..08)", () => {
 	test("T-RD-04 | currentRunId never deleted", () => {
 		const dir = makeTempDir();
@@ -77,7 +82,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			mkdirSync(current);
 			touch(current, 100);
 			cleanupOldRuns(dir, "orch", 7, "current");
-			expect(existsSync(current)).toBe(true);
+			assert.strictEqual(existsSync(current), true);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -91,7 +96,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			mkdirSync(old);
 			touch(old, 10);
 			cleanupOldRuns(dir, "orch", 7, "current");
-			expect(existsSync(old)).toBe(false);
+			assert.strictEqual(existsSync(old), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -107,7 +112,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			// cleanupOldRuns's Date.now() which can shift the threshold by a few ms.
 			touch(edge, 6.999);
 			cleanupOldRuns(dir, "orch", 7, "current");
-			expect(existsSync(edge)).toBe(true);
+			assert.strictEqual(existsSync(edge), true);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -123,7 +128,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 				touch(d, 20);
 			}
 			const count = cleanupOldRuns(dir, "orch", 7, "current");
-			expect(count).toBe(3);
+			assert.strictEqual(count, 3);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -135,7 +140,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			mkdirSync(other, { recursive: true });
 			touch(other, 100);
 			cleanupOldRuns(dir, "orch", 7, "current");
-			expect(existsSync(other)).toBe(true);
+			assert.strictEqual(existsSync(other), true);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -151,13 +156,12 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			touch(old, 10);
 			// Default root dir must NOT be touched (it doesn't exist here).
 			cleanupOldRuns(dir, "orch", 7, "current", customRoot);
-			expect(existsSync(old)).toBe(false);
+			assert.strictEqual(existsSync(old), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
 });
-
 describe("run-dir properties (P-RD-a/b)", () => {
 	test("P-RD-a | currentRunId protected over 20 scenarios", () => {
 		const dir = makeTempDir();
@@ -169,7 +173,7 @@ describe("run-dir properties (P-RD-a/b)", () => {
 				mkdirSync(current);
 				touch(current, 100);
 				cleanupOldRuns(dir, "orch", 7, `c${i}`);
-				expect(existsSync(current)).toBe(true);
+				assert.strictEqual(existsSync(current), true);
 			}
 		} finally {
 			cleanupTempDir(dir);
@@ -178,7 +182,7 @@ describe("run-dir properties (P-RD-a/b)", () => {
 	test("P-RD-b | disjoint paths across orchestratorName", () => {
 		const a = resolveRunDir("/r", "orchA", "id");
 		const b = resolveRunDir("/r", "orchB", "id");
-		expect(a.startsWith(b)).toBe(false);
-		expect(b.startsWith(a)).toBe(false);
+		assert.strictEqual(a.startsWith(b), false);
+		assert.strictEqual(b.startsWith(a), false);
 	});
 });

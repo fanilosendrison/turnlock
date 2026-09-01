@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { ProtocolAction } from "../../src/services/protocol";
+import { describe, test } from "node:test";
+import type { ProtocolAction } from "../../src/services/protocol.js";
 import {
 	buildEntrypointSource,
 	countProtocolBlocks,
@@ -11,26 +12,23 @@ import {
 	readStateFile,
 	writeExternalResolution,
 	writePromptResult,
-} from "../helpers/e2e-process";
+} from "../helpers/e2e-process.js";
 
 const RUN_IDS = {
 	externalToDelegate: "01HX0000000000000000000037",
 	delegationToExternal: "01HX0000000000000000000038",
 	externalToFail: "01HX0000000000000000000039",
 } as const;
-
 function baseResumeCommandSource(): string {
-	return '(runId) => "bun " + import.meta.path + " --run-id " + runId + " --resume"';
+	return '(runId) => "node " + import.meta.filename + " --run-id " + runId + " --resume"';
 }
-
 function expectProtocol(stdout: string, action: ProtocolAction, runId: string) {
-	expect(countProtocolBlocks(stdout)).toBe(1);
+	assert.strictEqual(countProtocolBlocks(stdout), 1);
 	const block = parseSingleProtocolBlock(stdout);
-	expect(block.action).toBe(action);
-	expect(block.runId).toBe(runId);
+	assert.strictEqual(block.action, action);
+	assert.strictEqual(block.runId, runId);
 	return block;
 }
-
 describe("pending yield cleanup across result kinds", () => {
 	test("a delegation emitted after external resolution replaces the external pending record", async () => {
 		const workspace = createE2EWorkspace();
@@ -83,24 +81,26 @@ await runOrchestrator<State>({
 				RUN_IDS.externalToDelegate,
 			);
 			writeExternalResolution(runDir, "external-work", { ok: true });
-
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.externalToDelegate,
 			]);
-			expect(resumed.exitCode).toBe(0);
+			assert.strictEqual(resumed.exitCode, 0);
 			expectProtocol(resumed.stdout, "DELEGATE", RUN_IDS.externalToDelegate);
-			const state = readStateFile<{ stage: string }>(runDir);
-			expect(state.pendingDelegation).toMatchObject({ label: "review" });
-			expect(state).not.toHaveProperty("pendingExternalRequest");
-			expect(state.usedLabels).toEqual(["external-work", "review"]);
-			expect(existsSync(join(runDir, ".lock"))).toBe(false);
+			const state = readStateFile<{
+				stage: string;
+			}>(runDir);
+			assert.partialDeepStrictEqual(state.pendingDelegation, {
+				label: "review",
+			});
+			assert.ok(!("pendingExternalRequest" in Object(state)));
+			assert.deepStrictEqual(state.usedLabels, ["external-work", "review"]);
+			assert.strictEqual(existsSync(join(runDir, ".lock")), false);
 		} finally {
 			workspace.cleanup();
 		}
 	});
-
 	test("an external request emitted after delegation resolution replaces the delegation pending record", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -148,29 +148,29 @@ await runOrchestrator<State>({
 				RUN_IDS.delegationToExternal,
 			);
 			writePromptResult(runDir, "review", 0, { ok: true });
-
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.delegationToExternal,
 			]);
-			expect(resumed.exitCode).toBe(0);
+			assert.strictEqual(resumed.exitCode, 0);
 			expectProtocol(
 				resumed.stdout,
 				"REQUEST_EXTERNAL",
 				RUN_IDS.delegationToExternal,
 			);
-			const state = readStateFile<{ stage: string }>(runDir);
-			expect(state.pendingExternalRequest).toMatchObject({
+			const state = readStateFile<{
+				stage: string;
+			}>(runDir);
+			assert.partialDeepStrictEqual(state.pendingExternalRequest, {
 				label: "external-work",
 			});
-			expect(state).not.toHaveProperty("pendingDelegation");
-			expect(state.usedLabels).toEqual(["review", "external-work"]);
+			assert.ok(!("pendingDelegation" in Object(state)));
+			assert.deepStrictEqual(state.usedLabels, ["review", "external-work"]);
 		} finally {
 			workspace.cleanup();
 		}
 	});
-
 	test("fail after consuming an external resolution clears both pending record kinds", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -204,33 +204,38 @@ await runOrchestrator<State>({
 				"--run-id",
 				RUN_IDS.externalToFail,
 			]);
-			expect(initial.exitCode).toBe(0);
+			assert.strictEqual(initial.exitCode, 0);
 			const runDir = workspace.runDir(
 				"e2e-external-to-fail",
 				RUN_IDS.externalToFail,
 			);
 			writeExternalResolution(runDir, "external-work", { ok: false });
-
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.externalToFail,
 			]);
-			expect(resumed.exitCode).toBe(1);
+			assert.strictEqual(resumed.exitCode, 1);
 			const error = expectProtocol(
 				resumed.stdout,
 				"ERROR",
 				RUN_IDS.externalToFail,
 			);
-			expect(error.fields.message).toBe("external result rejected by phase");
-			const state = readStateFile<{ stage: string }>(runDir);
-			expect(state).not.toHaveProperty("pendingExternalRequest");
-			expect(state).not.toHaveProperty("pendingDelegation");
-			expect(
+			assert.strictEqual(
+				error.fields.message,
+				"external result rejected by phase",
+			);
+			const state = readStateFile<{
+				stage: string;
+			}>(runDir);
+			assert.ok(!("pendingExternalRequest" in Object(state)));
+			assert.ok(!("pendingDelegation" in Object(state)));
+			assert.strictEqual(
 				readEvents(runDir).some(
 					(event) => event.eventType === "retry_scheduled",
 				),
-			).toBe(false);
+				false,
+			);
 		} finally {
 			workspace.cleanup();
 		}

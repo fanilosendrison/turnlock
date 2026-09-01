@@ -9,18 +9,28 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { ExternalRequestManifest } from "../../src/bindings/external-request";
-import type { DelegationManifest } from "../../src/bindings/types";
-import { parseProtocolBlock } from "../../src/services/protocol";
-import type { StateFile } from "../../src/services/state-io";
-import type { OrchestratorEvent } from "../../src/types/events";
+import type { ExternalRequestManifest } from "../../src/bindings/external-request.js";
+import type { DelegationManifest } from "../../src/bindings/types.js";
+import { parseProtocolBlock } from "../../src/services/protocol.js";
+import type { StateFile } from "../../src/services/state-io.js";
+import type { OrchestratorEvent } from "../../src/types/events.js";
+import { spawnNode } from "./node-subprocess.js";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const COMPILED_ROOT = resolve(
+	dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"..",
+);
+const REPO_ROOT = resolve(COMPILED_ROOT, "..");
 const TURNLOCK_SOURCE_MODULE = pathToFileURL(
-	join(REPO_ROOT, "src", "index.ts"),
+	join(COMPILED_ROOT, "src", "index.js"),
 ).href;
-
+const NODE_SQLITE_DRIVER_MODULE = pathToFileURL(
+	join(COMPILED_ROOT, "src", "persistence", "sqlite", "node-sqlite-driver.js"),
+).href;
+const ZOD_MODULE = import.meta.resolve("zod");
 export interface E2EWorkspace {
 	readonly root: string;
 	readonly runDirRoot: string;
@@ -38,24 +48,20 @@ export interface E2EWorkspace {
 	runDir(orchestratorName: string, runId: string): string;
 	cleanup(): void;
 }
-
 export interface E2ERunOptions {
 	readonly env?: Readonly<Record<string, string>>;
 	readonly timeoutMs?: number;
 }
-
 export interface E2EProcessResult {
 	readonly exitCode: number;
 	readonly stdout: string;
 	readonly stderr: string;
 }
-
 export interface RunningE2EProcess {
 	readonly pid: number | undefined;
 	signal(signal: NodeJS.Signals): void;
 	wait(timeoutMs?: number): Promise<E2EProcessResult>;
 }
-
 function childEnv(
 	runDirRoot: string,
 	extraEnv: Readonly<Record<string, string>> | undefined,
@@ -74,37 +80,24 @@ function childEnv(
 	}
 	return env;
 }
-
-function streamToText(
-	stream: ReadableStream<Uint8Array> | null,
-): Promise<string> {
-	if (stream === null) return Promise.resolve("");
-	return new Response(stream).text();
-}
-
 function timeoutAfter(ms: number): Promise<"timeout"> {
 	return new Promise((resolveTimeout) => {
 		setTimeout(() => resolveTimeout("timeout"), ms);
 	});
 }
-
 function startProcess(
 	entrypointPath: string,
 	runDirRoot: string,
 	args: readonly string[],
 	options: E2ERunOptions | undefined,
 ): RunningE2EProcess {
-	const subprocess = Bun.spawn({
-		cmd: ["bun", entrypointPath, ...args],
+	const subprocess = spawnNode(entrypointPath, args, {
 		cwd: REPO_ROOT,
 		env: childEnv(runDirRoot, options?.env),
-		stdout: "pipe",
-		stderr: "pipe",
 	});
-	const stdoutPromise = streamToText(subprocess.stdout);
-	const stderrPromise = streamToText(subprocess.stderr);
-
-	async function wait(timeoutMs = options?.timeoutMs ?? 5_000) {
+	const stdoutPromise = subprocess.stdout;
+	const stderrPromise = subprocess.stderr;
+	async function wait(timeoutMs = options?.timeoutMs ?? 5000) {
 		const exitOrTimeout = await Promise.race([
 			subprocess.exited,
 			timeoutAfter(timeoutMs),
@@ -119,7 +112,6 @@ function startProcess(
 		const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
 		return { exitCode: exitOrTimeout, stdout, stderr };
 	}
-
 	return {
 		pid: subprocess.pid,
 		signal(signal: NodeJS.Signals): void {
@@ -128,23 +120,22 @@ function startProcess(
 		wait,
 	};
 }
-
 export function buildEntrypointSource(body: string): string {
 	return [
 		`import { definePhase, runOrchestrator } from ${JSON.stringify(TURNLOCK_SOURCE_MODULE)};`,
-		'import { z } from "zod";',
+		`import { nodeSqliteDriver } from ${JSON.stringify(NODE_SQLITE_DRIVER_MODULE)};`,
+		`import { z } from ${JSON.stringify(ZOD_MODULE)};`,
+		'import { readFile, writeFile } from "node:fs/promises";',
 		"",
 		body.trim(),
 		"",
 	].join("\n");
 }
-
 export function createE2EWorkspace(prefix = "turnlock-e2e-"): E2EWorkspace {
 	const root = mkdtempSync(join(tmpdir(), prefix));
 	const runDirRoot = join(root, "runs");
 	const entrypointsDir = join(root, "entrypoints");
 	mkdirSync(entrypointsDir, { recursive: true });
-
 	return {
 		root,
 		runDirRoot,
@@ -177,11 +168,9 @@ export function createE2EWorkspace(prefix = "turnlock-e2e-"): E2EWorkspace {
 		},
 	};
 }
-
 export function countProtocolBlocks(stdout: string): number {
 	return stdout.match(/@@TURNLOCK@@/g)?.length ?? 0;
 }
-
 export function parseSingleProtocolBlock(stdout: string) {
 	const parsed = parseProtocolBlock(stdout);
 	if (parsed === null) {
@@ -200,25 +189,20 @@ export function parseSingleProtocolBlock(stdout: string) {
 	}
 	return parsed;
 }
-
 export function readJsonFile<T>(filePath: string): T {
 	return JSON.parse(readFileSync(filePath, "utf-8")) as T;
 }
-
 export function readStateFile<S extends object>(runDir: string): StateFile<S> {
 	return readJsonFile<StateFile<S>>(join(runDir, "state.json"));
 }
-
 export function readManifestFile(manifestPath: string): DelegationManifest {
 	return readJsonFile<DelegationManifest>(manifestPath);
 }
-
 export function readExternalRequestManifest(
 	manifestPath: string,
 ): ExternalRequestManifest {
 	return readJsonFile<ExternalRequestManifest>(manifestPath);
 }
-
 export function readEvents(runDir: string): OrchestratorEvent[] {
 	const eventsPath = join(runDir, "events.ndjson");
 	if (!existsSync(eventsPath)) return [];
@@ -226,7 +210,6 @@ export function readEvents(runDir: string): OrchestratorEvent[] {
 	if (raw === "") return [];
 	return raw.split("\n").map((line) => JSON.parse(line) as OrchestratorEvent);
 }
-
 export function writePromptResult(
 	runDir: string,
 	label: string,
@@ -238,7 +221,6 @@ export function writePromptResult(
 	writeFileSync(resultPath, JSON.stringify(value), { encoding: "utf-8" });
 	return resultPath;
 }
-
 export function writeExternalResolution(
 	runDir: string,
 	label: string,
@@ -251,7 +233,6 @@ export function writeExternalResolution(
 	renameSync(temporaryPath, resultPath);
 	return resultPath;
 }
-
 export function writeMalformedExternalResolution(
 	runDir: string,
 	label: string,
@@ -262,7 +243,6 @@ export function writeMalformedExternalResolution(
 	writeFileSync(resultPath, raw, { encoding: "utf-8" });
 	return resultPath;
 }
-
 export function writeMalformedPromptResult(
 	runDir: string,
 	label: string,
@@ -274,7 +254,6 @@ export function writeMalformedPromptResult(
 	writeFileSync(resultPath, raw, { encoding: "utf-8" });
 	return resultPath;
 }
-
 export function writeBatchResults(
 	runDir: string,
 	label: string,
@@ -289,15 +268,14 @@ export function writeBatchResults(
 		});
 	}
 }
-
 export async function waitForPath(
 	filePath: string,
-	timeoutMs = 2_000,
+	timeoutMs = 2000,
 ): Promise<void> {
 	const startedAt = Date.now();
 	while (Date.now() - startedAt < timeoutMs) {
 		if (existsSync(filePath)) return;
-		await Bun.sleep(10);
+		await sleep(10);
 	}
 	throw new Error(`timed out waiting for path: ${filePath}`);
 }

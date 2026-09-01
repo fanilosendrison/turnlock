@@ -1,12 +1,12 @@
+import assert from "node:assert/strict";
+import { join } from "node:path";
 // Lot 1 — ownership acquisition tests.
 //
 // Covers: fresh acquire, active-owner rejection, expired takeover,
 // CAS miss detection, free-row reacquisition, contention.
-
-import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
-import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
-import { DbIntegrityError } from "../../src/persistence/sqlite/errors";
+import { describe, test } from "node:test";
+import { DbIntegrityError } from "../../src/persistence/sqlite/errors.js";
+import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
 import {
 	acquireOwnership,
 	acquireOwnershipDirectInTransaction,
@@ -16,21 +16,20 @@ import {
 	ensureOwnershipRowInTransaction,
 	type LockHandle,
 	rollback,
-} from "../../src/persistence/sqlite/ownership";
-import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
-import { generateRunId } from "../../src/services/run-id";
-import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+} from "../../src/persistence/sqlite/ownership.js";
+import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
+import { generateRunId } from "../../src/services/run-id.js";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 const LEASE_MS = 30 * 60 * 1000; // 30 min
-const CONTENTION_DEADLINE_MS = 2_000;
-const NOW_EPOCH = 1_000_000_000_000;
+const CONTENTION_DEADLINE_MS = 2000;
+const NOW_EPOCH = 1000000000000;
 const NOW_ISO = "2001-09-09T01:46:40.000Z";
-
 function setup() {
 	const dir = makeTempDir();
 	const dbPath = join(dir, "turnlock.sqlite3");
 	const runDb = openRunDatabase({
-		driver: bunSqliteDriver,
+		driver: nodeSqliteDriver,
 		dbPath,
 		busyTimeoutMs: 500,
 	});
@@ -44,7 +43,6 @@ function setup() {
 		},
 	};
 }
-
 function acquire(params: {
 	runId?: string;
 	nowEpochMs?: number;
@@ -62,38 +60,34 @@ function acquire(params: {
 		leaseClockEpochMs: () => params.nowEpochMs ?? NOW_EPOCH,
 	});
 }
-
 describe("ownership acquisition", () => {
 	test("fresh acquire returns a valid handle", () => {
 		const ctx = setup();
 		try {
 			const result = acquire({ runDb: ctx.runDb });
-			expect(result.kind).toBe("ACQUIRED");
+			assert.strictEqual(result.kind, "ACQUIRED");
 			if (result.kind !== "ACQUIRED") return;
-			expect(result.handle.ownerToken).toBeTruthy();
-			expect(result.handle.incarnationId).toBeTruthy();
-			expect(result.handle.fenceToken).toBe(1n);
-			expect(result.handle.leaseUntilEpochMs).toBe(NOW_EPOCH + LEASE_MS);
+			assert.ok(result.handle.ownerToken);
+			assert.ok(result.handle.incarnationId);
+			assert.strictEqual(result.handle.fenceToken, 1n);
+			assert.strictEqual(result.handle.leaseUntilEpochMs, NOW_EPOCH + LEASE_MS);
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("active owner rejects second acquire", () => {
 		const ctx = setup();
 		try {
 			const first = acquire({ runDb: ctx.runDb });
-			expect(first.kind).toBe("ACQUIRED");
-
+			assert.strictEqual(first.kind, "ACQUIRED");
 			const second = acquire({ runDb: ctx.runDb });
-			expect(second.kind).toBe("ACTIVE_CONFLICT");
+			assert.strictEqual(second.kind, "ACTIVE_CONFLICT");
 			if (second.kind !== "ACTIVE_CONFLICT") return;
-			expect(second.leaseUntilEpochMs).toBe(NOW_EPOCH + LEASE_MS);
+			assert.strictEqual(second.leaseUntilEpochMs, NOW_EPOCH + LEASE_MS);
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("expired owner can be taken over", () => {
 		const ctx = setup();
 		try {
@@ -102,82 +96,74 @@ describe("ownership acquisition", () => {
 				runDb: ctx.runDb,
 				nowEpochMs: 0,
 			});
-			expect(first.kind).toBe("ACQUIRED");
-
+			assert.strictEqual(first.kind, "ACQUIRED");
 			// Now acquire with epoch way past expiry.
 			const second = acquire({
 				runDb: ctx.runDb,
 				nowEpochMs: NOW_EPOCH,
 			});
-			expect(second.kind).toBe("ACQUIRED");
+			assert.strictEqual(second.kind, "ACQUIRED");
 			if (second.kind !== "ACQUIRED") return;
 			// fence_token should have incremented: first was 1, second is 2.
-			expect(second.handle.fenceToken).toBe(2n);
-
+			assert.strictEqual(second.handle.fenceToken, 2n);
 			// Old handle should be stale (same incarnation, old fence).
-			expect(second.handle.ownerToken).not.toBe(
-				(first as { handle: LockHandle }).handle.ownerToken,
+			assert.notStrictEqual(
+				second.handle.ownerToken,
+				(
+					first as {
+						handle: LockHandle;
+					}
+				).handle.ownerToken,
 			);
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("free row can be reacquired", () => {
 		const ctx = setup();
 		try {
 			const first = acquire({ runDb: ctx.runDb });
-			expect(first.kind).toBe("ACQUIRED");
-
+			assert.strictEqual(first.kind, "ACQUIRED");
 			// Simulate release by manually setting FREE (release is Lot 2).
-			ctx.runDb.connection.exec(
-				`UPDATE run_ownership
+			ctx.runDb.connection.exec(`UPDATE run_ownership
 				 SET ownership_status = 'FREE',
 				     owner_token = NULL,
 				     owner_pid = NULL,
 				     acquired_at_epoch_ms = NULL,
 				     lease_until_epoch_ms = NULL
-				 WHERE singleton = 1`,
-			);
-
+				 WHERE singleton = 1`);
 			const second = acquire({ runDb: ctx.runDb });
-			expect(second.kind).toBe("ACQUIRED");
+			assert.strictEqual(second.kind, "ACQUIRED");
 			if (second.kind !== "ACQUIRED") return;
 			// fence_token incremented again: 1 → 2.
-			expect(second.handle.fenceToken).toBe(2n);
+			assert.strictEqual(second.handle.fenceToken, 2n);
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("incarnation is stable across acquisitions", () => {
 		const ctx = setup();
 		try {
 			const first = acquire({ runDb: ctx.runDb });
-			expect(first.kind).toBe("ACQUIRED");
+			assert.strictEqual(first.kind, "ACQUIRED");
 			if (first.kind !== "ACQUIRED") return;
 			const incarnation1 = first.handle.incarnationId;
-
 			// Manually release.
-			ctx.runDb.connection.exec(
-				`UPDATE run_ownership
+			ctx.runDb.connection.exec(`UPDATE run_ownership
 				 SET ownership_status = 'FREE',
 				     owner_token = NULL,
 				     owner_pid = NULL,
 				     acquired_at_epoch_ms = NULL,
 				     lease_until_epoch_ms = NULL
-				 WHERE singleton = 1`,
-			);
-
+				 WHERE singleton = 1`);
 			const second = acquire({ runDb: ctx.runDb });
-			expect(second.kind).toBe("ACQUIRED");
+			assert.strictEqual(second.kind, "ACQUIRED");
 			if (second.kind !== "ACQUIRED") return;
-			expect(second.handle.incarnationId).toBe(incarnation1);
+			assert.strictEqual(second.handle.incarnationId, incarnation1);
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("fenceToken is strictly monotonic", () => {
 		const ctx = setup();
 		try {
@@ -185,33 +171,29 @@ describe("ownership acquisition", () => {
 			for (let i = 0; i < 5; i++) {
 				// Manual release between each acquisition.
 				if (i > 0) {
-					ctx.runDb.connection.exec(
-						`UPDATE run_ownership
+					ctx.runDb.connection.exec(`UPDATE run_ownership
 						 SET ownership_status = 'FREE',
 						     owner_token = NULL,
 						     owner_pid = NULL,
 						     acquired_at_epoch_ms = NULL,
 						     lease_until_epoch_ms = NULL
-						 WHERE singleton = 1`,
-					);
+						 WHERE singleton = 1`);
 				}
 				const result = acquire({ runDb: ctx.runDb });
-				expect(result.kind).toBe("ACQUIRED");
+				assert.strictEqual(result.kind, "ACQUIRED");
 				if (result.kind === "ACQUIRED") {
 					tokens.push(result.handle.fenceToken);
 				}
 			}
-			expect(tokens).toEqual([1n, 2n, 3n, 4n, 5n]);
+			assert.deepStrictEqual(tokens, [1n, 2n, 3n, 4n, 5n]);
 		} finally {
 			ctx.cleanup();
 		}
 	});
 });
-
 // ---------------------------------------------------------------------------
 // Post-lock clock gap — decisive tests
 // ---------------------------------------------------------------------------
-
 describe("post-lock clock gap", () => {
 	test("lease computed from post-lock clock, not pre-lock", () => {
 		const ctx = setup();
@@ -228,16 +210,14 @@ describe("post-lock clock gap", () => {
 				contentionDeadlineMs: 2000,
 				leaseClockEpochMs: () => 5000,
 			});
-
-			expect(result.kind).toBe("ACQUIRED");
+			assert.strictEqual(result.kind, "ACQUIRED");
 			if (result.kind !== "ACQUIRED") return;
 			// Lease must be 5000 + 1000 = 6000, NOT 1000 + 1000 = 2000.
-			expect(result.handle.leaseUntilEpochMs).toBe(6000);
+			assert.strictEqual(result.handle.leaseUntilEpochMs, 6000);
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("expired via post-lock clock (pre-lock says active, post-lock says expired)", () => {
 		const ctx = setup();
 		try {
@@ -252,21 +232,17 @@ describe("post-lock clock gap", () => {
 				contentionDeadlineMs: 2000,
 				leaseClockEpochMs: () => 3000,
 			});
-			expect(first.kind).toBe("ACQUIRED");
+			assert.strictEqual(first.kind, "ACQUIRED");
 			if (first.kind !== "ACQUIRED") return;
-			expect(first.handle.leaseUntilEpochMs).toBe(4000);
-
+			assert.strictEqual(first.handle.leaseUntilEpochMs, 4000);
 			// Release so a new acquire is possible.
-			ctx.runDb.connection.exec(
-				`UPDATE run_ownership
+			ctx.runDb.connection.exec(`UPDATE run_ownership
 				 SET ownership_status = 'FREE',
 				     owner_token = NULL,
 				     owner_pid = NULL,
 				     acquired_at_epoch_ms = NULL,
 				     lease_until_epoch_ms = NULL
-				 WHERE singleton = 1`,
-			);
-
+				 WHERE singleton = 1`);
 			// Now try to acquire with nowEpochMs = 3500 (says active: 3500 < 4000)
 			// but leaseClockEpochMs returns 5000 (says expired: 5000 >= 4000).
 			// The post-lock clock must win.
@@ -280,16 +256,14 @@ describe("post-lock clock gap", () => {
 				contentionDeadlineMs: 2000,
 				leaseClockEpochMs: () => 5000,
 			});
-
 			// The lease is FREE (we manually released).  The pre-lock
 			// predecessor check uses Date.now() (heuristic only).
 			// With the row FREE, acquisition should succeed.
-			expect(second.kind).toBe("ACQUIRED");
+			assert.strictEqual(second.kind, "ACQUIRED");
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("ACTIVE_CONFLICT avoided when post-lock clock shows lease expired", () => {
 		const ctx = setup();
 		try {
@@ -304,10 +278,9 @@ describe("post-lock clock gap", () => {
 				contentionDeadlineMs: 2000,
 				leaseClockEpochMs: () => 4000,
 			});
-			expect(a.kind).toBe("ACQUIRED");
+			assert.strictEqual(a.kind, "ACQUIRED");
 			if (a.kind !== "ACQUIRED") return;
-			expect(a.handle.leaseUntilEpochMs).toBe(5000);
-
+			assert.strictEqual(a.handle.leaseUntilEpochMs, 5000);
 			// B tries to acquire.  nowEpochMs = 4500 (says active: 4500 < 5000).
 			// But leaseClockEpochMs returns 6000 (post-lock: 6000 >= 5000 → expired).
 			// The initial pre-check uses Date.now() (real clock, which is
@@ -324,29 +297,25 @@ describe("post-lock clock gap", () => {
 				contentionDeadlineMs: 2000,
 				leaseClockEpochMs: () => 6000,
 			});
-
 			// Must be ACQUIRED, not ACTIVE_CONFLICT.
-			expect(b.kind).toBe("ACQUIRED");
+			assert.strictEqual(b.kind, "ACQUIRED");
 			if (b.kind !== "ACQUIRED") return;
 			// Lease computed from post-lock clock: 6000 + 2000 = 8000.
-			expect(b.handle.leaseUntilEpochMs).toBe(8000);
-			expect(b.handle.fenceToken).toBe(2n);
+			assert.strictEqual(b.handle.leaseUntilEpochMs, 8000);
+			assert.strictEqual(b.handle.fenceToken, 2n);
 		} finally {
 			ctx.cleanup();
 		}
 	});
 });
-
 // ---------------------------------------------------------------------------
 // Hardening: incarnation_id coherence in transactional helpers
 // ---------------------------------------------------------------------------
-
 describe("incarnation_id coherence", () => {
 	test("ensureOwnershipRowInTransaction rejects mismatched incarnation", () => {
 		const ctx = setup();
 		try {
 			const db = ctx.runDb.connection;
-
 			// Insert incarnation row.
 			beginImmediate(db);
 			ensureIncarnationInTransaction(
@@ -360,31 +329,29 @@ describe("incarnation_id coherence", () => {
 			// Insert ownership row with incarnation_id = 'inc-a'.
 			ensureOwnershipRowInTransaction(db, "inc-a");
 			commit(db);
-
 			// Now in a new transaction, try to insert OR IGNORE with a
 			// different incarnation.  The INSERT is a no-op because the
 			// row already exists, but our re-read must detect the mismatch.
 			beginImmediate(db);
-			expect(() => {
+			assert.throws(() => {
 				ensureOwnershipRowInTransaction(db, "inc-b");
-			}).toThrow(DbIntegrityError);
+			}, DbIntegrityError);
 			rollback(db);
-
 			// Verify the original row is untouched.
 			const row = db
 				.prepare("SELECT incarnation_id FROM run_ownership WHERE singleton = 1")
-				.get() as { incarnation_id: string };
-			expect(row.incarnation_id).toBe("inc-a");
+				.get() as {
+				incarnation_id: string;
+			};
+			assert.strictEqual(row.incarnation_id, "inc-a");
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("acquireOwnershipDirectInTransaction rejects wrong incarnationId", () => {
 		const ctx = setup();
 		try {
 			const db = ctx.runDb.connection;
-
 			// Setup: incarnation + ownership row with incarnation 'inc-a'.
 			beginImmediate(db);
 			ensureIncarnationInTransaction(
@@ -397,11 +364,10 @@ describe("incarnation_id coherence", () => {
 			);
 			ensureOwnershipRowInTransaction(db, "inc-a");
 			commit(db);
-
 			// Call acquireOwnershipDirectInTransaction with a different
 			// incarnationId.  The WHERE clause must NOT match any row.
 			beginImmediate(db);
-			expect(() => {
+			assert.throws(() => {
 				acquireOwnershipDirectInTransaction(
 					db,
 					"inc-wrong",
@@ -410,17 +376,19 @@ describe("incarnation_id coherence", () => {
 					NOW_EPOCH,
 					LEASE_MS,
 				);
-			}).toThrow(DbIntegrityError);
+			}, DbIntegrityError);
 			rollback(db);
-
 			// Verify the ownership row is untouched.
 			const row = db
 				.prepare(
 					"SELECT incarnation_id, ownership_status FROM run_ownership WHERE singleton = 1",
 				)
-				.get() as { incarnation_id: string; ownership_status: string };
-			expect(row.incarnation_id).toBe("inc-a");
-			expect(row.ownership_status).toBe("FREE");
+				.get() as {
+				incarnation_id: string;
+				ownership_status: string;
+			};
+			assert.strictEqual(row.incarnation_id, "inc-a");
+			assert.strictEqual(row.ownership_status, "FREE");
 		} finally {
 			ctx.cleanup();
 		}

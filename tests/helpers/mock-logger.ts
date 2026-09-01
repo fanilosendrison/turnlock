@@ -1,6 +1,5 @@
-import type { InternalLogger } from "../../src/services/logger";
-import type { OrchestratorEvent } from "../../src/types/events";
-
+import type { InternalLogger } from "../../src/services/logger.js";
+import type { OrchestratorEvent } from "../../src/types/events.js";
 export interface MockLogger extends InternalLogger {
 	events: OrchestratorEvent[];
 	reset(): void;
@@ -8,11 +7,9 @@ export interface MockLogger extends InternalLogger {
 	findAll(eventType: string): OrchestratorEvent[];
 	eventTypes(): string[];
 }
-
 export function createMockLogger(): MockLogger {
 	const events: OrchestratorEvent[] = [];
 	let diskPath: string | null = null;
-
 	const self: MockLogger = {
 		events,
 		emit(event: OrchestratorEvent): void {
@@ -38,12 +35,10 @@ export function createMockLogger(): MockLogger {
 			return events.map((e) => e.eventType);
 		},
 	};
-
 	// Reference diskPath so that TS doesn't flag the assignments as dead writes.
 	Object.defineProperty(self, "__diskPath", {
 		get: () => diskPath,
 		enumerable: false,
 	});
-
 	return self;
 }

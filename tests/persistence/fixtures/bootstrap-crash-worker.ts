@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 // Bootstrap crash worker — executes bootstrapNewRunAtomicCore or
 // migrateLegacyRunAtomicCore with an injected fault point, signals
 // the parent when the target point is reached via a signal file,
@@ -8,7 +8,7 @@
 // shutdown, no db.close(), no ROLLBACK is executed by the worker.
 //
 // Usage:
-//   bun run tests/persistence/fixtures/bootstrap-crash-worker.ts \
+//   node tests/persistence/fixtures/bootstrap-crash-worker.ts \
 //     --run-dir <path> \
 //     --mode BOOTSTRAP|MIGRATION \
 //     --crash-point <BootstrapFaultPoint> \
@@ -20,22 +20,20 @@
 // The database path is derived from --run-dir:
 //   dbPath = runDir + "/turnlock.sqlite3"
 // This matches the production convention in runInitialMode().
-
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { STATE_SCHEMA_VERSION } from "../../../src/constants";
-import { bunSqliteDriver } from "../../../src/persistence/sqlite/bun-sqlite-driver";
+import { STATE_SCHEMA_VERSION } from "../../../src/constants.js";
+import { nodeSqliteDriver } from "../../../src/persistence/sqlite/node-sqlite-driver.js";
 import {
 	type BootstrapFaultPoint,
 	bootstrapNewRunAtomicCore,
 	migrateLegacyRunAtomicCore,
-} from "../../../src/persistence/sqlite/run-bootstrap-core";
-import { openRunDatabase } from "../../../src/persistence/sqlite/run-database";
+} from "../../../src/persistence/sqlite/run-bootstrap-core.js";
+import { openRunDatabase } from "../../../src/persistence/sqlite/run-database.js";
 
 // ---------------------------------------------------------------------------
 // Parse CLI args
 // ---------------------------------------------------------------------------
-
 function parseArgs(argv: string[]) {
 	const args: Record<string, string> = {};
 	for (let i = 0; i < argv.length; i++) {
@@ -52,20 +50,16 @@ function parseArgs(argv: string[]) {
 	}
 	return args;
 }
-
 // ---------------------------------------------------------------------------
 // Constants (deterministic, shared with tests)
 // ---------------------------------------------------------------------------
-
 const LEASE_MS = 30 * 60 * 1000;
-const NOW_EPOCH = 1_000_000_000_000;
+const NOW_EPOCH = 1000000000000;
 const NOW_ISO = "2001-09-09T01:46:40.000Z";
 const CONTENTION_DEADLINE_MS = 2000;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 function makeInitialState(
 	runId: string,
 	orchestratorName: string,
@@ -85,7 +79,6 @@ function makeInitialState(
 		usedLabels: [],
 	};
 }
-
 function makeWorkerIdGenerator(runId: string): () => string {
 	let idIndex = 0;
 	return () => {
@@ -93,14 +86,11 @@ function makeWorkerIdGenerator(runId: string): () => string {
 		return idIndex === 1 ? `owner-${runId}` : `incarnation-${runId}`;
 	};
 }
-
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-
 function main() {
 	const args = parseArgs(process.argv.slice(2));
-
 	const runDir = args["run-dir"];
 	const mode = args.mode;
 	const crashPoint = args["crash-point"] as BootstrapFaultPoint;
@@ -108,7 +98,6 @@ function main() {
 	const orchestratorName = args["orchestrator-name"];
 	const signalFile = args["signal-file"];
 	const legacyStateFile = args["legacy-state-file"];
-
 	if (
 		!runDir ||
 		!mode ||
@@ -122,36 +111,29 @@ function main() {
 		);
 		process.exit(1);
 	}
-
 	const validatedSignalFile = signalFile;
-
 	if (mode !== "BOOTSTRAP" && mode !== "MIGRATION") {
 		process.stderr.write(
 			`Invalid mode: ${mode}. Must be BOOTSTRAP or MIGRATION\n`,
 		);
 		process.exit(1);
 	}
-
 	if (mode === "MIGRATION" && !legacyStateFile) {
 		process.stderr.write("MIGRATION mode requires --legacy-state-file\n");
 		process.exit(1);
 	}
-
 	// Ensure the RUN_DIR exists, then derive the database path from it.
 	// This matches the production convention in runInitialMode():
 	//   const dbPath = path.join(runDir, "turnlock.sqlite3");
 	mkdirSync(runDir, { recursive: true });
 	const dbPath = join(runDir, "turnlock.sqlite3");
-
 	// Open the database — schema is created if needed.
 	const runDb = openRunDatabase({
-		driver: bunSqliteDriver,
+		driver: nodeSqliteDriver,
 		dbPath,
 		busyTimeoutMs: 500,
 	});
-
 	const blocker = new Int32Array(new SharedArrayBuffer(4));
-
 	function signalAndBlock(point: BootstrapFaultPoint): void {
 		if (point === crashPoint) {
 			// Signal the parent via stdout and the signal file.
@@ -161,7 +143,6 @@ function main() {
 			});
 			process.stdout.write(`${msg}\n`);
 			writeFileSync(validatedSignalFile, point, "utf-8");
-
 			// Block the thread until killed by SIGKILL.
 			// Atomics.wait blocks synchronously — no microtasks,
 			// no cleanup, no db.close().
@@ -169,7 +150,6 @@ function main() {
 			// Never reached.
 		}
 	}
-
 	try {
 		if (mode === "BOOTSTRAP") {
 			const result = bootstrapNewRunAtomicCore(
@@ -190,7 +170,6 @@ function main() {
 					onFaultPoint: signalAndBlock,
 				},
 			);
-
 			// If we get here, the function returned before the crash point
 			// (should not happen for pre-commit or post-commit points).
 			process.stdout.write(
@@ -208,7 +187,6 @@ function main() {
 				(legacyState.lastTransitionAtEpochMs as number) ?? NOW_EPOCH;
 			const legacyLastTransitionAt =
 				(legacyState.lastTransitionAt as string) ?? NOW_ISO;
-
 			const result = migrateLegacyRunAtomicCore(
 				{
 					db: runDb.connection,
@@ -231,7 +209,6 @@ function main() {
 					onFaultPoint: signalAndBlock,
 				},
 			);
-
 			process.stdout.write(
 				`${JSON.stringify({ type: "RESULT_RETURNED", kind: result.kind })}\n`,
 			);
@@ -250,11 +227,9 @@ function main() {
 		// If we somehow get an InjectedBootstrapFailure here, it means
 		// we didn't block — shouldn't happen but exit cleanly.
 	}
-
 	// Close the DB (only reached if we DIDN'T block, e.g., for
 	// RESULT_RETURNED before crash point, or unexpected path).
 	runDb.close();
 	process.exit(0);
 }
-
 main();

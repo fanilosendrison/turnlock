@@ -4,11 +4,9 @@
 // Production code MUST use projectAuthoritativeStateFenced instead,
 // which re-reads the state from SQLite inside a transaction and
 // verifies ownership + lease + revision + digest before writing.
-
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { StateRecord } from "../../src/persistence/sqlite/run-state-store";
-
+import type { StateRecord } from "../../src/persistence/sqlite/run-state-store.js";
 /** Write state.json without any fencing check.
  *
  *  Only for tests that verify the projection format directly. */
@@ -44,11 +42,9 @@ export function unsafeWriteStateJson(
 	if (state.terminalResult !== undefined) {
 		projection.terminalResult = state.terminalResult;
 	}
-
 	const json = JSON.stringify(projection);
 	const tmpPath = path.join(runDir, "state.json.tmp");
 	const statePath = path.join(runDir, "state.json");
-
 	fs.writeFileSync(tmpPath, json, { encoding: "utf-8" });
 	fs.renameSync(tmpPath, statePath);
 }

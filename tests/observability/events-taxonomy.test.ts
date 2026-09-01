@@ -1,6 +1,7 @@
+import assert from "node:assert/strict";
 // NIB-T §23 — events taxonomy (T-OB-01..13, P-OB-a/b/c)
-import { describe, expect, test } from "bun:test";
-import type { OrchestratorEvent } from "../../src/types/events";
+import { describe, test } from "node:test";
+import type { OrchestratorEvent } from "../../src/types/events.js";
 
 const requiredFields: Record<string, string[]> = {
 	orchestrator_start: [
@@ -90,7 +91,6 @@ const requiredFields: Record<string, string[]> = {
 	],
 	ownership_release_failed: ["runId", "timestamp"],
 };
-
 function sampleEvents(): Record<string, OrchestratorEvent> {
 	return {
 		orchestrator_start: {
@@ -235,52 +235,49 @@ function sampleEvents(): Record<string, OrchestratorEvent> {
 		},
 	};
 }
-
 describe("[GREEN-L1] events taxonomy", () => {
 	const events = sampleEvents();
 	for (const [type, fields] of Object.entries(requiredFields)) {
 		test(`T-OB-${type} | ${type} has required fields`, () => {
 			const ev = events[type as keyof typeof events];
-			expect(ev).toBeDefined();
+			assert.notStrictEqual(ev, undefined);
 			if (ev === undefined) throw new Error(`missing sample event: ${type}`);
 			for (const f of fields) {
-				expect(ev).toHaveProperty(f);
+				assert.ok(f in Object(ev));
 			}
 		});
 	}
 });
-
 describe("[GREEN-L1] events closed taxonomy (T-OB-12..13)", () => {
 	test("T-OB-12 | eventType belongs to the 17-value taxonomy", () => {
 		const allowed = new Set(Object.keys(requiredFields));
 		for (const type of Object.keys(sampleEvents())) {
-			expect(allowed.has(type)).toBe(true);
+			assert.strictEqual(allowed.has(type), true);
 		}
 	});
 	test("T-OB-13 | no eventType = 'unknown'", () => {
 		const events = sampleEvents();
 		for (const ev of Object.values(events)) {
-			expect(ev.eventType).not.toBe("unknown");
+			assert.notStrictEqual(ev.eventType, "unknown");
 		}
 	});
 });
-
 describe("[GREEN-L1] events properties (P-OB-a..c)", () => {
 	test("P-OB-a | JSON serializable", () => {
 		for (const ev of Object.values(sampleEvents())) {
-			expect(() => JSON.stringify(ev)).not.toThrow();
+			assert.doesNotThrow(() => JSON.stringify(ev));
 		}
 	});
 	test("P-OB-b | runId non-empty string", () => {
 		for (const ev of Object.values(sampleEvents())) {
-			expect(typeof ev.runId).toBe("string");
-			expect(ev.runId.length).toBeGreaterThan(0);
+			assert.strictEqual(typeof ev.runId, "string");
+			assert.ok(ev.runId.length > 0);
 		}
 	});
 	test("P-OB-c | timestamp ISO 8601", () => {
 		const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 		for (const ev of Object.values(sampleEvents())) {
-			expect(iso.test(ev.timestamp)).toBe(true);
+			assert.strictEqual(iso.test(ev.timestamp), true);
 		}
 	});
 });

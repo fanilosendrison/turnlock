@@ -1,28 +1,24 @@
-#!/usr/bin/env bun
-
+#!/usr/bin/env node
 import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 import {
 	type RunOrchestratorInternalDependencies,
 	runOrchestratorInternal,
-} from "../../../src/engine/run-orchestrator";
-import { runOrchestrator } from "../../../src/index";
-import type { ProjectionFaultPoint } from "../../../src/persistence/sqlite/run-state-store";
-import type { OrchestratorConfig } from "../../../src/types/config";
+} from "../../../src/engine/run-orchestrator.js";
+import { runOrchestrator } from "../../../src/index.js";
+import type { ProjectionFaultPoint } from "../../../src/persistence/sqlite/run-state-store.js";
+import type { OrchestratorConfig } from "../../../src/types/config.js";
 
 interface WorkerState {
 	readonly source: string;
 	readonly marker: string;
 }
-
 type LifecycleFaultPoint =
 	| "AFTER_BOOTSTRAP_RESULT"
 	| "BEFORE_INITIAL_PROJECTION"
 	| "AFTER_INITIAL_PROJECTION"
 	| "BEFORE_INITIAL_DISPATCH_CLAIM"
 	| "AFTER_INITIAL_DISPATCH_CLAIM";
-
 type WorkerFaultPoint = LifecycleFaultPoint | ProjectionFaultPoint;
-
 interface WorkerSignal {
 	readonly type: "FAULT_POINT_REACHED" | "PHASE_ENTERED";
 	readonly point?: WorkerFaultPoint;
@@ -32,7 +28,6 @@ interface WorkerSignal {
 	readonly runDir?: string;
 	readonly state?: WorkerState;
 }
-
 function parseArgs(argv: readonly string[]): Readonly<Record<string, string>> {
 	const args: Record<string, string> = {};
 	for (let index = 0; index < argv.length; index++) {
@@ -48,9 +43,7 @@ function parseArgs(argv: readonly string[]): Readonly<Record<string, string>> {
 	}
 	return args;
 }
-
 const blocker = new Int32Array(new SharedArrayBuffer(4));
-
 function signalAndBlock(signalFile: string, signal: WorkerSignal): never {
 	const temporarySignalFile = `${signalFile}.${process.pid}.tmp`;
 	writeFileSync(temporarySignalFile, JSON.stringify(signal), {
@@ -60,7 +53,6 @@ function signalAndBlock(signalFile: string, signal: WorkerSignal): never {
 	Atomics.wait(blocker, 0, 0);
 	throw new Error("Fault-point blocker unexpectedly resumed");
 }
-
 function requiredArg(
 	args: Readonly<Record<string, string>>,
 	name: string,
@@ -71,7 +63,6 @@ function requiredArg(
 	}
 	return value;
 }
-
 async function main(): Promise<void> {
 	const args = parseArgs(process.argv.slice(2));
 	const workerMode = requiredArg(args, "worker-mode");
@@ -81,7 +72,6 @@ async function main(): Promise<void> {
 	const phaseSignalFile = args["phase-signal-file"];
 	const sentinelFile = args["sentinel-file"];
 	const phaseCompletion = args["phase-completion"];
-
 	const initialMode = workerMode === "initial";
 	const config: OrchestratorConfig<WorkerState> = {
 		name: orchestratorName,
@@ -89,7 +79,7 @@ async function main(): Promise<void> {
 		initialState: initialMode
 			? { source: "sqlite-authority", marker: runId }
 			: { source: "resume-config-decoy", marker: "must-not-run" },
-		resumeCommand: (id) => `bun run worker --resume --run-id ${id}`,
+		resumeCommand: (id) => `node worker --resume --run-id ${id}`,
 		runDirRoot,
 		phases: {
 			start: async (state, io) => {
@@ -131,7 +121,6 @@ async function main(): Promise<void> {
 			},
 		},
 	};
-
 	if (workerMode === "resume") {
 		await runOrchestrator(config);
 		return;
@@ -139,7 +128,6 @@ async function main(): Promise<void> {
 	if (!initialMode) {
 		throw new Error(`Unknown --worker-mode: ${workerMode}`);
 	}
-
 	const faultPointArgument = args["fault-point"];
 	if (faultPointArgument === undefined) {
 		await runOrchestratorInternal(
@@ -149,11 +137,9 @@ async function main(): Promise<void> {
 		);
 		return;
 	}
-
 	const signalFile = requiredArg(args, "signal-file");
 	const faultPoint = faultPointArgument as WorkerFaultPoint;
 	const observedPoints: WorkerFaultPoint[] = [];
-
 	function reach(point: WorkerFaultPoint): void {
 		observedPoints.push(point);
 		if (point === faultPoint) {
@@ -164,7 +150,6 @@ async function main(): Promise<void> {
 			});
 		}
 	}
-
 	const dependencies: RunOrchestratorInternalDependencies = {
 		hooks: {
 			afterBootstrapResult: () => reach("AFTER_BOOTSTRAP_RESULT"),
@@ -177,7 +162,6 @@ async function main(): Promise<void> {
 			onFaultPoint: reach,
 		},
 	};
-
 	await runOrchestratorInternal(
 		config,
 		{ resume: false, runId, rest: [] },
@@ -185,7 +169,6 @@ async function main(): Promise<void> {
 	);
 	throw new Error(`Fault point was not reached: ${faultPoint}`);
 }
-
 main().catch((error: unknown) => {
 	process.stderr.write(
 		`orchestrator crash worker failed: ${error instanceof Error ? error.message : String(error)}\n`,

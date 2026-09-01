@@ -6,14 +6,12 @@
 // fence_token = 0) and performs NO lease check.
 //
 // Production code MUST use initializeStateUnderFence instead.
-
 import { createHash } from "node:crypto";
-import type { SqliteConnection } from "../../src/persistence/sqlite/sqlite-driver";
+import type { SqliteConnection } from "../../src/persistence/sqlite/sqlite-driver.js";
 
 function computeDigest(jsonStr: string): string {
 	return `sha256:${createHash("sha256").update(jsonStr).digest("hex")}`;
 }
-
 const ENSURE_STATE_ROW_SQL = `
 INSERT OR IGNORE INTO run_state
     (singleton, incarnation_id, state_schema_version,
@@ -25,7 +23,6 @@ VALUES (1, :incarnation_id, :schema_version,
         '', 0,
         :now_epoch, :now_iso)
 `;
-
 /**
  * ⚠️ Blind INSERT OR IGNORE — does NOT fence on the current ownership lease.
  *
