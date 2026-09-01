@@ -4,6 +4,7 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	rmSync,
 	statSync,
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -72,10 +73,18 @@ const compiledTests = declaredTests.map((testPath) => {
 	return compiledPath;
 });
 
-const result = spawnSync(
-	process.execPath,
-	["--test", "--test-concurrency=1", ...compiledTests],
-	{ cwd: repositoryRoot, stdio: "inherit" },
-);
+let result;
+try {
+	result = spawnSync(
+		process.execPath,
+		["--test", "--test-concurrency=1", ...compiledTests],
+		{ cwd: repositoryRoot, stdio: "inherit" },
+	);
+} finally {
+	rmSync(join(repositoryRoot, ".test-dist"), {
+		recursive: true,
+		force: true,
+	});
+}
 if (result.error) throw result.error;
 process.exit(result.status ?? 1);
