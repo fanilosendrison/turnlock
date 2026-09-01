@@ -84,7 +84,7 @@ runOrchestrator({
     },
   },
   initialState: {},
-  resumeCommand: (runId) => `bun run pipeline.ts --run-id ${runId} --resume`,
+  resumeCommand: (runId) => `node pipeline.js --run-id ${runId} --resume`,
 });
 ```
 
@@ -96,6 +96,8 @@ runOrchestrator({
 4. On resume, authoritative state is loaded from SQLite and `state.json` is repaired or regenerated as a projection. `commit` runs, consumes the skill's result, commits with the agent-written message, and emits `DONE`.
 
 Notice that a phase is not synonymous with an agent call. A phase can do as much mechanical work as it needs before yielding. Splitting into another phase is reserved for durable boundaries: `delegate(...)`, `delegateBatch(...)`, `requestExternal(...)`, `done(...)`, or `fail(...)`.
+
+Turnlock itself runs on Node.js. `resumeCommand` remains opaque consumer data, so a host may still provide a command targeting another runtime, including Bun; Turnlock emits that command but never executes it.
 
 ---
 
@@ -118,7 +120,7 @@ Notice that a phase is not synonymous with an agent call. A phase can do as much
 │          │  @@TURNLOCK@@                     │             │  │
 │          │  action: DELEGATE                │             │  │
 │          │  run_id: 01J...                  │             │  │
-│          │  resume_cmd: bun run ...         │             │  │
+│          │  resume_cmd: node ...            │             │  │
 │          │  @@END@@                         │             │  │
 │          │                                  │             │  │
 │          │  Process exits (code 0)          │             │  │
@@ -155,7 +157,7 @@ Notice that a phase is not synonymous with an agent call. A phase can do as much
 ```bash
 #!/bin/bash
 # What you WANT to do:
-bunx biome check src/ > lint-output.json
+pnpm exec biome check src/ > lint-output.json
 if [ $? -ne 0 ]; then
   # ❌ Impossible: you can't invoke a Claude Code skill from Bash.
   # You have to stop here, tell the user to run /fix-lint manually,
@@ -163,7 +165,7 @@ if [ $? -ne 0 ]; then
   echo "Run /fix-lint in Claude Code, then re-run this script."
   exit 1
 fi
-bunx biome check src/  # verify
+pnpm exec biome check src/  # verify
 ```
 
 ```typescript
@@ -294,28 +296,29 @@ One nice consequence: **testability comes for free.** Phases are pure TypeScript
 
 ### Prerequisites
 
-- Bun ≥ 1.1 (or Node ≥ 22)
+- Node.js ≥ 22.19.0
+- pnpm 11.24.0
 
 ### Install
 
 ```bash
 git clone git@github.com:fanilosendrison/turnlock.git
 cd turnlock
-bun install
+pnpm install --frozen-lockfile
 ```
 
 ### Verify
 
 ```bash
-bun test          # unit + integration + property tests
-bun run typecheck # strict tsc --noEmit
-bun run lint      # biome check src/ tests/
+pnpm test          # unit + integration + property tests
+pnpm run typecheck # strict tsc --noEmit
+pnpm run lint      # biome check src/ tests/ scripts/
 ```
 
 ### Build
 
 ```bash
-bun run build     # emit ./dist from src/
+pnpm run build     # emit ./dist from src/
 ```
 
 ---
