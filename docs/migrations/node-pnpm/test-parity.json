@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "baselineCommit": "2019a151f89fa8c5564e797dd006875286d46d77",
+  "historicalTestFiles": 46,
+  "historicalTestDeclarations": 457,
+  "nodeTestFiles": 46,
+  "nodeTestDeclarations": 459,
+  "addedRegressions": [
+    "initial dispatch error kinds are classified as permanent"
+  ],
+  "protocolFixtures": {
+    "tests/fixtures/protocol/aborted-sigint.txt": "428e0669f9130adf868d4423b07cd16be6084acb9cabb3f092098c592db65bec",
+    "tests/fixtures/protocol/delegate-agent.txt": "803974660cab07a599ef2dee7630f248f75c2ca86d76ba64bd007ea23ec5b6bf",
+    "tests/fixtures/protocol/delegate-batch.txt": "6fa2415eb3af98a0cb073ae7ca87ffe1ab3432473812f1d15980e315a1e8037d",
+    "tests/fixtures/protocol/delegate-prompt.txt": "28f19fbda1da9ad7b8c0e973e6bb44d62a9ec7c891567be63735004b8dfe99fb",
+    "tests/fixtures/protocol/done-minimal.txt": "0c29685af0126f3d1a77cdaa38ed2b1b67384cce733190d375eb34e89242cb72",
+    "tests/fixtures/protocol/error-preflight.txt": "22c6b808d53b19ba701dfa95b8882d2349203e53043b52ced1d377b9339d697c",
+    "tests/fixtures/protocol/error-with-phase.txt": "e23b07ae814631e031207c330e79b75c8708f8e10bade89182085cbe343439b4",
+    "tests/fixtures/protocol/malformed-double-block.txt": "9b6237dbf39d438e624a959eea41ab51cb303550c5b1cdc7ad0f8f0f5123457f",
+    "tests/fixtures/protocol/malformed-missing-end.txt": "ba6e3932b92a67f7d7dc1655d231e9b8992636d59938086e86b464369e97b458",
+    "tests/fixtures/protocol/request-external.txt": "48b6f35e66714c02a92d6a72bf6e3cee5564a8d08cd505814e7ca6c44f42d6a1"
+  }
+}
