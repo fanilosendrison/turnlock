@@ -253,7 +253,9 @@ await runOrchestrator<State>({
 			// 4. Must fail with ERROR protocol block.
 			assert.strictEqual(resumed.exitCode, 1);
 			expectProtocol(resumed.stdout, "ERROR", null);
-			const block = parseSingleBlock(resumed.stdout)! as {
+			const parsedBlock = parseSingleBlock(resumed.stdout);
+			assert.ok(parsedBlock !== null);
+			const block = parsedBlock as {
 				fields: Record<string, unknown>;
 			};
 			assert.strictEqual(block.fields.errorKind, "state_corrupted");

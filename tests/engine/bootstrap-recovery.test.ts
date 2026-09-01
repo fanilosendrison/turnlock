@@ -164,8 +164,8 @@ describe("bootstrap crash recovery", () => {
 		preCheckDb.close();
 		// Now simulate the recovery: read state.json and seed.
 		const snapshot = readStateSnapshot(ctx.runDir);
-		assert.notStrictEqual(snapshot.state, null);
-		assert.strictEqual(snapshot.state!.runId, ctx.runId);
+		assert.ok(snapshot.state !== null);
+		assert.strictEqual(snapshot.state.runId, ctx.runId);
 		// Simulate the full recovery by opening a new connection and calling the
 		// same primitives as seedLegacyStateToSqlite.
 		const recoveryDb = openRunDatabase({
@@ -210,9 +210,9 @@ describe("bootstrap crash recovery", () => {
 		);
 		// Verify the state is now readable.
 		const postRead = readAuthoritativeState(recoveryDb.connection);
-		assert.notStrictEqual(postRead.state, null);
-		assert.strictEqual(postRead.state!.currentPhase, "start");
-		assert.deepStrictEqual(postRead.state!.data, { stage: "before-crash" });
+		assert.ok(postRead.state !== null);
+		assert.strictEqual(postRead.state.currentPhase, "start");
+		assert.deepStrictEqual(postRead.state.data, { stage: "before-crash" });
 		// Cleanup: release ownership and close.
 		releaseOwnership({
 			db: recoveryDb.connection,
@@ -351,7 +351,7 @@ describe("bootstrap crash recovery", () => {
 		);
 		// Verify state is now readable.
 		const postRead = readAuthoritativeState(recoveryDb.connection);
-		assert.notStrictEqual(postRead.state, null);
+		assert.ok(postRead.state !== null);
 		releaseOwnership({
 			db: recoveryDb.connection,
 			handle: reacquired.handle,
@@ -368,9 +368,9 @@ describe("bootstrap crash recovery", () => {
 		createSchemaOnlyDb(ctx.runDir);
 		// Verify state.json exists as fallback.
 		const snapshot = readStateSnapshot(ctx.runDir);
-		assert.notStrictEqual(snapshot.state, null);
-		assert.strictEqual(snapshot.state!.runId, ctx.runId);
-		assert.strictEqual(snapshot.state!.orchestratorName, ctx.orchestratorName);
+		assert.ok(snapshot.state !== null);
+		assert.strictEqual(snapshot.state.runId, ctx.runId);
+		assert.strictEqual(snapshot.state.orchestratorName, ctx.orchestratorName);
 		// The recovery path should succeed by reading state.json and seeding.
 		const dbPath = join(ctx.runDir, "turnlock.sqlite3");
 		const recoveryDb = openRunDatabase({
@@ -384,10 +384,10 @@ describe("bootstrap crash recovery", () => {
 		assert.strictEqual(preRead.state, null);
 		recoveryDb.close();
 		// 2. Read state.json snapshot
-		assert.notStrictEqual(snapshot.state, null);
+		assert.ok(snapshot.state !== null);
 		// 3. Validate identity
-		assert.strictEqual(snapshot.state!.runId, ctx.runId);
-		assert.strictEqual(snapshot.state!.orchestratorName, ctx.orchestratorName);
+		assert.strictEqual(snapshot.state.runId, ctx.runId);
+		assert.strictEqual(snapshot.state.orchestratorName, ctx.orchestratorName);
 		// 4. Seed idempotently
 		const seedDb = openRunDatabase({
 			driver: nodeSqliteDriver,
@@ -429,8 +429,8 @@ describe("bootstrap crash recovery", () => {
 		);
 		// 5. Verify authoritative state is now present.
 		const finalRead = readAuthoritativeState(seedDb.connection);
-		assert.notStrictEqual(finalRead.state, null);
-		assert.strictEqual(finalRead.state!.currentPhase, "start");
+		assert.ok(finalRead.state !== null);
+		assert.strictEqual(finalRead.state.currentPhase, "start");
 		releaseOwnership({
 			db: seedDb.connection,
 			handle: acquireResult.handle,
@@ -472,7 +472,7 @@ describe("bootstrap crash recovery", () => {
 		);
 		// Verify state exists.
 		const preCheck = readAuthoritativeState(runDb.connection);
-		assert.notStrictEqual(preCheck.state, null);
+		assert.ok(preCheck.state !== null);
 		// Now delete the state row while ownership is held — simulates
 		// corruption or a race.
 		runDb.connection.exec("DELETE FROM run_state WHERE singleton = 1");
@@ -604,8 +604,8 @@ describe("bootstrap crash recovery", () => {
 		);
 		// Verify state was NOT overwritten.
 		const stateRead = readAuthoritativeState(runDb.connection);
-		assert.notStrictEqual(stateRead.state, null);
-		assert.strictEqual(stateRead.state!.currentPhase, "start");
+		assert.ok(stateRead.state !== null);
+		assert.strictEqual(stateRead.state.currentPhase, "start");
 		runDb.close();
 		ctx.cleanup();
 	});

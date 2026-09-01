@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import {} from "node:test";
 import type { OrchestratorErrorKind } from "../../src/errors/base.js";
 import type {
 	ParsedProtocolBlock,

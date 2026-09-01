@@ -109,15 +109,16 @@ describe("terminalResult in authoritative state", () => {
 				const read = readAuthoritativeState<{
 					stage: string;
 				}>(runDb.connection);
-				assert.notStrictEqual(read.state, null);
-				assert.notStrictEqual(read.state!.terminalResult, undefined);
-				assert.strictEqual(read.state!.terminalResult!.kind, "done");
+				assert.ok(read.state !== null);
+				const terminalResult = read.state.terminalResult;
+				assert.ok(terminalResult !== undefined);
+				assert.strictEqual(terminalResult.kind, "done");
 				assert.strictEqual(
-					read.state!.terminalResult!.outputArtifact.kind,
+					terminalResult.outputArtifact.kind,
 					"terminal-output",
 				);
 				assert.strictEqual(
-					read.state!.terminalResult!.outputArtifact.digest,
+					terminalResult.outputArtifact.digest,
 					prepared.ref.digest,
 				);
 			} finally {
@@ -348,14 +349,12 @@ describe("v3→v4 migration durability", () => {
 			fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(v3State));
 			// Migrate
 			const result = readState(dir);
-			assert.notStrictEqual(result, null);
-			assert.strictEqual(result!.schemaVersion, 4);
-			assert.notStrictEqual(result!.pendingDelegation, undefined);
-			assert.notStrictEqual(
-				result!.pendingDelegation!.manifestArtifact,
-				undefined,
-			);
-			const artifact = result!.pendingDelegation!.manifestArtifact!;
+			assert.ok(result !== null);
+			assert.strictEqual(result.schemaVersion, 4);
+			const pendingDelegation = result.pendingDelegation;
+			assert.ok(pendingDelegation !== undefined);
+			const artifact = pendingDelegation.manifestArtifact;
+			assert.ok(artifact !== undefined);
 			assert.strictEqual(artifact.kind, "delegation-manifest");
 			assert.match(artifact.relativePath, /^artifacts\/sha256\//);
 			// Verify the blob was actually installed
@@ -412,27 +411,23 @@ describe("v3→v4 migration durability", () => {
 			// First migration
 			fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(v3State));
 			const first = readState(dir);
-			assert.notStrictEqual(
-				first!.pendingDelegation!.manifestArtifact,
-				undefined,
-			);
+			assert.ok(first !== null);
+			const firstPendingDelegation = first.pendingDelegation;
+			assert.ok(firstPendingDelegation !== undefined);
+			const firstArtifact = firstPendingDelegation.manifestArtifact;
+			assert.ok(firstArtifact !== undefined);
 			// Delete the in-memory migrated state and re-read — simulates
 			// a second resume where SQLite still has v3
-			const blobPath = path.join(
-				dir,
-				first!.pendingDelegation!.manifestArtifact!.relativePath,
-			);
+			const blobPath = path.join(dir, firstArtifact.relativePath);
 			assert.strictEqual(fs.existsSync(blobPath), true);
 			// Second migration — blob already exists
 			const second = readState(dir);
-			assert.notStrictEqual(
-				second!.pendingDelegation!.manifestArtifact,
-				undefined,
-			);
-			assert.strictEqual(
-				second!.pendingDelegation!.manifestArtifact!.digest,
-				first!.pendingDelegation!.manifestArtifact!.digest,
-			);
+			assert.ok(second !== null);
+			const secondPendingDelegation = second.pendingDelegation;
+			assert.ok(secondPendingDelegation !== undefined);
+			const secondArtifact = secondPendingDelegation.manifestArtifact;
+			assert.ok(secondArtifact !== undefined);
+			assert.strictEqual(secondArtifact.digest, firstArtifact.digest);
 			// Blob still exists and is unchanged
 			assert.strictEqual(fs.existsSync(blobPath), true);
 		} finally {

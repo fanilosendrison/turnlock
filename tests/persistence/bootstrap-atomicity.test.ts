@@ -125,9 +125,9 @@ function assertFullyEstablished(
 				orchestrator_name: string;
 		  }
 		| undefined;
-	assert.notStrictEqual(incRow, undefined);
-	assert.strictEqual(incRow!.incarnation_id, handle.incarnationId);
-	assert.strictEqual(incRow!.run_id, RUN_ID);
+	assert.ok(incRow !== undefined);
+	assert.strictEqual(incRow.incarnation_id, handle.incarnationId);
+	assert.strictEqual(incRow.run_id, RUN_ID);
 	// ownership
 	const ownRow = runDb.connection
 		.prepare(
@@ -141,13 +141,13 @@ function assertFullyEstablished(
 				lease_until_epoch_ms: number;
 		  }
 		| undefined;
-	assert.notStrictEqual(ownRow, undefined);
-	assert.strictEqual(ownRow!.ownership_status, "HELD");
-	assert.strictEqual(ownRow!.owner_token, handle.ownerToken);
+	assert.ok(ownRow !== undefined);
+	assert.strictEqual(ownRow.ownership_status, "HELD");
+	assert.strictEqual(ownRow.owner_token, handle.ownerToken);
 	const ownFence =
-		typeof ownRow!.fence_token === "bigint"
-			? ownRow!.fence_token
-			: BigInt(ownRow!.fence_token);
+		typeof ownRow.fence_token === "bigint"
+			? ownRow.fence_token
+			: BigInt(ownRow.fence_token);
 	assert.strictEqual(ownFence, handle.fenceToken);
 	// state
 	const stateRow = runDb.connection
@@ -161,17 +161,17 @@ function assertFullyEstablished(
 				committed_by_fence_token: number | bigint;
 		  }
 		| undefined;
-	assert.notStrictEqual(stateRow, undefined);
-	assert.strictEqual(stateRow!.committed_by_owner_token, handle.ownerToken);
+	assert.ok(stateRow !== undefined);
+	assert.strictEqual(stateRow.committed_by_owner_token, handle.ownerToken);
 	const stateFence =
-		typeof stateRow!.committed_by_fence_token === "bigint"
-			? stateRow!.committed_by_fence_token
-			: BigInt(stateRow!.committed_by_fence_token);
+		typeof stateRow.committed_by_fence_token === "bigint"
+			? stateRow.committed_by_fence_token
+			: BigInt(stateRow.committed_by_fence_token);
 	assert.strictEqual(stateFence, handle.fenceToken);
 	const rev =
-		typeof stateRow!.state_revision === "bigint"
-			? stateRow!.state_revision
-			: BigInt(stateRow!.state_revision);
+		typeof stateRow.state_revision === "bigint"
+			? stateRow.state_revision
+			: BigInt(stateRow.state_revision);
 	assert.strictEqual(rev, 0n);
 	// committed state
 	assert.strictEqual(committed.stateRevision, "0");
@@ -203,10 +203,10 @@ describe("bootstrap atomicity", () => {
 			assertFullyEstablished(ctx.runDb, result.handle, result.committed);
 			// Verify state can be read back.
 			const authRead = readAuthoritativeState(ctx.runDb.connection);
-			assert.notStrictEqual(authRead.state, null);
-			assert.strictEqual(authRead.state!.stateRevision, "0");
+			assert.ok(authRead.state !== null);
+			assert.strictEqual(authRead.state.stateRevision, "0");
 			assert.strictEqual(
-				authRead.state!.runIncarnationId,
+				authRead.state.runIncarnationId,
 				result.handle.incarnationId,
 			);
 			// Clean release.
@@ -598,8 +598,8 @@ describe("bootstrap atomicity — fault injection", () => {
 		assert.strictEqual(result.handle.fenceToken, 2n);
 		// State was recovered from legacy source.
 		const authRead = readAuthoritativeState(ctx.runDb.connection);
-		assert.notStrictEqual(authRead.state, null);
-		assert.strictEqual(authRead.state!.currentPhase, "legacy-recovered");
+		assert.ok(authRead.state !== null);
+		assert.strictEqual(authRead.state.currentPhase, "legacy-recovered");
 		releaseOwnership({ db: ctx.runDb.connection, handle: result.handle });
 		ctx.cleanup();
 	});
@@ -747,8 +747,8 @@ describe("bootstrap atomicity — fault injection", () => {
 		assert.strictEqual(result.handle.fenceToken, 2n);
 		// State recovered from legacy source.
 		const authRead = readAuthoritativeState(ctx.runDb.connection);
-		assert.notStrictEqual(authRead.state, null);
-		assert.strictEqual(authRead.state!.currentPhase, "recovered-via-migration");
+		assert.ok(authRead.state !== null);
+		assert.strictEqual(authRead.state.currentPhase, "recovered-via-migration");
 		releaseOwnership({ db: ctx.runDb.connection, handle: result.handle });
 		ctx.cleanup();
 	});
@@ -1112,17 +1112,17 @@ describe("legacy migration atomicity", () => {
 		assert.strictEqual(ownRow.lease_until_epoch_ms, NOW_EPOCH + LEASE_MS);
 		// Verify state preserves legacy data.
 		const authRead = readAuthoritativeState(ctx.runDb.connection);
-		assert.notStrictEqual(authRead.state, null);
-		assert.strictEqual(authRead.state!.currentPhase, "legacy-phase");
-		assert.strictEqual(authRead.state!.phasesExecuted, 5);
+		assert.ok(authRead.state !== null);
+		assert.strictEqual(authRead.state.currentPhase, "legacy-phase");
+		assert.strictEqual(authRead.state.phasesExecuted, 5);
 		// Verify startedAt and lastTransitionAt are distinct and preserved.
-		assert.strictEqual(authRead.state!.startedAt, "2020-01-01T00:00:00.000Z");
-		assert.strictEqual(authRead.state!.startedAtEpochMs, 1577836800000);
+		assert.strictEqual(authRead.state.startedAt, "2020-01-01T00:00:00.000Z");
+		assert.strictEqual(authRead.state.startedAtEpochMs, 1577836800000);
 		assert.strictEqual(
-			authRead.state!.lastTransitionAt,
+			authRead.state.lastTransitionAt,
 			"2020-01-01T00:01:00.000Z",
 		);
-		assert.strictEqual(authRead.state!.lastTransitionAtEpochMs, 1577836860000);
+		assert.strictEqual(authRead.state.lastTransitionAtEpochMs, 1577836860000);
 		releaseOwnership({ db: ctx.runDb.connection, handle: result.handle });
 		ctx.cleanup();
 	});
