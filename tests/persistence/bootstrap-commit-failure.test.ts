@@ -150,9 +150,9 @@ function assertFullyEstablished(
 				orchestrator_name: string;
 		  }
 		| undefined;
-	assert.notStrictEqual(incRow, undefined);
-	assert.strictEqual(incRow?.incarnation_id, handle.incarnationId);
-	assert.strictEqual(incRow?.run_id, RUN_ID);
+	assert.ok(incRow !== undefined);
+	assert.strictEqual(incRow.incarnation_id, handle.incarnationId);
+	assert.strictEqual(incRow.run_id, RUN_ID);
 	const ownRow = runDb.connection
 		.prepare(
 			"SELECT ownership_status, owner_token, fence_token, lease_until_epoch_ms FROM run_ownership WHERE singleton = 1",
@@ -165,13 +165,13 @@ function assertFullyEstablished(
 				lease_until_epoch_ms: number;
 		  }
 		| undefined;
-	assert.notStrictEqual(ownRow, undefined);
-	assert.strictEqual(ownRow?.ownership_status, "HELD");
-	assert.strictEqual(ownRow?.owner_token, handle.ownerToken);
+	assert.ok(ownRow !== undefined);
+	assert.strictEqual(ownRow.ownership_status, "HELD");
+	assert.strictEqual(ownRow.owner_token, handle.ownerToken);
 	const ownFence =
-		typeof ownRow!.fence_token === "bigint"
-			? ownRow!.fence_token
-			: BigInt(ownRow!.fence_token as number);
+		typeof ownRow.fence_token === "bigint"
+			? ownRow.fence_token
+			: BigInt(ownRow.fence_token as number);
 	assert.strictEqual(ownFence, handle.fenceToken);
 	const stateRow = runDb.connection
 		.prepare(
@@ -184,17 +184,17 @@ function assertFullyEstablished(
 				committed_by_fence_token: number | bigint;
 		  }
 		| undefined;
-	assert.notStrictEqual(stateRow, undefined);
-	assert.strictEqual(stateRow?.committed_by_owner_token, handle.ownerToken);
+	assert.ok(stateRow !== undefined);
+	assert.strictEqual(stateRow.committed_by_owner_token, handle.ownerToken);
 	const stateFence =
-		typeof stateRow!.committed_by_fence_token === "bigint"
-			? stateRow!.committed_by_fence_token
-			: BigInt(stateRow!.committed_by_fence_token as number);
+		typeof stateRow.committed_by_fence_token === "bigint"
+			? stateRow.committed_by_fence_token
+			: BigInt(stateRow.committed_by_fence_token as number);
 	assert.strictEqual(stateFence, handle.fenceToken);
 	const rev =
-		typeof stateRow!.state_revision === "bigint"
-			? stateRow!.state_revision
-			: BigInt(stateRow!.state_revision as number);
+		typeof stateRow.state_revision === "bigint"
+			? stateRow.state_revision
+			: BigInt(stateRow.state_revision as number);
 	assert.strictEqual(rev, 0n);
 }
 // ---------------------------------------------------------------------------

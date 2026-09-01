@@ -606,9 +606,9 @@ await runOrchestrator<State>({
 			);
 			// Verify the seeded state is v3.
 			const preCheck = readAuthoritativeState(seedDb.connection);
-			assert.notStrictEqual(preCheck.state, null);
-			assert.strictEqual(preCheck.state!.schemaVersion, 3);
-			assert.strictEqual(preCheck.state!.stateRevision, "0");
+			assert.ok(preCheck.state !== null);
+			assert.strictEqual(preCheck.state.schemaVersion, 3);
+			assert.strictEqual(preCheck.state.stateRevision, "0");
 			// Release ownership so the resume process can acquire.
 			releaseOwnership({
 				db: seedDb.connection,
@@ -675,9 +675,9 @@ await runOrchestrator<State>({
 			});
 			try {
 				const authRead = readAuthoritativeState(checkDb.connection);
-				assert.notStrictEqual(authRead.state, null);
-				assert.strictEqual(authRead.state!.schemaVersion, STATE_SCHEMA_VERSION);
-				assert.strictEqual(authRead.state!.stateRevision, "2");
+				assert.ok(authRead.state !== null);
+				assert.strictEqual(authRead.state.schemaVersion, STATE_SCHEMA_VERSION);
+				assert.strictEqual(authRead.state.stateRevision, "2");
 				// Ownership released (FREE).
 				const ownRow = checkDb.connection
 					.prepare(
@@ -1219,7 +1219,7 @@ return io.done({ approved: result.approved, reviewed: true });
 			);
 			// Record authoritative state before .lock is introduced.
 			const beforeRead = readAuthoritativeState(seedDb.connection);
-			assert.notStrictEqual(beforeRead.state, null);
+			assert.ok(beforeRead.state !== null);
 			const beforeDigest = beforeRead.digest;
 			const beforeFence = seedDb.connection
 				.prepare("SELECT fence_token FROM run_ownership WHERE singleton = 1")
@@ -1228,7 +1228,8 @@ return io.done({ approved: result.approved, reviewed: true });
 						fence_token: number | bigint;
 				  }
 				| undefined;
-			const beforeRevision = beforeRead.state!.stateRevision;
+			assert.ok(beforeFence !== undefined);
+			const beforeRevision = beforeRead.state.stateRevision;
 			releaseOwnership({
 				db: seedDb.connection,
 				handle: acquireResult.handle,
@@ -1273,20 +1274,20 @@ return io.done({ approved: result.approved, reviewed: true });
 							ownership_status: string;
 					  }
 					| undefined;
-				assert.notStrictEqual(afterFence, undefined);
+				assert.ok(afterFence !== undefined);
 				assert.strictEqual(
-					typeof afterFence!.fence_token === "bigint"
-						? afterFence!.fence_token
-						: BigInt(afterFence!.fence_token as number),
-					typeof beforeFence!.fence_token === "bigint"
-						? (beforeFence!.fence_token as bigint)
-						: BigInt(beforeFence!.fence_token as number),
+					typeof afterFence.fence_token === "bigint"
+						? afterFence.fence_token
+						: BigInt(afterFence.fence_token as number),
+					typeof beforeFence.fence_token === "bigint"
+						? beforeFence.fence_token
+						: BigInt(beforeFence.fence_token as number),
 				);
 				const afterRead = readAuthoritativeState(checkDb.connection);
-				assert.notStrictEqual(afterRead.state, null);
-				assert.strictEqual(afterRead.state!.stateRevision, beforeRevision);
+				assert.ok(afterRead.state !== null);
+				assert.strictEqual(afterRead.state.stateRevision, beforeRevision);
 				assert.strictEqual(afterRead.digest, beforeDigest);
-				assert.strictEqual(afterFence!.ownership_status, "FREE");
+				assert.strictEqual(afterFence.ownership_status, "FREE");
 			} finally {
 				checkDb.close();
 			}
