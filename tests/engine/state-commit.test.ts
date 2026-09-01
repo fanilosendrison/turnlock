@@ -552,7 +552,8 @@ describe("commitStateWithProjection — strict orThrow", () => {
 				orchestratorName: "test",
 				nowEpochMs: epoch,
 				nowIso: iso,
-				leaseClockEpochMs: () => epoch,
+				// Keep the assertion independent of wall-clock millisecond resolution.
+				leaseClockEpochMs: () => epoch - 1,
 				leaseDurationMs: LEASE_MS,
 				contentionDeadlineMs: CONTENTION_DEADLINE_MS,
 			});
