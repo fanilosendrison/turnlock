@@ -1,9 +1,7 @@
-import type { OrchestratorErrorKind } from "../errors/base";
-
+import type { OrchestratorErrorKind } from "../errors/base.js";
 export interface OrchestratorLogger {
 	emit(event: OrchestratorEvent): void;
 }
-
 export type OrchestratorEvent =
 	| {
 			eventType: "orchestrator_start";

@@ -4,12 +4,10 @@
 // Every handler-produced content is installed as an immutable blob first,
 // then referenced via ArtifactRef in the authoritative SQLite state.  Only
 // after a successful fenced commit is a canonical projection emitted.
-
 export type ArtifactKind =
 	| "terminal-output"
 	| "delegation-manifest"
 	| "external-request-manifest";
-
 export interface ArtifactRef {
 	readonly kind: ArtifactKind;
 	readonly digestAlgorithm: "sha256";
@@ -21,7 +19,6 @@ export interface ArtifactRef {
 	readonly mediaType: "application/json";
 	readonly sizeBytes: number;
 }
-
 /** Record stored in state when the orchestrator terminates with "done". */
 export interface TerminalDoneRecord {
 	readonly kind: "done";
@@ -29,7 +26,6 @@ export interface TerminalDoneRecord {
 	readonly completedAt: string;
 	readonly completedAtEpochMs: number;
 }
-
 /** A serialized artifact ready for immutable installation. */
 export interface PreparedArtifact {
 	readonly ref: ArtifactRef;

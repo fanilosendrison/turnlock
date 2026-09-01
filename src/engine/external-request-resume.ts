@@ -4,35 +4,35 @@ import {
 	type ExternalRequestManifest,
 	externalRequestBinding,
 	isExternalRequestManifest,
-} from "../bindings/external-request";
+} from "../bindings/external-request.js";
 import {
 	ExternalResolutionMalformedError,
 	StateCorruptedError,
-} from "../errors/concrete";
-import { readAndVerifyArtifact } from "../services/artifact-store";
-import { clock } from "../services/clock";
-import { contentDigest } from "../services/content-digest";
+} from "../errors/concrete.js";
+import { readAndVerifyArtifact } from "../services/artifact-store.js";
+import { clock } from "../services/clock.js";
+import { contentDigest } from "../services/content-digest.js";
 import {
 	installImmutableFileAtomic,
 	readRegularFileBytes,
-} from "../services/immutable-file";
+} from "../services/immutable-file.js";
 import type {
 	PendingExternalRequestRecord,
 	StateFile,
-} from "../services/state-io";
-import type { DispatchContext } from "./context";
-import { doExit } from "./context";
-import { runDispatchLoop } from "./dispatch-loop";
+} from "../services/state-io.js";
+import type { DispatchContext } from "./context.js";
+import { doExit } from "./context.js";
+import { runDispatchLoop } from "./dispatch-loop.js";
+import { writeProtocolStdout } from "./protocol-stdout.js";
 import {
 	commitStateWithProjection,
 	releaseOwnershipFromContext,
-} from "./state-commit";
-import { emitFatalError } from "./terminal-handlers";
+} from "./state-commit.js";
+import { emitFatalError } from "./terminal-handlers.js";
 
 function isMissingFileError(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException).code === "ENOENT";
 }
-
 function acceptedResolutionPath<S extends object>(
 	ctx: DispatchContext<S>,
 	pending: PendingExternalRequestRecord,
@@ -43,7 +43,6 @@ function acceptedResolutionPath<S extends object>(
 		`${pending.label}.json`,
 	);
 }
-
 function assertConfinedDirectory<S extends object>(
 	ctx: DispatchContext<S>,
 	directoryName:
@@ -67,7 +66,6 @@ function assertConfinedDirectory<S extends object>(
 		);
 	}
 }
-
 function assertConfinedPaths<S extends object>(
 	ctx: DispatchContext<S>,
 	pending: PendingExternalRequestRecord,
@@ -85,10 +83,8 @@ function assertConfinedPaths<S extends object>(
 	) {
 		throw new StateCorruptedError("external request paths are invalid");
 	}
-
 	assertConfinedDirectory(ctx, "accepted-external-resolutions");
 }
-
 function readStoredManifest<S extends object>(
 	ctx: DispatchContext<S>,
 	pending: PendingExternalRequestRecord,
@@ -102,7 +98,6 @@ function readStoredManifest<S extends object>(
 		});
 	}
 	const raw = readAndVerifyArtifact(ctx.runDir, pending.manifestArtifact);
-
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(Buffer.from(raw).toString("utf-8"));
@@ -138,7 +133,6 @@ function readStoredManifest<S extends object>(
 	}
 	return parsed;
 }
-
 async function failMalformedResolution<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
@@ -174,7 +168,6 @@ async function failMalformedResolution<S extends object>(
 	);
 	return undefined as never;
 }
-
 async function reemitExternalRequest<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
@@ -206,11 +199,10 @@ async function reemitExternalRequest<S extends object>(
 		requestType: pending.requestType,
 		timestamp: clock.nowWallIso(),
 	});
-	process.stdout.write(block);
+	writeProtocolStdout(block);
 	releaseOwnershipFromContext(ctx);
 	doExit(0);
 }
-
 function parseAcceptedResolution(
 	raw: Buffer,
 	context: {
@@ -228,7 +220,6 @@ function parseAcceptedResolution(
 		});
 	}
 }
-
 function readAcceptedResolution(
 	acceptedPath: string,
 	expectedDigest: string | undefined,
@@ -237,7 +228,11 @@ function readAcceptedResolution(
 		readonly orchestratorName: string;
 		readonly phase: string;
 	},
-): { readonly raw: Buffer; readonly digest: string; readonly data: unknown } {
+): {
+	readonly raw: Buffer;
+	readonly digest: string;
+	readonly data: unknown;
+} {
 	let raw: Buffer;
 	try {
 		raw = readRegularFileBytes(acceptedPath);
@@ -256,7 +251,6 @@ function readAcceptedResolution(
 	}
 	return { raw, digest, data: parseAcceptedResolution(raw, context) };
 }
-
 function emitResolutionRead<S extends object>(
 	ctx: DispatchContext<S>,
 	pending: PendingExternalRequestRecord,
@@ -271,7 +265,6 @@ function emitResolutionRead<S extends object>(
 		timestamp: clock.nowWallIso(),
 	});
 }
-
 async function enterDispatchLoopWithAcceptedResolution<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
@@ -290,7 +283,6 @@ async function enterDispatchLoopWithAcceptedResolution<S extends object>(
 	});
 	return undefined as never;
 }
-
 export async function runExternalRequestResume<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
@@ -304,14 +296,12 @@ export async function runExternalRequestResume<S extends object>(
 		await emitFatalError(ctx, state, pending.resumeAt, error);
 		return undefined as never;
 	}
-
 	const errorContext = {
 		runId: ctx.runId,
 		orchestratorName: ctx.config.name,
 		phase: pending.resumeAt,
 	};
 	const expectedAcceptedPath = acceptedResolutionPath(ctx, pending);
-
 	if (
 		pending.acceptedResolutionPath !== undefined &&
 		pending.acceptedResolutionDigest !== undefined
@@ -335,7 +325,6 @@ export async function runExternalRequestResume<S extends object>(
 		);
 		return undefined as never;
 	}
-
 	let accepted: ReturnType<typeof readAcceptedResolution> | null = null;
 	try {
 		accepted = readAcceptedResolution(
@@ -351,7 +340,6 @@ export async function runExternalRequestResume<S extends object>(
 			return undefined as never;
 		}
 	}
-
 	if (accepted === null) {
 		try {
 			assertConfinedDirectory(ctx, "external-results");
@@ -359,7 +347,6 @@ export async function runExternalRequestResume<S extends object>(
 			await emitFatalError(ctx, state, pending.resumeAt, error);
 			return undefined as never;
 		}
-
 		let candidateRaw: Buffer;
 		try {
 			candidateRaw = readRegularFileBytes(pending.resultPath);
@@ -371,7 +358,6 @@ export async function runExternalRequestResume<S extends object>(
 			await failMalformedResolution(ctx, state, pending, "unreadable", error);
 			return undefined as never;
 		}
-
 		try {
 			JSON.parse(candidateRaw.toString("utf-8"));
 		} catch (error) {
@@ -385,7 +371,6 @@ export async function runExternalRequestResume<S extends object>(
 			);
 			return undefined as never;
 		}
-
 		try {
 			installImmutableFileAtomic(expectedAcceptedPath, candidateRaw);
 			accepted = readAcceptedResolution(
@@ -408,7 +393,6 @@ export async function runExternalRequestResume<S extends object>(
 			return undefined as never;
 		}
 	}
-
 	const acceptedPending: PendingExternalRequestRecord = {
 		...pending,
 		acceptedResolutionPath: expectedAcceptedPath,
@@ -425,7 +409,6 @@ export async function runExternalRequestResume<S extends object>(
 		await emitFatalError(ctx, state, pending.resumeAt, error);
 		return undefined as never;
 	}
-
 	await enterDispatchLoopWithAcceptedResolution(
 		ctx,
 		stateWithAcceptedResolution,

@@ -1,24 +1,24 @@
 import * as path from "node:path";
-import { STATE_SCHEMA_VERSION } from "../constants";
-import { enrich, OrchestratorError } from "../errors/base";
-import { PhaseError } from "../errors/concrete";
+import { STATE_SCHEMA_VERSION } from "../constants.js";
+import { enrich, OrchestratorError } from "../errors/base.js";
+import { PhaseError } from "../errors/concrete.js";
 import {
 	installPreparedArtifact,
 	prepareJsonArtifact,
-} from "../services/artifact-store";
-import { clock } from "../services/clock";
-import { writeProtocolBlock } from "../services/protocol";
-import type { StateFile } from "../services/state-io";
-import type { TerminalDoneRecord } from "../types/artifacts";
-import { type DispatchContext, doExit } from "./context";
-import { clearPendingYield } from "./pending-yield";
+} from "../services/artifact-store.js";
+import { clock } from "../services/clock.js";
+import { writeProtocolBlock } from "../services/protocol.js";
+import type { StateFile } from "../services/state-io.js";
+import type { TerminalDoneRecord } from "../types/artifacts.js";
+import { type DispatchContext, doExit } from "./context.js";
+import { clearPendingYield } from "./pending-yield.js";
+import { writeProtocolStdout } from "./protocol-stdout.js";
 import {
 	commitStateWithProjection,
 	projectCanonicalArtifactFenced,
 	releaseOwnershipBestEffort,
 	releaseOwnershipFromContext,
-} from "./state-commit";
-
+} from "./state-commit.js";
 export async function emitFatalError<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
@@ -38,7 +38,6 @@ export async function emitFatalError<S extends object>(
 		orchestratorName: ctx.config.name,
 		phase: currentPhase,
 	});
-
 	const nowIso = clock.nowWallIso();
 	ctx.logger.emit({
 		eventType: "phase_error",
@@ -57,7 +56,6 @@ export async function emitFatalError<S extends object>(
 		phasesExecuted: state.phasesExecuted,
 		timestamp: nowIso,
 	});
-
 	const block = writeProtocolBlock("ERROR", {
 		runId: ctx.runId,
 		orchestrator: ctx.config.name,
@@ -66,16 +64,17 @@ export async function emitFatalError<S extends object>(
 		phase: currentPhase,
 		phasesExecuted: state.phasesExecuted,
 	});
-	process.stdout.write(block);
-
+	writeProtocolStdout(block);
 	releaseOwnershipBestEffort(ctx);
 	doExit(1);
 }
-
 export async function handleDone<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
-	result: { kind: "done"; output: unknown },
+	result: {
+		kind: "done";
+		output: unknown;
+	},
 	accumulatedDurationMs: number,
 ): Promise<never> {
 	// 1. Serialize output and prepare immutable artifact.
@@ -97,21 +96,17 @@ export async function handleDone<S extends object>(
 			},
 		);
 	}
-
 	// 2. Install immutable blob (may be orphaned if commit fails — acceptable).
 	installPreparedArtifact(ctx.runDir, preparedOutput);
-
 	// 3. Build state with ArtifactRef, commit fenced.
 	const nowEpochMs = clock.nowEpochMs();
 	const nowIso = clock.nowWallIso();
-
 	const terminalResult: TerminalDoneRecord = {
 		kind: "done",
 		outputArtifact: preparedOutput.ref,
 		completedAt: nowIso,
 		completedAtEpochMs: nowEpochMs,
 	};
-
 	const newState: StateFile<S> = {
 		...clearPendingYield(state),
 		schemaVersion: STATE_SCHEMA_VERSION,
@@ -120,7 +115,6 @@ export async function handleDone<S extends object>(
 		terminalResult,
 	};
 	commitStateWithProjection(ctx, newState);
-
 	// 4. Project canonical output.json (fenced) — must happen before
 	//    announcing success, so a crash after commit but before projection
 	//    does not emit a misleading success event.
@@ -133,7 +127,6 @@ export async function handleDone<S extends object>(
 		},
 		outputPath,
 	);
-
 	// 5. Events only after both commit AND projection succeeded.
 	const endedAt = clock.nowWallIso();
 	ctx.logger.emit({
@@ -145,7 +138,6 @@ export async function handleDone<S extends object>(
 		phasesExecuted: newState.phasesExecuted,
 		timestamp: endedAt,
 	});
-
 	// 6. Emit protocol block.  The canonical outputPath is guaranteed to
 	//    exist because the fenced projection succeeded above.
 	const block = writeProtocolBlock("DONE", {
@@ -156,23 +148,23 @@ export async function handleDone<S extends object>(
 		phasesExecuted: newState.phasesExecuted,
 		durationMs: accumulatedDurationMs,
 	});
-	process.stdout.write(block);
-
+	writeProtocolStdout(block);
 	releaseOwnershipFromContext(ctx);
 	doExit(0);
 }
-
 export async function handleFail<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
-	result: { kind: "fail"; error: Error },
+	result: {
+		kind: "fail";
+		error: Error;
+	},
 	accumulatedDurationMs: number,
 ): Promise<never> {
 	const errorKind =
 		result.error instanceof OrchestratorError
 			? result.error.kind
 			: "phase_error";
-
 	const newState: StateFile<S> = {
 		...clearPendingYield(state),
 		schemaVersion: STATE_SCHEMA_VERSION,
@@ -180,7 +172,6 @@ export async function handleFail<S extends object>(
 		accumulatedDurationMs,
 	};
 	commitStateWithProjection(ctx, newState);
-
 	const nowIso = clock.nowWallIso();
 	ctx.logger.emit({
 		eventType: "phase_error",
@@ -199,7 +190,6 @@ export async function handleFail<S extends object>(
 		phasesExecuted: newState.phasesExecuted,
 		timestamp: nowIso,
 	});
-
 	const block = writeProtocolBlock("ERROR", {
 		runId: ctx.runId,
 		orchestrator: ctx.config.name,
@@ -208,8 +198,7 @@ export async function handleFail<S extends object>(
 		phase: state.currentPhase,
 		phasesExecuted: newState.phasesExecuted,
 	});
-	process.stdout.write(block);
-
+	writeProtocolStdout(block);
 	releaseOwnershipFromContext(ctx);
 	doExit(1);
 }

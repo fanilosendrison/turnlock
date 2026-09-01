@@ -7,24 +7,28 @@ import {
 	IndeterminatePhaseExecutionError,
 	InitialDispatchAlreadyClaimedError,
 	ProtocolError,
-} from "../errors/concrete";
-import { readAndVerifyArtifact } from "../services/artifact-store";
-import { clock } from "../services/clock";
-import { writeProtocolBlock } from "../services/protocol";
-import { resolveRetryDecision } from "../services/retry-resolver";
-import type { PendingDelegationRecord, StateFile } from "../services/state-io";
-import type { TerminalDoneRecord } from "../types/artifacts";
-import type { DispatchContext } from "./context";
-import { doExit } from "./context";
-import { reemitDelegationAttempt } from "./delegation-reemit";
-import { runDispatchLoop } from "./dispatch-loop";
-import { runExternalRequestResume } from "./external-request-resume";
+} from "../errors/concrete.js";
+import { readAndVerifyArtifact } from "../services/artifact-store.js";
+import { clock } from "../services/clock.js";
+import { writeProtocolBlock } from "../services/protocol.js";
+import { resolveRetryDecision } from "../services/retry-resolver.js";
+import type {
+	PendingDelegationRecord,
+	StateFile,
+} from "../services/state-io.js";
+import type { TerminalDoneRecord } from "../types/artifacts.js";
+import type { DispatchContext } from "./context.js";
+import { doExit } from "./context.js";
+import { reemitDelegationAttempt } from "./delegation-reemit.js";
+import { runDispatchLoop } from "./dispatch-loop.js";
+import { runExternalRequestResume } from "./external-request-resume.js";
+import { writeProtocolStdout } from "./protocol-stdout.js";
 import {
 	claimInitialDispatchWithProjection,
 	projectCanonicalArtifactFenced,
 	releaseOwnershipFromContext,
-} from "./state-commit";
-import { emitFatalError } from "./terminal-handlers";
+} from "./state-commit.js";
+import { emitFatalError } from "./terminal-handlers.js";
 
 function buildExpectedResultPaths(
 	runDir: string,
@@ -36,14 +40,12 @@ function buildExpectedResultPaths(
 	const batchDir = path.join(runDir, "results", `${pd.label}-${pd.attempt}`);
 	return (pd.jobIds ?? []).map((id) => path.join(batchDir, `${id}.json`));
 }
-
 interface Classification {
 	readonly allPresent: boolean;
 	readonly allParseable: boolean;
 	readonly anyMalformed: boolean;
 	readonly loadedData: unknown | readonly unknown[] | null;
 }
-
 function classifyResultFiles(
 	runDir: string,
 	pd: PendingDelegationRecord,
@@ -52,7 +54,6 @@ function classifyResultFiles(
 	let allPresent = true;
 	let anyMalformed = false;
 	const parsedValues: unknown[] = [];
-
 	for (const p of paths) {
 		if (!fs.existsSync(p)) {
 			allPresent = false;
@@ -71,7 +72,6 @@ function classifyResultFiles(
 			anyMalformed = true;
 		}
 	}
-
 	const allParseable =
 		allPresent && !anyMalformed && parsedValues.length === paths.length;
 	return {
@@ -85,7 +85,6 @@ function classifyResultFiles(
 			: null,
 	};
 }
-
 function findFirstMalformedPath(
 	runDir: string,
 	pd: PendingDelegationRecord,
@@ -101,7 +100,6 @@ function findFirstMalformedPath(
 	}
 	return null;
 }
-
 function safeFileSize(p: string): number {
 	try {
 		return fs.statSync(p).size;
@@ -109,14 +107,12 @@ function safeFileSize(p: string): number {
 		return -1;
 	}
 }
-
 async function recoverTerminalState<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
 	terminalResult: TerminalDoneRecord,
 ): Promise<never> {
 	const outputPath = path.join(ctx.runDir, "output.json");
-
 	// Reconstruct output.json from the immutable blob if missing or invalid.
 	let needReconstruct = false;
 	try {
@@ -133,7 +129,6 @@ async function recoverTerminalState<S extends object>(
 	} catch {
 		needReconstruct = true;
 	}
-
 	if (needReconstruct) {
 		try {
 			projectCanonicalArtifactFenced(
@@ -149,7 +144,6 @@ async function recoverTerminalState<S extends object>(
 			return undefined as never;
 		}
 	}
-
 	// Re-emit the DONE protocol block (idempotent — the parent may have
 	// already seen it, but we re-emit for safety).
 	ctx.logger.emit({
@@ -161,7 +155,6 @@ async function recoverTerminalState<S extends object>(
 		phasesExecuted: state.phasesExecuted,
 		timestamp: clock.nowWallIso(),
 	});
-
 	const block = writeProtocolBlock("DONE", {
 		runId: ctx.runId,
 		orchestrator: ctx.config.name,
@@ -170,12 +163,10 @@ async function recoverTerminalState<S extends object>(
 		phasesExecuted: state.phasesExecuted,
 		durationMs: state.accumulatedDurationMs,
 	});
-	process.stdout.write(block);
-
+	writeProtocolStdout(block);
 	releaseOwnershipFromContext(ctx);
 	doExit(0);
 }
-
 async function handleDelegationError<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
@@ -192,7 +183,6 @@ async function handleDelegationError<S extends object>(
 		orchestratorName: ctx.config.name,
 		phase: pd.resumeAt,
 	});
-
 	if (kind === "delegation_schema") {
 		const malformedPath = findFirstMalformedPath(ctx.runDir, pd);
 		if (malformedPath) {
@@ -211,7 +201,6 @@ async function handleDelegationError<S extends object>(
 			});
 		}
 	}
-
 	const decision = resolveRetryDecision(
 		err,
 		pd.attempt,
@@ -228,11 +217,9 @@ async function handleDelegationError<S extends object>(
 		);
 		return undefined as never;
 	}
-
 	await emitFatalError(ctx, state, state.currentPhase, err);
 	return undefined as never;
 }
-
 async function enterDispatchLoopWithResults<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
@@ -250,12 +237,10 @@ async function enterDispatchLoopWithResults<S extends object>(
 		filesLoaded,
 		timestamp: clock.nowWallIso(),
 	});
-
 	const stateForDispatch: StateFile<S> = {
 		...state,
 		currentPhase: pd.resumeAt,
 	};
-
 	await runDispatchLoop(
 		ctx,
 		stateForDispatch,
@@ -284,7 +269,6 @@ async function enterDispatchLoopWithResults<S extends object>(
 	);
 	return undefined as never;
 }
-
 export async function runHandleResume<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
@@ -297,13 +281,11 @@ export async function runHandleResume<S extends object>(
 		await recoverTerminalState(ctx, state, state.terminalResult);
 		return undefined as never;
 	}
-
 	const pendingExternalRequest = state.pendingExternalRequest;
 	if (pendingExternalRequest) {
 		await runExternalRequestResume(ctx, state, pendingExternalRequest);
 		return undefined as never;
 	}
-
 	const pd = state.pendingDelegation;
 	if (!pd) {
 		const isPristineBootstrap =
@@ -314,7 +296,6 @@ export async function runHandleResume<S extends object>(
 			state.usedLabels.length === 0 &&
 			state.pendingExternalRequest === undefined &&
 			state.terminalResult === undefined;
-
 		if (isPristineBootstrap) {
 			// Claim the one-time bootstrap authorization before invoking the
 			// phase. A crash after this durable transition is intentionally
@@ -323,7 +304,6 @@ export async function runHandleResume<S extends object>(
 			await runDispatchLoop(ctx, state);
 			return undefined as never;
 		}
-
 		if (!pendingInitialDispatch && state.phasesExecuted === 0) {
 			throw new InitialDispatchAlreadyClaimedError(
 				"Initial dispatch was already claimed but the phase crashed before producing a delegation or terminal result — replay is intentionally forbidden",
@@ -334,7 +314,6 @@ export async function runHandleResume<S extends object>(
 				},
 			);
 		}
-
 		throw new IndeterminatePhaseExecutionError(
 			"Resume found no pending delegation and the state cannot be deterministically resumed — the phase may have partially executed",
 			{
@@ -344,11 +323,9 @@ export async function runHandleResume<S extends object>(
 			},
 		);
 	}
-
 	const classification = classifyResultFiles(ctx.runDir, pd);
 	const nowEpoch = clock.nowEpochMs();
 	const deadlinePassed = nowEpoch > pd.deadlineAtEpochMs;
-
 	if (classification.allParseable) {
 		await enterDispatchLoopWithResults(
 			ctx,
@@ -358,7 +335,6 @@ export async function runHandleResume<S extends object>(
 		);
 		return undefined as never;
 	}
-
 	if (classification.anyMalformed) {
 		await handleDelegationError(
 			ctx,
@@ -369,7 +345,6 @@ export async function runHandleResume<S extends object>(
 		);
 		return undefined as never;
 	}
-
 	if (!classification.allPresent && deadlinePassed) {
 		await handleDelegationError(
 			ctx,
@@ -380,7 +355,6 @@ export async function runHandleResume<S extends object>(
 		);
 		return undefined as never;
 	}
-
 	if (!classification.allPresent && !deadlinePassed) {
 		await emitFatalError(
 			ctx,
@@ -397,7 +371,6 @@ export async function runHandleResume<S extends object>(
 		);
 		return undefined as never;
 	}
-
 	throw new ProtocolError("classification inconsistent", {
 		runId: ctx.runId,
 		orchestratorName: ctx.config.name,

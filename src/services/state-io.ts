@@ -5,29 +5,26 @@ import {
 	MAX_EVENT_FIELD_LENGTH,
 	MAX_EXTERNAL_LABEL_LENGTH,
 	STATE_SCHEMA_VERSION,
-} from "../constants";
+} from "../constants.js";
 import {
 	type MigrationBlockReason,
 	StateCorruptedError,
 	StateMigrationBlockedError,
 	StateVersionMismatchError,
-} from "../errors/concrete";
-import type { ArtifactRef, TerminalDoneRecord } from "../types/artifacts";
-import { installPreparedArtifact } from "./artifact-store";
-import { contentDigest, isContentDigest } from "./content-digest";
-import { summarizeZodError } from "./validator";
+} from "../errors/concrete.js";
+import type { ArtifactRef, TerminalDoneRecord } from "../types/artifacts.js";
+import { installPreparedArtifact } from "./artifact-store.js";
+import { contentDigest, isContentDigest } from "./content-digest.js";
+import { summarizeZodError } from "./validator.js";
 
 // ---------------------------------------------------------------------------
 // Schema version history
 // ---------------------------------------------------------------------------
-
 const LEGACY_STATE_SCHEMA_VERSION = 2 as const;
 const PREVIOUS_STATE_SCHEMA_VERSION = 3 as const;
-
 // ---------------------------------------------------------------------------
 // Types (v4 — current)
 // ---------------------------------------------------------------------------
-
 export interface PendingDelegationRecord {
 	readonly label: string;
 	readonly kind: "prompt" | "batch";
@@ -46,7 +43,6 @@ export interface PendingDelegationRecord {
 	};
 	readonly jobIds?: readonly string[];
 }
-
 export interface PendingExternalRequestRecord {
 	readonly requestId: string;
 	readonly label: string;
@@ -65,7 +61,6 @@ export interface PendingExternalRequestRecord {
 	readonly acceptedResolutionDigest?: string;
 	readonly acceptedAt?: string;
 }
-
 export interface StateFile<State> {
 	readonly schemaVersion: typeof STATE_SCHEMA_VERSION;
 	readonly runId: string;
@@ -85,7 +80,6 @@ export interface StateFile<State> {
 	readonly terminalResult?: TerminalDoneRecord;
 	readonly usedLabels: readonly string[];
 }
-
 export interface StateSnapshot<State> {
 	readonly state: StateFile<State> | null;
 	readonly migratedFromVersion:
@@ -93,11 +87,9 @@ export interface StateSnapshot<State> {
 		| typeof PREVIOUS_STATE_SCHEMA_VERSION
 		| null;
 }
-
 // ---------------------------------------------------------------------------
 // ArtifactRef helpers
 // ---------------------------------------------------------------------------
-
 function isArtifactRef(value: unknown): value is ArtifactRef {
 	if (typeof value !== "object" || value === null) return false;
 	const r = value as Record<string, unknown>;
@@ -116,7 +108,6 @@ function isArtifactRef(value: unknown): value is ArtifactRef {
 		r.sizeBytes >= 0
 	);
 }
-
 function assertArtifactRef(
 	value: unknown,
 	field: string,
@@ -134,7 +125,6 @@ function assertArtifactRef(
 	}
 	return value;
 }
-
 function isTerminalDoneRecord(value: unknown): value is TerminalDoneRecord {
 	if (typeof value !== "object" || value === null) return false;
 	const r = value as Record<string, unknown>;
@@ -147,24 +137,19 @@ function isTerminalDoneRecord(value: unknown): value is TerminalDoneRecord {
 		Number.isFinite(r.completedAtEpochMs)
 	);
 }
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 function describeError(err: unknown): string {
 	if (err instanceof Error) return err.message.slice(0, 200);
 	return String(err).slice(0, 200);
 }
-
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;
 }
-
 function isNonNegativeNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
-
 function isIsoTimestamp(value: unknown): value is string {
 	if (typeof value !== "string") return false;
 	try {
@@ -173,7 +158,6 @@ function isIsoTimestamp(value: unknown): value is string {
 		return false;
 	}
 }
-
 function requireRecord(value: unknown, field: string): Record<string, unknown> {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new StateCorruptedError(
@@ -182,11 +166,9 @@ function requireRecord(value: unknown, field: string): Record<string, unknown> {
 	}
 	return value as Record<string, unknown>;
 }
-
 // ---------------------------------------------------------------------------
 // Validation (v4)
 // ---------------------------------------------------------------------------
-
 function validatePendingDelegationV4(value: unknown): void {
 	const pending = requireRecord(value, "pendingDelegation");
 	if (!isNonEmptyString(pending.label)) {
@@ -252,7 +234,6 @@ function validatePendingDelegationV4(value: unknown): void {
 		throw new StateCorruptedError("pendingDelegation.jobIds invalid");
 	}
 }
-
 function validatePendingExternalRequestV4(
 	value: unknown,
 	runId: string,
@@ -306,7 +287,6 @@ function validatePendingExternalRequestV4(
 			);
 		}
 	}
-
 	const acceptedFields = [
 		pending.acceptedResolutionPath,
 		pending.acceptedResolutionDigest,
@@ -333,7 +313,6 @@ function validatePendingExternalRequestV4(
 			"pendingExternalRequest accepted resolution fields are invalid",
 		);
 	}
-
 	if (pending.requestId !== `${runId}/${pending.label}`) {
 		throw new StateCorruptedError("pendingExternalRequest identity invalid");
 	}
@@ -343,11 +322,9 @@ function validatePendingExternalRequestV4(
 		);
 	}
 }
-
 // ---------------------------------------------------------------------------
 // Validation (v3 — backward-compatible reads)
 // ---------------------------------------------------------------------------
-
 function validatePendingDelegationV3(value: unknown): void {
 	const pending = requireRecord(value, "pendingDelegation");
 	if (!isNonEmptyString(pending.label)) {
@@ -394,7 +371,6 @@ function validatePendingDelegationV3(value: unknown): void {
 		throw new StateCorruptedError("pendingDelegation.jobIds invalid");
 	}
 }
-
 function validatePendingExternalRequestV3(
 	value: unknown,
 	runId: string,
@@ -420,7 +396,6 @@ function validatePendingExternalRequestV3(
 	) {
 		throw new StateCorruptedError("pendingExternalRequest fields invalid");
 	}
-
 	const acceptedFields = [
 		pending.acceptedResolutionPath,
 		pending.acceptedResolutionDigest,
@@ -447,7 +422,6 @@ function validatePendingExternalRequestV3(
 			"pendingExternalRequest accepted resolution fields are invalid",
 		);
 	}
-
 	if (pending.requestId !== `${runId}/${pending.label}`) {
 		throw new StateCorruptedError("pendingExternalRequest identity invalid");
 	}
@@ -457,11 +431,9 @@ function validatePendingExternalRequestV3(
 		);
 	}
 }
-
 // ---------------------------------------------------------------------------
 // Canonical shape validation
 // ---------------------------------------------------------------------------
-
 function validateCanonicalShape(
 	obj: Record<string, unknown>,
 	version: 2 | 3 | 4,
@@ -496,7 +468,6 @@ function validateCanonicalShape(
 			);
 		}
 	}
-
 	const hasDelegation = obj.pendingDelegation !== undefined;
 	const hasExternal = obj.pendingExternalRequest !== undefined;
 	if (hasDelegation && obj.pendingDelegation === null) {
@@ -537,7 +508,6 @@ function validateCanonicalShape(
 			);
 		}
 	}
-
 	// v4: optional terminalResult
 	if (version >= 4 && obj.terminalResult !== undefined) {
 		if (!isTerminalDoneRecord(obj.terminalResult)) {
@@ -547,15 +517,12 @@ function validateCanonicalShape(
 		}
 	}
 }
-
 // ---------------------------------------------------------------------------
 // Parsing + migration
 // ---------------------------------------------------------------------------
-
 function parseStateFile(runDir: string): Record<string, unknown> | null {
 	const statePath = path.join(runDir, "state.json");
 	if (!fs.existsSync(statePath)) return null;
-
 	let raw: string;
 	try {
 		raw = fs.readFileSync(statePath, "utf-8");
@@ -565,7 +532,6 @@ function parseStateFile(runDir: string): Record<string, unknown> | null {
 			{ cause: err },
 		);
 	}
-
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
@@ -575,13 +541,11 @@ function parseStateFile(runDir: string): Record<string, unknown> | null {
 			{ cause: err },
 		);
 	}
-
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new StateCorruptedError("state.json must be a JSON object");
 	}
 	return parsed as Record<string, unknown>;
 }
-
 function migrateV2ToV3(
 	parsed: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -592,11 +556,9 @@ function migrateV2ToV3(
 	Reflect.deleteProperty(migrated, "pendingExternalRequest");
 	return migrated;
 }
-
 // ---------------------------------------------------------------------------
 // Migration result type (v3 → v4)
 // ---------------------------------------------------------------------------
-
 export type MigrationResult =
 	| {
 			readonly kind: "MIGRATED";
@@ -608,7 +570,6 @@ export type MigrationResult =
 			readonly path?: string;
 			readonly cause?: unknown;
 	  };
-
 /** Migrate a v3 state record to v4 by converting manifestPath/manifestDigest
  *  fields to manifestArtifact.  Reads the old manifest file from disk to
  *  compute the digest and derive the immutable blob path.
@@ -623,11 +584,9 @@ export function migrateV3ToV4(
 	const migrated: Record<string, unknown> = {
 		...parsed,
 	};
-
 	let allConverted = true;
 	let blockReason: MigrationBlockReason | null = null;
 	let blockPath: string | undefined;
-
 	// Convert pendingDelegation.manifestPath → manifestArtifact
 	if (migrated.pendingDelegation !== undefined) {
 		const pd = migrated.pendingDelegation as Record<string, unknown>;
@@ -662,7 +621,6 @@ export function migrateV3ToV4(
 			}
 		}
 	}
-
 	// Convert pendingExternalRequest.manifestPath + manifestDigest → manifestArtifact
 	if (migrated.pendingExternalRequest !== undefined) {
 		const per = migrated.pendingExternalRequest as Record<string, unknown>;
@@ -710,13 +668,11 @@ export function migrateV3ToV4(
 			}
 		}
 	}
-
 	// A no-op v3 (no legacy fields at all) is a successful migration.
 	if (allConverted) {
 		migrated.schemaVersion = STATE_SCHEMA_VERSION;
 		return { kind: "MIGRATED", state: migrated };
 	}
-
 	return blockPath !== undefined
 		? {
 				kind: "BLOCKED" as const,
@@ -728,7 +684,6 @@ export function migrateV3ToV4(
 				reason: blockReason ?? "MANIFEST_MISSING",
 			};
 }
-
 /** Resolve a manifest path that may be absolute (old code used
  *  path.join(runDir, "delegations", ...) which produces absolute paths when
  *  runDir is absolute) or relative.  Returns null if the path cannot be
@@ -741,9 +696,7 @@ function resolveManifestPath(runDir: string, stored: string): string | null {
 	const candidate = path.isAbsolute(stored)
 		? path.resolve(stored)
 		: path.resolve(root, stored);
-
 	const relative = path.relative(root, candidate);
-
 	if (
 		relative === "" ||
 		relative.startsWith(`..${path.sep}`) ||
@@ -752,18 +705,20 @@ function resolveManifestPath(runDir: string, stored: string): string | null {
 	) {
 		return null;
 	}
-
 	return candidate;
 }
-
 // ---------------------------------------------------------------------------
 // Manifest byte reading with reason discrimination
 // ---------------------------------------------------------------------------
-
 type ManifestReadResult =
-	| { readonly kind: "OK"; readonly bytes: Buffer }
-	| { readonly kind: "MISSING"; readonly reason: MigrationBlockReason };
-
+	| {
+			readonly kind: "OK";
+			readonly bytes: Buffer;
+	  }
+	| {
+			readonly kind: "MISSING";
+			readonly reason: MigrationBlockReason;
+	  };
 /** Try to read manifest bytes, discriminating between ENOENT, symlinks, and
  *  non-regular files.  Symlinks are rejected for migration safety. */
 function tryReadManifestBytesWithReason(filePath: string): ManifestReadResult {
@@ -783,7 +738,6 @@ function tryReadManifestBytesWithReason(filePath: string): ManifestReadResult {
 		throw err;
 	}
 }
-
 /** Install artifact bytes as an immutable blob.  Delegates to the
  *  canonical artifact-store primitive.  Idempotent. */
 function installArtifactBlob(
@@ -793,7 +747,6 @@ function installArtifactBlob(
 ): void {
 	installPreparedArtifact(runDir, { ref, bytes });
 }
-
 /** Build an ArtifactRef from content bytes without performing I/O.
  *  The relativePath is derived from the digest. */
 function buildArtifactRefFromBytes(
@@ -813,11 +766,9 @@ function buildArtifactRefFromBytes(
 		sizeBytes: bytes.length,
 	};
 }
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
 export function readStateSnapshot<S>(
 	runDir: string,
 	schema?: ZodSchema<S>,
@@ -829,11 +780,9 @@ export function readStateSnapshot<S>(
 			"state.json missing required field: schemaVersion",
 		);
 	}
-
 	const version = parsed.schemaVersion;
 	let current: Record<string, unknown>;
 	let migratedFromVersion: StateSnapshot<S>["migratedFromVersion"] = null;
-
 	if (version === LEGACY_STATE_SCHEMA_VERSION) {
 		validateCanonicalShape(parsed, LEGACY_STATE_SCHEMA_VERSION);
 		current = migrateV2ToV3(parsed);
@@ -873,10 +822,8 @@ export function readStateSnapshot<S>(
 			`state.json schemaVersion mismatch: expected ${STATE_SCHEMA_VERSION}, ${PREVIOUS_STATE_SCHEMA_VERSION}, or ${LEGACY_STATE_SCHEMA_VERSION}, got ${String(version)}`,
 		);
 	}
-
 	// After migration, current.schemaVersion is always STATE_SCHEMA_VERSION.
 	validateCanonicalShape(current, STATE_SCHEMA_VERSION);
-
 	if (schema !== undefined) {
 		const result = schema.safeParse(current.data);
 		if (!result.success) {
@@ -887,20 +834,17 @@ export function readStateSnapshot<S>(
 		}
 		current = { ...current, data: result.data };
 	}
-
 	return {
 		state: current as unknown as StateFile<S>,
 		migratedFromVersion,
 	};
 }
-
 export function readState<S>(
 	runDir: string,
 	schema?: ZodSchema<S>,
 ): StateFile<S> | null {
 	return readStateSnapshot(runDir, schema).state;
 }
-
 export function writeStateAtomic<S>(
 	runDir: string,
 	state: StateFile<S>,
@@ -924,7 +868,6 @@ export function writeStateAtomic<S>(
 		state as unknown as Record<string, unknown>,
 		STATE_SCHEMA_VERSION,
 	);
-
 	const json = JSON.stringify(state);
 	const statePath = path.join(runDir, "state.json");
 	const tmpPath = path.join(runDir, "state.json.tmp");

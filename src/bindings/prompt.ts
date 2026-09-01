@@ -1,16 +1,14 @@
 import * as path from "node:path";
-import { writeProtocolBlock } from "../services/protocol";
-import type { PromptDelegationRequest } from "../types/delegation";
+import { writeProtocolBlock } from "../services/protocol.js";
+import type { PromptDelegationRequest } from "../types/delegation.js";
 import type {
 	DelegationBinding,
 	DelegationContext,
 	DelegationManifest,
-} from "./types";
-import { MANIFEST_VERSION } from "./types";
-
+} from "./types.js";
+import { MANIFEST_VERSION } from "./types.js";
 export const promptBinding: DelegationBinding<PromptDelegationRequest> = {
 	kind: "prompt",
-
 	buildManifest(
 		request: PromptDelegationRequest,
 		context: DelegationContext,
@@ -20,7 +18,6 @@ export const promptBinding: DelegationBinding<PromptDelegationRequest> = {
 			"results",
 			`${request.label}-${context.attempt}.json`,
 		);
-
 		return {
 			manifestVersion: MANIFEST_VERSION,
 			runId: context.runId,
@@ -40,7 +37,6 @@ export const promptBinding: DelegationBinding<PromptDelegationRequest> = {
 			resultPath,
 		};
 	},
-
 	buildProtocolBlock(
 		manifest: DelegationManifest,
 		manifestPath: string,

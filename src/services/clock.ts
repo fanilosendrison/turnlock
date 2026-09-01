@@ -1,7 +1,6 @@
-import type { Clock } from "../types/config";
+import type { Clock } from "../types/config.js";
 
 export type { Clock };
-
 export const clock: Clock = {
 	nowWall: (): Date => new Date(),
 	nowWallIso: (): string => new Date().toISOString(),

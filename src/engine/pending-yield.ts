@@ -1,5 +1,4 @@
-import type { StateFile } from "../services/state-io";
-
+import type { StateFile } from "../services/state-io.js";
 export function clearPendingYield<S>(state: StateFile<S>): StateFile<S> {
 	const cleared = { ...state };
 	Reflect.deleteProperty(cleared, "pendingDelegation");

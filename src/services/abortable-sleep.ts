@@ -1,5 +1,4 @@
-import { AbortedError } from "../errors/concrete";
-
+import { AbortedError } from "../errors/concrete.js";
 export function abortableSleep(
 	delayMs: number,
 	signal: AbortSignal,
@@ -10,7 +9,6 @@ export function abortableSleep(
 		);
 	}
 	if (delayMs <= 0) return Promise.resolve();
-
 	return new Promise<void>((resolve, reject) => {
 		const onAbort = () => {
 			clearTimeout(timer);
