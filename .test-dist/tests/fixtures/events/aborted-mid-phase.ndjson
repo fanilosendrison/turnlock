@@ -1,0 +1,4 @@
+{"eventType":"orchestrator_start","runId":"01HX0000000000000000000013","orchestratorName":"test-orch","initialPhase":"a","timestamp":"2026-04-19T12:00:00.000Z"}
+{"eventType":"phase_start","runId":"01HX0000000000000000000013","phase":"a","attemptCount":1,"timestamp":"2026-04-19T12:00:00.050Z"}
+{"eventType":"phase_error","runId":"01HX0000000000000000000013","phase":"a","errorKind":"phase_error","message":"Received SIGINT","timestamp":"2026-04-19T12:00:05.000Z"}
+{"eventType":"orchestrator_end","runId":"01HX0000000000000000000013","orchestratorName":"test-orch","success":false,"durationMs":5000,"phasesExecuted":0,"timestamp":"2026-04-19T12:00:05.010Z"}

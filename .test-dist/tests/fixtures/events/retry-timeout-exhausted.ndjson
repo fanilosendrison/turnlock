@@ -1,0 +1,4 @@
+{"eventType":"orchestrator_start","runId":"01HX0000000000000000000012","orchestratorName":"test-orch","initialPhase":"a","timestamp":"2026-04-19T12:00:00.000Z"}
+{"eventType":"phase_start","runId":"01HX0000000000000000000012","phase":"b","attemptCount":3,"timestamp":"2026-04-19T12:20:00.000Z"}
+{"eventType":"phase_error","runId":"01HX0000000000000000000012","phase":"b","errorKind":"delegation_timeout","message":"deadline passed after 3 retries","timestamp":"2026-04-19T12:20:00.050Z"}
+{"eventType":"orchestrator_end","runId":"01HX0000000000000000000012","orchestratorName":"test-orch","success":false,"durationMs":1200050,"phasesExecuted":2,"timestamp":"2026-04-19T12:20:00.060Z"}

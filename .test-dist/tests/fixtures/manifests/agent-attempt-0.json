@@ -1,0 +1,18 @@
+{
+	"manifestVersion": 2,
+	"runId": "01HX0000000000000000000003",
+	"orchestratorName": "test-orch",
+	"phase": "a",
+	"resumeAt": "b",
+	"label": "rev",
+	"kind": "prompt",
+	"emittedAt": "2026-04-19T12:10:00.000Z",
+	"emittedAtEpochMs": 1745063400000,
+	"timeoutMs": 600000,
+	"deadlineAtEpochMs": 1745064000000,
+	"attempt": 0,
+	"maxAttempts": 3,
+	"worker": "reviewer",
+	"prompt": "Review src/foo.ts",
+	"resultPath": "/tmp/results/rev-0.json"
+}

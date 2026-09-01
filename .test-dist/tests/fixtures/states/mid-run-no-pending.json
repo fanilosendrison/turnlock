@@ -1,0 +1,14 @@
+{
+	"schemaVersion": 2,
+	"runId": "01HX0000000000000000000001",
+	"orchestratorName": "test-orch",
+	"startedAt": "2026-04-19T12:00:00.000Z",
+	"startedAtEpochMs": 1745062800000,
+	"lastTransitionAt": "2026-04-19T12:05:00.000Z",
+	"lastTransitionAtEpochMs": 1745063100000,
+	"currentPhase": "b",
+	"phasesExecuted": 2,
+	"accumulatedDurationMs": 1234,
+	"data": { "count": 2 },
+	"usedLabels": ["foo"]
+}

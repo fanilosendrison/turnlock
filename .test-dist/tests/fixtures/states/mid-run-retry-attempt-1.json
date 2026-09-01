@@ -1,0 +1,28 @@
+{
+	"schemaVersion": 2,
+	"runId": "01HX0000000000000000000005",
+	"orchestratorName": "test-orch",
+	"startedAt": "2026-04-19T12:00:00.000Z",
+	"startedAtEpochMs": 1745062800000,
+	"lastTransitionAt": "2026-04-19T12:10:00.000Z",
+	"lastTransitionAtEpochMs": 1745063400000,
+	"currentPhase": "a",
+	"phasesExecuted": 1,
+	"accumulatedDurationMs": 500,
+	"data": {},
+	"pendingDelegation": {
+		"label": "foo",
+		"kind": "prompt",
+		"resumeAt": "b",
+		"manifestPath": "/tmp/delegations/foo-1.json",
+		"emittedAtEpochMs": 1745063400000,
+		"deadlineAtEpochMs": 1745064000000,
+		"attempt": 1,
+		"effectiveRetryPolicy": {
+			"maxAttempts": 3,
+			"backoffBaseMs": 1000,
+			"maxBackoffMs": 30000
+		}
+	},
+	"usedLabels": ["foo"]
+}

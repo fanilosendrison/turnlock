@@ -1,0 +1,39 @@
+{
+	"manifestVersion": 2,
+	"runId": "01HX0000000000000000000004",
+	"orchestratorName": "test-orch",
+	"phase": "a",
+	"resumeAt": "b",
+	"label": "batch",
+	"kind": "batch",
+	"emittedAt": "2026-04-19T12:15:00.000Z",
+	"emittedAtEpochMs": 1745063700000,
+	"timeoutMs": 600000,
+	"deadlineAtEpochMs": 1745064300000,
+	"attempt": 1,
+	"maxAttempts": 3,
+	"worker": "reviewer",
+	"jobs": [
+		{
+			"id": "j1",
+			"prompt": "p1",
+			"resultPath": "/tmp/results/batch-1/j1.json"
+		},
+		{
+			"id": "j2",
+			"prompt": "p2",
+			"resultPath": "/tmp/results/batch-1/j2.json"
+		},
+		{
+			"id": "j3",
+			"prompt": "p3",
+			"resultPath": "/tmp/results/batch-1/j3.json"
+		},
+		{
+			"id": "j4",
+			"prompt": "p4",
+			"resultPath": "/tmp/results/batch-1/j4.json"
+		},
+		{ "id": "j5", "prompt": "p5", "resultPath": "/tmp/results/batch-1/j5.json" }
+	]
+}

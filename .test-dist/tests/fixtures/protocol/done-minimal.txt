@@ -1,0 +1,11 @@
+
+@@TURNLOCK@@
+version: 3
+run_id: 01HX0000000000000000000001
+orchestrator: test-orch
+action: DONE
+output: /tmp/output.json
+success: true
+phases_executed: 3
+duration_ms: 1234
+@@END@@

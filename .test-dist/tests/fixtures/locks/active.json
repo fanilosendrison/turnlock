@@ -1,0 +1,6 @@
+{
+	"ownerPid": 12345,
+	"ownerToken": "01HXOWNER00000000000000000",
+	"acquiredAtEpochMs": 1745062800000,
+	"leaseUntilEpochMs": 1745064600000
+}

@@ -1,0 +1,6 @@
+{
+	"verdict": "clean",
+	"score": 0.92,
+	"issues": [{ "path": "src/a.ts", "severity": "minor", "note": "LoremIpsum" }],
+	"metadata": { "durationMs": 1234, "tool": "placeholder" }
+}

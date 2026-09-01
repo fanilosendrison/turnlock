@@ -1,0 +1,10 @@
+
+@@TURNLOCK@@
+version: 3
+run_id: 01HX0000000000000000000003
+orchestrator: test-orch
+action: DELEGATE
+manifest: /tmp/delegations/rev-0.json
+kind: prompt
+resume_cmd: "bun run ./main.ts --run-id 01HX0000000000000000000003 --resume"
+@@END@@

@@ -1,0 +1,4 @@
+{"eventType":"orchestrator_start","runId":"01HX0000000000000000000010","orchestratorName":"test-orch","initialPhase":"a","timestamp":"2026-04-19T12:00:00.000Z"}
+{"eventType":"phase_start","runId":"01HX0000000000000000000010","phase":"a","attemptCount":1,"timestamp":"2026-04-19T12:00:00.100Z"}
+{"eventType":"phase_end","runId":"01HX0000000000000000000010","phase":"a","durationMs":100,"resultKind":"done","timestamp":"2026-04-19T12:00:00.200Z"}
+{"eventType":"orchestrator_end","runId":"01HX0000000000000000000010","orchestratorName":"test-orch","success":true,"durationMs":100,"phasesExecuted":1,"timestamp":"2026-04-19T12:00:00.200Z"}
