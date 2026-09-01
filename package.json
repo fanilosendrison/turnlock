@@ -25,7 +25,7 @@
     "test:crash": "pnpm run build:tests && node --test --test-concurrency=1 .test-dist/tests/persistence/bootstrap-crash.integration.test.js .test-dist/tests/engine/orchestrator-projection-crash.test.js",
     "test:tl-f-001-bootstrap-proof": "pnpm run build:tests && node --test --test-concurrency=1 .test-dist/tests/persistence/bootstrap-atomicity.test.js .test-dist/tests/persistence/bootstrap-commit-failure.test.js .test-dist/tests/persistence/bootstrap-crash.integration.test.js .test-dist/tests/persistence/initial-dispatch-marker.test.js .test-dist/tests/engine/orchestrator-projection-crash.test.js",
     "test:node-package": "pnpm run build && tsc -p tests/package/tsconfig.consumer.json && node --test tests/package/node-esm-distribution.node.mjs",
-    "lint": "biome check src/ tests/ scripts/",
+    "lint": "biome check --error-on-warnings src/ tests/ scripts/",
     "lint:fix": "biome check --write src/ tests/ scripts/",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json && pnpm run build && tsc --noEmit -p tests/package/tsconfig.consumer.json",
     "prepack": "pnpm run test:node-package",
