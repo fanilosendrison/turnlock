@@ -1,52 +1,59 @@
-import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { describe, test } from "node:test";
 import {
 	installImmutableFileAtomic,
 	readRegularFileBytes,
-} from "../../src/services/immutable-file";
-import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+} from "../../src/services/immutable-file.js";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 describe("immutable file installation", () => {
 	test("publishes exact bytes atomically and removes the temporary file", () => {
 		const dir = makeTempDir();
 		const target = join(dir, "accepted.json");
 		try {
-			expect(
+			assert.strictEqual(
 				installImmutableFileAtomic(target, Buffer.from('{"value":"A"}')),
-			).toBe("created");
-			expect(readFileSync(target)).toEqual(Buffer.from('{"value":"A"}'));
-			expect(
+				"created",
+			);
+			assert.deepStrictEqual(
+				readFileSync(target),
+				Buffer.from('{"value":"A"}'),
+			);
+			assert.deepStrictEqual(
 				readdirSync(dir).filter((name) =>
 					name.startsWith("accepted.json.tmp-"),
 				),
-			).toEqual([]);
+				[],
+			);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("never overwrites an already accepted artifact", () => {
 		const dir = makeTempDir();
 		const target = join(dir, "accepted.json");
 		try {
 			installImmutableFileAtomic(target, Buffer.from('{"value":"A"}'));
-			expect(
+			assert.strictEqual(
 				installImmutableFileAtomic(target, Buffer.from('{"value":"B"}')),
-			).toBe("existing");
-			expect(readRegularFileBytes(target)).toEqual(
+				"existing",
+			);
+			assert.deepStrictEqual(
+				readRegularFileBytes(target),
 				Buffer.from('{"value":"A"}'),
 			);
-			expect(
+			assert.deepStrictEqual(
 				readdirSync(dir).filter((name) =>
 					name.startsWith("accepted.json.tmp-"),
 				),
-			).toEqual([]);
+				[],
+			);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("never replaces a pre-existing target symlink", () => {
 		const dir = makeTempDir();
 		const target = join(dir, "accepted.json");
@@ -54,17 +61,16 @@ describe("immutable file installation", () => {
 		try {
 			writeFileSync(outside, '{"value":"outside"}');
 			symlinkSync(outside, target);
-
-			expect(
+			assert.strictEqual(
 				installImmutableFileAtomic(target, Buffer.from('{"value":"accepted"}')),
-			).toBe("existing");
-			expect(readFileSync(outside, "utf-8")).toBe('{"value":"outside"}');
-			expect(() => readRegularFileBytes(target)).toThrow();
+				"existing",
+			);
+			assert.strictEqual(readFileSync(outside, "utf-8"), '{"value":"outside"}');
+			assert.throws(() => readRegularFileBytes(target));
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("never follows a pre-created temporary-file symlink", () => {
 		const dir = makeTempDir();
 		const target = join(dir, "accepted.json");
@@ -72,12 +78,13 @@ describe("immutable file installation", () => {
 		try {
 			writeFileSync(outside, '{"value":"outside"}');
 			symlinkSync(outside, `${target}.tmp`);
-
-			expect(
+			assert.strictEqual(
 				installImmutableFileAtomic(target, Buffer.from('{"value":"accepted"}')),
-			).toBe("created");
-			expect(readFileSync(outside, "utf-8")).toBe('{"value":"outside"}');
-			expect(readRegularFileBytes(target)).toEqual(
+				"created",
+			);
+			assert.strictEqual(readFileSync(outside, "utf-8"), '{"value":"outside"}');
+			assert.deepStrictEqual(
+				readRegularFileBytes(target),
 				Buffer.from('{"value":"accepted"}'),
 			);
 		} finally {

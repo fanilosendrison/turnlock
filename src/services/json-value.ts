@@ -1,11 +1,10 @@
-import type { JsonValue } from "../types/external-request";
+import type { JsonValue } from "../types/external-request.js";
 
 function isArrayIndex(key: string, length: number): boolean {
 	if (!/^(0|[1-9]\d*)$/.test(key)) return false;
 	const index = Number(key);
 	return Number.isSafeInteger(index) && index >= 0 && index < length;
 }
-
 function isJsonValueRecursive(
 	value: unknown,
 	ancestors: Set<object>,
@@ -15,7 +14,6 @@ function isJsonValueRecursive(
 	if (typeof value === "number") return Number.isFinite(value);
 	if (typeof value !== "object") return false;
 	if (ancestors.has(value)) return false;
-
 	ancestors.add(value);
 	try {
 		if (Array.isArray(value)) {
@@ -37,7 +35,6 @@ function isJsonValueRecursive(
 			}
 			return true;
 		}
-
 		const prototype = Object.getPrototypeOf(value);
 		if (prototype !== Object.prototype && prototype !== null) return false;
 		for (const key of Reflect.ownKeys(value)) {
@@ -57,7 +54,6 @@ function isJsonValueRecursive(
 		ancestors.delete(value);
 	}
 }
-
 export function isJsonValue(value: unknown): value is JsonValue {
 	return isJsonValueRecursive(value, new Set<object>());
 }

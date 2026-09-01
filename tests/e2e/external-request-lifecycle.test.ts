@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ProtocolAction } from "../../src/services/protocol";
-import type { OrchestratorEvent } from "../../src/types/events";
+import { describe, test } from "node:test";
+import type { ProtocolAction } from "../../src/services/protocol.js";
+import type { OrchestratorEvent } from "../../src/types/events.js";
 import {
 	buildEntrypointSource,
 	countProtocolBlocks,
@@ -13,30 +14,26 @@ import {
 	readJsonFile,
 	readStateFile,
 	writeExternalResolution,
-} from "../helpers/e2e-process";
+} from "../helpers/e2e-process.js";
 
 const RUN_IDS = {
 	initial: "01HX0000000000000000000030",
 	resolved: "01HX0000000000000000000031",
 	reemit: "01HX0000000000000000000032",
 } as const;
-
 function baseResumeCommandSource(): string {
-	return '(runId) => "bun " + import.meta.path + " --run-id " + runId + " --resume"';
+	return '(runId) => "node " + import.meta.filename + " --run-id " + runId + " --resume"';
 }
-
 function expectProtocol(stdout: string, action: ProtocolAction, runId: string) {
-	expect(countProtocolBlocks(stdout)).toBe(1);
+	assert.strictEqual(countProtocolBlocks(stdout), 1);
 	const block = parseSingleProtocolBlock(stdout);
-	expect(block.action).toBe(action);
-	expect(block.runId).toBe(runId);
+	assert.strictEqual(block.action, action);
+	assert.strictEqual(block.runId, runId);
 	return block;
 }
-
 function eventTypes(events: readonly OrchestratorEvent[]): string[] {
 	return events.map((event) => event.eventType);
 }
-
 function lifecycleSource(orchestratorName: string): string {
 	return buildEntrypointSource(`
 interface State { stage: string }
@@ -76,7 +73,6 @@ await runOrchestrator<State>({
 });
 `);
 }
-
 describe("external request lifecycle", () => {
 	test("initial emission persists the manifest and pending state before yielding", async () => {
 		const workspace = createE2EWorkspace();
@@ -89,7 +85,7 @@ describe("external request lifecycle", () => {
 				"--run-id",
 				RUN_IDS.initial,
 			]);
-			expect(result.exitCode).toBe(0);
+			assert.strictEqual(result.exitCode, 0);
 			const block = expectProtocol(
 				result.stdout,
 				"REQUEST_EXTERNAL",
@@ -102,13 +98,17 @@ describe("external request lifecycle", () => {
 				"push-repo-a.json",
 			);
 			const resultPath = join(runDir, "external-results", "push-repo-a.json");
-			expect(block.fields.requestId).toBe(`${RUN_IDS.initial}/push-repo-a`);
-			expect(block.fields.requestType).toBe("git.push");
-			expect(block.fields.manifest).toBe(manifestPath);
-			expect(block.fields.result).toBe(resultPath);
-
+			assert.strictEqual(
+				block.fields.requestId,
+				`${RUN_IDS.initial}/push-repo-a`,
+			);
+			assert.strictEqual(block.fields.requestType, "git.push");
+			assert.strictEqual(block.fields.manifest, manifestPath);
+			assert.strictEqual(block.fields.result, resultPath);
 			const manifest = readExternalRequestManifest(manifestPath);
-			expect(manifest).toEqual({
+			assert.strictEqual(typeof manifest.emittedAt, "string");
+			assert.strictEqual(typeof manifest.emittedAtEpochMs, "number");
+			assert.deepStrictEqual(manifest, {
 				manifestVersion: 1,
 				kind: "external-request",
 				requestId: `${RUN_IDS.initial}/push-repo-a`,
@@ -124,15 +124,16 @@ describe("external request lifecycle", () => {
 					branch: "main",
 					targetSha: "abc123",
 				},
-				emittedAt: expect.any(String),
-				emittedAtEpochMs: expect.any(Number),
+				emittedAt: manifest.emittedAt,
+				emittedAtEpochMs: manifest.emittedAtEpochMs,
 				resultPath,
 			});
-
-			const state = readStateFile<{ stage: string }>(runDir);
-			expect(state.data).toEqual({ stage: "waiting" });
-			expect(state.usedLabels).toEqual(["push-repo-a"]);
-			expect(state.pendingExternalRequest).toMatchObject({
+			const state = readStateFile<{
+				stage: string;
+			}>(runDir);
+			assert.deepStrictEqual(state.data, { stage: "waiting" });
+			assert.deepStrictEqual(state.usedLabels, ["push-repo-a"]);
+			assert.partialDeepStrictEqual(state.pendingExternalRequest, {
 				requestId: manifest.requestId,
 				label: manifest.label,
 				requestType: manifest.requestType,
@@ -141,24 +142,30 @@ describe("external request lifecycle", () => {
 				emittedAt: manifest.emittedAt,
 				emittedAtEpochMs: manifest.emittedAtEpochMs,
 			});
-			expect(state.pendingExternalRequest?.manifestArtifact).toBeDefined();
-			expect(state.pendingExternalRequest?.manifestArtifact?.kind).toBe(
+			assert.notStrictEqual(
+				state.pendingExternalRequest?.manifestArtifact,
+				undefined,
+			);
+			assert.strictEqual(
+				state.pendingExternalRequest?.manifestArtifact?.kind,
 				"external-request-manifest",
 			);
-			expect(state).not.toHaveProperty("pendingDelegation");
-			expect(state.lastTransitionAt).toBe(manifest.emittedAt);
-			expect(state.lastTransitionAtEpochMs).toBe(manifest.emittedAtEpochMs);
-			expect(existsSync(join(runDir, ".lock"))).toBe(false);
-
+			assert.ok(!("pendingDelegation" in Object(state)));
+			assert.strictEqual(state.lastTransitionAt, manifest.emittedAt);
+			assert.strictEqual(
+				state.lastTransitionAtEpochMs,
+				manifest.emittedAtEpochMs,
+			);
+			assert.strictEqual(existsSync(join(runDir, ".lock")), false);
 			const events = readEvents(runDir);
-			expect(eventTypes(events)).toEqual([
+			assert.deepStrictEqual(eventTypes(events), [
 				"orchestrator_start",
 				"phase_start",
 				"phase_end",
 				"external_request_emit",
 			]);
 			const emitted = events.at(-1);
-			expect(emitted).toMatchObject({
+			assert.partialDeepStrictEqual(emitted, {
 				eventType: "external_request_emit",
 				runId: RUN_IDS.initial,
 				phase: "push",
@@ -166,12 +173,11 @@ describe("external request lifecycle", () => {
 				requestId: `${RUN_IDS.initial}/push-repo-a`,
 				requestType: "git.push",
 			});
-			expect(JSON.stringify(emitted)).not.toContain("repository");
+			assert.ok(!JSON.stringify(emitted).includes("repository"));
 		} finally {
 			workspace.cleanup();
 		}
 	});
-
 	test("a durable opaque resolution resumes, validates, and clears the pending record", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -183,7 +189,7 @@ describe("external request lifecycle", () => {
 				"--run-id",
 				RUN_IDS.resolved,
 			]);
-			expect(initial.exitCode).toBe(0);
+			assert.strictEqual(initial.exitCode, 0);
 			expectProtocol(initial.stdout, "REQUEST_EXTERNAL", RUN_IDS.resolved);
 			const runDir = workspace.runDir(
 				"e2e-external-resolved",
@@ -193,47 +199,53 @@ describe("external request lifecycle", () => {
 				outcome: "PUSHED",
 				remoteSha: "def456",
 			});
-
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.resolved,
 			]);
-			expect(resumed.exitCode).toBe(0);
+			assert.strictEqual(resumed.exitCode, 0);
 			const done = expectProtocol(resumed.stdout, "DONE", RUN_IDS.resolved);
-			expect(
+			assert.deepStrictEqual(
 				readJsonFile<{
-					state: { stage: string };
-					resolution: { outcome: string; remoteSha?: string };
+					state: {
+						stage: string;
+					};
+					resolution: {
+						outcome: string;
+						remoteSha?: string;
+					};
 				}>(done.fields.output as string),
-			).toEqual({
-				state: { stage: "waiting" },
-				resolution: { outcome: "PUSHED", remoteSha: "def456" },
-			});
-
+				{
+					state: { stage: "waiting" },
+					resolution: { outcome: "PUSHED", remoteSha: "def456" },
+				},
+			);
 			const acceptedResolutionPath = join(
 				runDir,
 				"accepted-external-resolutions",
 				"push-repo-a.json",
 			);
-			expect(readFileSync(acceptedResolutionPath, "utf-8")).toBe(
+			assert.strictEqual(
+				readFileSync(acceptedResolutionPath, "utf-8"),
 				'{"outcome":"PUSHED","remoteSha":"def456"}',
 			);
-			const state = readStateFile<{ stage: string }>(runDir);
-			expect(state.currentPhase).toBe("after-push");
-			expect(state.phasesExecuted).toBe(2);
-			expect(state).not.toHaveProperty("pendingExternalRequest");
-			expect(state).not.toHaveProperty("pendingDelegation");
+			const state = readStateFile<{
+				stage: string;
+			}>(runDir);
+			assert.strictEqual(state.currentPhase, "after-push");
+			assert.strictEqual(state.phasesExecuted, 2);
+			assert.ok(!("pendingExternalRequest" in Object(state)));
+			assert.ok(!("pendingDelegation" in Object(state)));
 			const types = eventTypes(readEvents(runDir));
-			expect(types).toContain("external_resolution_read");
-			expect(types).toContain("external_resolution_validated");
-			expect(types).not.toContain("retry_scheduled");
-			expect(existsSync(join(runDir, ".lock"))).toBe(false);
+			assert.ok(types.includes("external_resolution_read"));
+			assert.ok(types.includes("external_resolution_validated"));
+			assert.ok(!types.includes("retry_scheduled"));
+			assert.strictEqual(existsSync(join(runDir, ".lock")), false);
 		} finally {
 			workspace.cleanup();
 		}
 	});
-
 	test("missing resolution re-emits the identical request without mutating state or manifest", async () => {
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
@@ -245,7 +257,7 @@ describe("external request lifecycle", () => {
 				"--run-id",
 				RUN_IDS.reemit,
 			]);
-			expect(initial.exitCode).toBe(0);
+			assert.strictEqual(initial.exitCode, 0);
 			const firstBlock = expectProtocol(
 				initial.stdout,
 				"REQUEST_EXTERNAL",
@@ -256,61 +268,79 @@ describe("external request lifecycle", () => {
 			const manifestPath = firstBlock.fields.manifest as string;
 			const stateBefore = readFileSync(statePath, "utf-8");
 			const manifestBefore = readFileSync(manifestPath, "utf-8");
-
 			const resumed = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.reemit,
 			]);
-			expect(resumed.exitCode).toBe(0);
+			assert.strictEqual(resumed.exitCode, 0);
 			const secondBlock = expectProtocol(
 				resumed.stdout,
 				"REQUEST_EXTERNAL",
 				RUN_IDS.reemit,
 			);
-			expect(secondBlock.fields.requestId).toBe(firstBlock.fields.requestId);
-			expect(secondBlock.fields.manifest).toBe(firstBlock.fields.manifest);
-			expect(secondBlock.fields.result).toBe(firstBlock.fields.result);
-			expect(readFileSync(statePath, "utf-8")).toBe(stateBefore);
-			expect(readFileSync(manifestPath, "utf-8")).toBe(manifestBefore);
-			expect(readdirSync(join(runDir, "external-requests"))).toEqual([
+			assert.strictEqual(
+				secondBlock.fields.requestId,
+				firstBlock.fields.requestId,
+			);
+			assert.strictEqual(
+				secondBlock.fields.manifest,
+				firstBlock.fields.manifest,
+			);
+			assert.strictEqual(secondBlock.fields.result, firstBlock.fields.result);
+			assert.strictEqual(readFileSync(statePath, "utf-8"), stateBefore);
+			assert.strictEqual(readFileSync(manifestPath, "utf-8"), manifestBefore);
+			assert.deepStrictEqual(readdirSync(join(runDir, "external-requests")), [
 				"push-repo-a.json",
 			]);
-
 			const resumedAgain = await workspace.runEntrypoint(entrypoint, [
 				"--resume",
 				"--run-id",
 				RUN_IDS.reemit,
 			]);
-			expect(resumedAgain.exitCode).toBe(0);
+			assert.strictEqual(resumedAgain.exitCode, 0);
 			const thirdBlock = expectProtocol(
 				resumedAgain.stdout,
 				"REQUEST_EXTERNAL",
 				RUN_IDS.reemit,
 			);
-			expect(thirdBlock.fields.requestId).toBe(firstBlock.fields.requestId);
-			expect(thirdBlock.fields.requestType).toBe(firstBlock.fields.requestType);
-			expect(thirdBlock.fields.manifest).toBe(firstBlock.fields.manifest);
-			expect(thirdBlock.fields.result).toBe(firstBlock.fields.result);
-			expect(readFileSync(statePath, "utf-8")).toBe(stateBefore);
-			expect(readFileSync(manifestPath, "utf-8")).toBe(manifestBefore);
-
+			assert.strictEqual(
+				thirdBlock.fields.requestId,
+				firstBlock.fields.requestId,
+			);
+			assert.strictEqual(
+				thirdBlock.fields.requestType,
+				firstBlock.fields.requestType,
+			);
+			assert.strictEqual(
+				thirdBlock.fields.manifest,
+				firstBlock.fields.manifest,
+			);
+			assert.strictEqual(thirdBlock.fields.result, firstBlock.fields.result);
+			assert.strictEqual(readFileSync(statePath, "utf-8"), stateBefore);
+			assert.strictEqual(readFileSync(manifestPath, "utf-8"), manifestBefore);
 			const manifest = readExternalRequestManifest(manifestPath);
-			expect(manifest.emittedAt).toBe(
+			assert.strictEqual(
+				manifest.emittedAt,
 				JSON.parse(manifestBefore).emittedAt as string,
 			);
-			expect(manifest.emittedAtEpochMs).toBe(
+			assert.strictEqual(
+				manifest.emittedAtEpochMs,
 				JSON.parse(manifestBefore).emittedAtEpochMs as number,
 			);
 			const events = readEvents(runDir);
-			expect(
-				events.filter((event) => event.eventType === "external_request_emit"),
-			).toHaveLength(1);
-			expect(
-				events.filter((event) => event.eventType === "external_request_reemit"),
-			).toHaveLength(2);
-			expect(eventTypes(events)).not.toContain("retry_scheduled");
-			expect(existsSync(join(runDir, ".lock"))).toBe(false);
+			assert.strictEqual(
+				events.filter((event) => event.eventType === "external_request_emit")
+					.length,
+				1,
+			);
+			assert.strictEqual(
+				events.filter((event) => event.eventType === "external_request_reemit")
+					.length,
+				2,
+			);
+			assert.ok(!eventTypes(events).includes("retry_scheduled"));
+			assert.strictEqual(existsSync(join(runDir, ".lock")), false);
 		} finally {
 			workspace.cleanup();
 		}

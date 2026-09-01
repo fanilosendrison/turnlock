@@ -1,9 +1,7 @@
-import type { RetryPolicy, TimeoutPolicy } from "./policies";
-
+import type { RetryPolicy, TimeoutPolicy } from "./policies.js";
 export type DelegationRequest =
 	| PromptDelegationRequest
 	| BatchDelegationRequest;
-
 export interface PromptDelegationRequest {
 	readonly kind: "prompt";
 	readonly worker?: string;
@@ -12,7 +10,6 @@ export interface PromptDelegationRequest {
 	readonly retry?: RetryPolicy;
 	readonly timeout?: TimeoutPolicy;
 }
-
 export interface BatchDelegationRequest {
 	readonly kind: "batch";
 	readonly worker?: string;

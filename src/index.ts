@@ -1,8 +1,8 @@
-export { PROTOCOL_VERSION, STATE_SCHEMA_VERSION } from "./constants";
-export { definePhase } from "./define-phase";
-export { runOrchestrator } from "./engine/run-orchestrator";
-export type { OrchestratorErrorKind } from "./errors/base";
-export { OrchestratorError } from "./errors/base";
+export { PROTOCOL_VERSION, STATE_SCHEMA_VERSION } from "./constants.js";
+export { definePhase } from "./define-phase.js";
+export { runOrchestrator } from "./engine/run-orchestrator.js";
+export type { OrchestratorErrorKind } from "./errors/base.js";
+export { OrchestratorError } from "./errors/base.js";
 export {
 	AbortedError,
 	ArtifactIntegrityError,
@@ -32,28 +32,28 @@ export {
 	StateMissingError,
 	StateRevisionConflictError,
 	StateVersionMismatchError,
-} from "./errors/concrete";
+} from "./errors/concrete.js";
 export type {
 	ArtifactKind,
 	ArtifactRef,
 	PreparedArtifact,
 	TerminalDoneRecord,
-} from "./types/artifacts";
-export type { Clock, OrchestratorConfig } from "./types/config";
+} from "./types/artifacts.js";
+export type { Clock, OrchestratorConfig } from "./types/config.js";
 export type {
 	BatchDelegationRequest,
 	DelegationRequest,
 	PromptDelegationRequest,
-} from "./types/delegation";
-export type { OrchestratorEvent, OrchestratorLogger } from "./types/events";
+} from "./types/delegation.js";
+export type { OrchestratorEvent, OrchestratorLogger } from "./types/events.js";
 export type {
 	ExternalRequest,
 	JsonPrimitive,
 	JsonValue,
-} from "./types/external-request";
-export type { Phase, PhaseIO, PhaseResult } from "./types/phase";
+} from "./types/external-request.js";
+export type { Phase, PhaseIO, PhaseResult } from "./types/phase.js";
 export type {
 	LoggingPolicy,
 	RetryPolicy,
 	TimeoutPolicy,
-} from "./types/policies";
+} from "./types/policies.js";

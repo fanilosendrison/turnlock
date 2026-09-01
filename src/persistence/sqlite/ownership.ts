@@ -8,22 +8,18 @@
 //
 // The fence_token is monotonic and never decremented.  A handle is only
 // returned after a successful COMMIT.
-
-import { generateRunId } from "../../services/run-id";
-import { DbIntegrityError } from "./errors";
-import type { SqliteConnection } from "./sqlite-driver";
-
+import { generateRunId } from "../../services/run-id.js";
+import { DbIntegrityError } from "./errors.js";
+import type { SqliteConnection } from "./sqlite-driver.js";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
 export interface LockHandle {
 	readonly ownerToken: string;
 	readonly incarnationId: string;
 	readonly fenceToken: bigint;
 	readonly leaseUntilEpochMs: number;
 }
-
 export interface OwnershipPredecessor {
 	readonly incarnationId: string;
 	readonly status: "FREE" | "HELD";
@@ -31,18 +27,26 @@ export interface OwnershipPredecessor {
 	readonly fenceToken: bigint;
 	readonly leaseUntilEpochMs: number | null;
 }
-
 export type AcquireResult =
-	| { readonly kind: "ACQUIRED"; readonly handle: LockHandle }
+	| {
+			readonly kind: "ACQUIRED";
+			readonly handle: LockHandle;
+	  }
 	| {
 			readonly kind: "ACTIVE_CONFLICT";
 			readonly ownerPid: number;
 			readonly leaseUntilEpochMs: number;
 	  }
-	| { readonly kind: "PREDECESSOR_CAS_MISS" }
-	| { readonly kind: "DB_CONTENTION_TIMEOUT" }
-	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
-
+	| {
+			readonly kind: "PREDECESSOR_CAS_MISS";
+	  }
+	| {
+			readonly kind: "DB_CONTENTION_TIMEOUT";
+	  }
+	| {
+			readonly kind: "DB_FAILURE";
+			readonly cause: unknown;
+	  };
 export interface AcquireParams {
 	readonly db: SqliteConnection;
 	readonly runId: string;
@@ -55,25 +59,20 @@ export interface AcquireParams {
 	 *  BEGIN IMMEDIATE.  Defaults to `Date.now`. */
 	readonly leaseClockEpochMs?: () => number;
 }
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 function bigintFromRow(value: unknown): bigint {
 	if (typeof value === "bigint") return value;
 	if (typeof value === "number") return BigInt(value);
 	throw new DbIntegrityError(`expected bigint, got ${typeof value}`);
 }
-
 function readPredecessor(db: SqliteConnection): OwnershipPredecessor | null {
 	const row = db
-		.prepare(
-			`SELECT incarnation_id, ownership_status, owner_token,
+		.prepare(`SELECT incarnation_id, ownership_status, owner_token,
 			        fence_token, lease_until_epoch_ms
 			 FROM run_ownership
-			 WHERE singleton = 1`,
-		)
+			 WHERE singleton = 1`)
 		.get() as
 		| {
 				incarnation_id: string;
@@ -83,9 +82,7 @@ function readPredecessor(db: SqliteConnection): OwnershipPredecessor | null {
 				lease_until_epoch_ms: number | null;
 		  }
 		| undefined;
-
 	if (row === undefined) return null;
-
 	return {
 		incarnationId: row.incarnation_id,
 		status: row.ownership_status as "FREE" | "HELD",
@@ -94,7 +91,6 @@ function readPredecessor(db: SqliteConnection): OwnershipPredecessor | null {
 		leaseUntilEpochMs: row.lease_until_epoch_ms,
 	};
 }
-
 function ensureIncarnation(
 	db: SqliteConnection,
 	runId: string,
@@ -110,9 +106,12 @@ function ensureIncarnation(
 			"SELECT run_id, incarnation_id, orchestrator_name FROM run_incarnation WHERE singleton = 1",
 		)
 		.get() as
-		| { run_id: string; incarnation_id: string; orchestrator_name: string }
+		| {
+				run_id: string;
+				incarnation_id: string;
+				orchestrator_name: string;
+		  }
 		| undefined;
-
 	if (existing !== undefined) {
 		if (existing.run_id !== runId) {
 			throw new DbIntegrityError(
@@ -126,24 +125,29 @@ function ensureIncarnation(
 		}
 		return existing.incarnation_id;
 	}
-
 	const incarnationId = generateRunId();
-	db.prepare(
-		`INSERT OR IGNORE INTO run_incarnation
+	db.prepare(`INSERT OR IGNORE INTO run_incarnation
 		 (singleton, run_id, incarnation_id, orchestrator_name,
 		  created_at_epoch_ms, created_at_iso)
-		 VALUES (1, ?, ?, ?, ?, ?)`,
-	).run(runId, incarnationId, orchestratorName, nowEpochMs, nowIso);
-
+		 VALUES (1, ?, ?, ?, ?, ?)`).run(
+		runId,
+		incarnationId,
+		orchestratorName,
+		nowEpochMs,
+		nowIso,
+	);
 	// Re-read in case another process inserted first — and validate.
 	const inserted = db
 		.prepare(
 			"SELECT run_id, incarnation_id, orchestrator_name FROM run_incarnation WHERE singleton = 1",
 		)
 		.get() as
-		| { run_id: string; incarnation_id: string; orchestrator_name: string }
+		| {
+				run_id: string;
+				incarnation_id: string;
+				orchestrator_name: string;
+		  }
 		| undefined;
-
 	if (inserted !== undefined) {
 		if (inserted.run_id !== runId) {
 			throw new DbIntegrityError(
@@ -157,23 +161,17 @@ function ensureIncarnation(
 		}
 		return inserted.incarnation_id;
 	}
-
 	return incarnationId;
 }
-
 function ensureOwnershipRow(db: SqliteConnection, incarnationId: string): void {
-	db.prepare(
-		`INSERT OR IGNORE INTO run_ownership
+	db.prepare(`INSERT OR IGNORE INTO run_ownership
 		 (singleton, incarnation_id, ownership_status,
 		  fence_token)
-		 VALUES (1, ?, 'FREE', 0)`,
-	).run(incarnationId);
+		 VALUES (1, ?, 'FREE', 0)`).run(incarnationId);
 }
-
 // ---------------------------------------------------------------------------
 // CAS acquisition
 // ---------------------------------------------------------------------------
-
 const CAS_SQL = `
 UPDATE run_ownership
 SET
@@ -191,14 +189,12 @@ WHERE singleton = 1
   AND lease_until_epoch_ms IS :prev_lease
 RETURNING incarnation_id, owner_token, fence_token, lease_until_epoch_ms
 `;
-
 interface CasRow {
 	incarnation_id: string;
 	owner_token: string;
 	fence_token: number | bigint;
 	lease_until_epoch_ms: number;
 }
-
 function attemptCas(
 	db: SqliteConnection,
 	incarnationId: string,
@@ -220,22 +216,17 @@ function attemptCas(
 		":prev_owner_token": predecessor.ownerToken,
 		":prev_lease": predecessor.leaseUntilEpochMs,
 	}) as CasRow | undefined;
-
 	return row ?? null;
 }
-
 // ---------------------------------------------------------------------------
 // Transaction helpers
 // ---------------------------------------------------------------------------
-
 export function beginImmediate(db: SqliteConnection): void {
 	db.exec("BEGIN IMMEDIATE");
 }
-
 export function commit(db: SqliteConnection): void {
 	db.exec("COMMIT");
 }
-
 export function rollback(db: SqliteConnection): void {
 	try {
 		db.exec("ROLLBACK");
@@ -243,13 +234,11 @@ export function rollback(db: SqliteConnection): void {
 		// Best-effort — the transaction may already be closed.
 	}
 }
-
 // ---------------------------------------------------------------------------
 // In-transaction helpers (no BEGIN/COMMIT/ROLLBACK)
 // ---------------------------------------------------------------------------
 // These primitives must be called inside an existing transaction.  They
 // never publish LockHandle — only the top-level transactional scope does.
-
 /** Ensure the incarnation row exists within an active transaction.
  *
  *  If no row exists, the supplied `incarnationCandidate` is inserted.
@@ -270,9 +259,12 @@ export function ensureIncarnationInTransaction(
 			"SELECT run_id, incarnation_id, orchestrator_name FROM run_incarnation WHERE singleton = 1",
 		)
 		.get() as
-		| { run_id: string; incarnation_id: string; orchestrator_name: string }
+		| {
+				run_id: string;
+				incarnation_id: string;
+				orchestrator_name: string;
+		  }
 		| undefined;
-
 	if (existing !== undefined) {
 		if (existing.run_id !== runId) {
 			throw new DbIntegrityError(
@@ -286,14 +278,16 @@ export function ensureIncarnationInTransaction(
 		}
 		return existing.incarnation_id;
 	}
-
-	db.prepare(
-		`INSERT OR IGNORE INTO run_incarnation
+	db.prepare(`INSERT OR IGNORE INTO run_incarnation
 		 (singleton, run_id, incarnation_id, orchestrator_name,
 		  created_at_epoch_ms, created_at_iso)
-		 VALUES (1, ?, ?, ?, ?, ?)`,
-	).run(runId, incarnationCandidate, orchestratorName, nowEpochMs, nowIso);
-
+		 VALUES (1, ?, ?, ?, ?, ?)`).run(
+		runId,
+		incarnationCandidate,
+		orchestratorName,
+		nowEpochMs,
+		nowIso,
+	);
 	// Re-read — the INSERT OR IGNORE may have been a no-op if another
 	// connection raced (unlikely under BEGIN IMMEDIATE but safe).
 	const inserted = db
@@ -301,9 +295,12 @@ export function ensureIncarnationInTransaction(
 			"SELECT run_id, incarnation_id, orchestrator_name FROM run_incarnation WHERE singleton = 1",
 		)
 		.get() as
-		| { run_id: string; incarnation_id: string; orchestrator_name: string }
+		| {
+				run_id: string;
+				incarnation_id: string;
+				orchestrator_name: string;
+		  }
 		| undefined;
-
 	if (inserted !== undefined) {
 		if (inserted.run_id !== runId) {
 			throw new DbIntegrityError(
@@ -317,10 +314,8 @@ export function ensureIncarnationInTransaction(
 		}
 		return inserted.incarnation_id;
 	}
-
 	return incarnationCandidate;
 }
-
 /** Ensure the ownership singleton row exists (FREE, fence_token = 0)
  *  within an active transaction.  Idempotent.
  *
@@ -330,32 +325,30 @@ export function ensureOwnershipRowInTransaction(
 	db: SqliteConnection,
 	incarnationId: string,
 ): void {
-	db.prepare(
-		`INSERT OR IGNORE INTO run_ownership
+	db.prepare(`INSERT OR IGNORE INTO run_ownership
 		 (singleton, incarnation_id, ownership_status,
 		  fence_token)
-		 VALUES (1, ?, 'FREE', 0)`,
-	).run(incarnationId);
-
+		 VALUES (1, ?, 'FREE', 0)`).run(incarnationId);
 	// Re-read to validate — a pre-existing row with a different
 	// incarnation_id must be detected and rejected.
 	const existing = db
 		.prepare("SELECT incarnation_id FROM run_ownership WHERE singleton = 1")
-		.get() as { incarnation_id: string } | undefined;
-
+		.get() as
+		| {
+				incarnation_id: string;
+		  }
+		| undefined;
 	if (existing !== undefined && existing.incarnation_id !== incarnationId) {
 		throw new DbIntegrityError(
 			`run_ownership incarnation_id mismatch: expected ${incarnationId}, got ${existing.incarnation_id}`,
 		);
 	}
 }
-
 /** Result of acquiring ownership directly within a transaction. */
 export interface AcquireOwnershipInTransactionResult {
 	readonly fenceToken: bigint;
 	readonly leaseUntilEpochMs: number;
 }
-
 /** Directly set ownership to HELD within an active transaction.
  *
  *  No CAS retry loop — the caller holds BEGIN IMMEDIATE and is the only
@@ -384,11 +377,9 @@ export function acquireOwnershipDirectInTransaction(
 				lease_until_epoch_ms: number | null;
 		  }
 		| undefined;
-
 	if (row === undefined) {
 		throw new DbIntegrityError("ownership row missing in transaction");
 	}
-
 	// Active owner check.
 	if (
 		row.ownership_status === "HELD" &&
@@ -397,12 +388,9 @@ export function acquireOwnershipDirectInTransaction(
 	) {
 		return null; // ACTIVE_CONFLICT
 	}
-
 	const newFence = bigintFromRow(row.fence_token) + 1n;
 	const leaseUntil = nowEpochMs + leaseDurationMs;
-
-	db.prepare(
-		`UPDATE run_ownership
+	db.prepare(`UPDATE run_ownership
 		 SET ownership_status = 'HELD',
 		     owner_token = ?,
 		     owner_pid = ?,
@@ -410,12 +398,16 @@ export function acquireOwnershipDirectInTransaction(
 		     acquired_at_epoch_ms = ?,
 		     lease_until_epoch_ms = ?
 		 WHERE singleton = 1
-		   AND incarnation_id = ?`,
-	).run(ownerToken, ownerPid, newFence, nowEpochMs, leaseUntil, incarnationId);
-
+		   AND incarnation_id = ?`).run(
+		ownerToken,
+		ownerPid,
+		newFence,
+		nowEpochMs,
+		leaseUntil,
+		incarnationId,
+	);
 	return { fenceToken: newFence, leaseUntilEpochMs: leaseUntil };
 }
-
 /** Read the current incarnation_id from the ownership row (within a
  *  transaction or outside).  Returns null if no ownership row exists. */
 export function readOwnershipIncarnationId(
@@ -423,19 +415,20 @@ export function readOwnershipIncarnationId(
 ): string | null {
 	const row = db
 		.prepare("SELECT incarnation_id FROM run_ownership WHERE singleton = 1")
-		.get() as { incarnation_id: string } | undefined;
+		.get() as
+		| {
+				incarnation_id: string;
+		  }
+		| undefined;
 	return row?.incarnation_id ?? null;
 }
-
 function isBusy(error: unknown): boolean {
 	const msg = String(error);
 	return msg.includes("SQLITE_BUSY") || msg.includes("database is locked");
 }
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
 /** Acquire ownership with CAS semantics. */
 export function acquireOwnership(params: AcquireParams): AcquireResult {
 	const {
@@ -447,9 +440,7 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 		leaseDurationMs,
 		contentionDeadlineMs,
 	} = params;
-
 	const deadlineMs = performance.now() + contentionDeadlineMs;
-
 	// Ensure incarnation and ownership row exist (idempotent).
 	const incarnationId = ensureIncarnation(
 		db,
@@ -459,7 +450,6 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 		nowIso,
 	);
 	ensureOwnershipRow(db, incarnationId);
-
 	// Observe predecessor (outside transaction — observation is not authority).
 	const predecessor = readPredecessor(db);
 	if (predecessor === null) {
@@ -468,7 +458,6 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 			cause: new DbIntegrityError("ownership row missing"),
 		};
 	}
-
 	// Active owner check — advisory heuristic only.  Uses the real clock,
 	// not the caller-supplied timestamp, to avoid false ACTIVE_CONFLICT
 	// when the caller's clock was captured before a potential wait.
@@ -476,7 +465,11 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 		if (Date.now() < predecessor.leaseUntilEpochMs) {
 			const ownerRow = db
 				.prepare("SELECT owner_pid FROM run_ownership WHERE singleton = 1")
-				.get() as { owner_pid: number } | undefined;
+				.get() as
+				| {
+						owner_pid: number;
+				  }
+				| undefined;
 			return {
 				kind: "ACTIVE_CONFLICT",
 				ownerPid: ownerRow?.owner_pid ?? 0,
@@ -484,15 +477,12 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 			};
 		}
 	}
-
 	const ownerToken = generateRunId();
 	const ownerPid = process.pid;
-
 	// Retry loop for SQLITE_BUSY and CAS misses.
 	const maxAttempts = 10;
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
 		if (performance.now() > deadlineMs) break;
-
 		const currentPredecessor = readPredecessor(db);
 		if (currentPredecessor === null) {
 			return {
@@ -500,7 +490,6 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 				cause: new DbIntegrityError("ownership row missing during retry"),
 			};
 		}
-
 		try {
 			beginImmediate(db);
 		} catch (error) {
@@ -508,13 +497,11 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 			rollback(db);
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		// Capture clock AFTER lock acquisition — the wait for
 		// BEGIN IMMEDIATE (governed by busy_timeout) must not
 		// produce a stale lease computation.  Use the provided
 		// lease clock if available, otherwise the real clock.
 		const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
-
 		// Active-owner check AFTER lock acquisition with fresh clock.
 		// The pre-lock predecessor observation may be stale; the
 		// authoritative decision uses lockEpochMs captured above.
@@ -526,14 +513,17 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 			rollback(db);
 			const ownerRow = db
 				.prepare("SELECT owner_pid FROM run_ownership WHERE singleton = 1")
-				.get() as { owner_pid: number } | undefined;
+				.get() as
+				| {
+						owner_pid: number;
+				  }
+				| undefined;
 			return {
 				kind: "ACTIVE_CONFLICT",
 				ownerPid: ownerRow?.owner_pid ?? 0,
 				leaseUntilEpochMs: currentPredecessor.leaseUntilEpochMs,
 			};
 		}
-
 		let casRow: CasRow | null;
 		try {
 			casRow = attemptCas(
@@ -550,12 +540,10 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 			if (isBusy(error)) continue;
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		if (casRow === null) {
 			rollback(db);
 			continue;
 		}
-
 		try {
 			commit(db);
 		} catch (error) {
@@ -563,7 +551,6 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 			if (isBusy(error)) continue;
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		return {
 			kind: "ACQUIRED",
 			handle: {
@@ -574,7 +561,6 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 			},
 		};
 	}
-
 	// Deadline exhausted.  Distinguish CAS miss from busy timeout.
 	const finalPredecessor = readPredecessor(db);
 	if (
@@ -585,21 +571,27 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 	}
 	return { kind: "DB_CONTENTION_TIMEOUT" };
 }
-
 // ---------------------------------------------------------------------------
 // Operation result (shared across refresh, release, state commit)
 // ---------------------------------------------------------------------------
-
 export type OwnershipOperationResult =
-	| { readonly kind: "SUCCESS"; readonly handle: LockHandle }
-	| { readonly kind: "STALE_HANDLE" }
-	| { readonly kind: "EXPIRED_HANDLE" }
-	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
-
+	| {
+			readonly kind: "SUCCESS";
+			readonly handle: LockHandle;
+	  }
+	| {
+			readonly kind: "STALE_HANDLE";
+	  }
+	| {
+			readonly kind: "EXPIRED_HANDLE";
+	  }
+	| {
+			readonly kind: "DB_FAILURE";
+			readonly cause: unknown;
+	  };
 // ---------------------------------------------------------------------------
 // Refresh
 // ---------------------------------------------------------------------------
-
 const REFRESH_SQL = `
 UPDATE run_ownership
 SET lease_until_epoch_ms = :new_lease
@@ -611,7 +603,6 @@ WHERE singleton = 1
   AND lease_until_epoch_ms > :now_epoch
 RETURNING incarnation_id, owner_token, fence_token, lease_until_epoch_ms
 `;
-
 export interface RefreshParams {
 	readonly db: SqliteConnection;
 	readonly handle: LockHandle;
@@ -621,24 +612,20 @@ export interface RefreshParams {
 	 *  BEGIN IMMEDIATE.  Defaults to `Date.now`. */
 	readonly leaseClockEpochMs?: () => number;
 }
-
 export function refreshOwnership(
 	params: RefreshParams,
 ): OwnershipOperationResult {
 	const { db, handle, nowEpochMs: _nowEpochMs, leaseDurationMs } = params;
-
 	try {
 		beginImmediate(db);
 	} catch (error) {
 		return { kind: "DB_FAILURE", cause: error };
 	}
-
 	// Capture clock AFTER lock acquisition — the wait for
 	// BEGIN IMMEDIATE (governed by busy_timeout) must not
 	// produce a stale lease check.  Use the provided lease
 	// clock if available, otherwise the real clock.
 	const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
-
 	try {
 		const row = db.prepare(REFRESH_SQL).get({
 			":new_lease": lockEpochMs + leaseDurationMs,
@@ -647,7 +634,6 @@ export function refreshOwnership(
 			":fence_token": handle.fenceToken,
 			":now_epoch": lockEpochMs,
 		}) as CasRow | undefined;
-
 		if (row === undefined) {
 			rollback(db);
 			// Distinguish stale from expired.
@@ -670,14 +656,12 @@ export function refreshOwnership(
 			}
 			return { kind: "STALE_HANDLE" };
 		}
-
 		try {
 			commit(db);
 		} catch (error) {
 			rollback(db);
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		return {
 			kind: "SUCCESS",
 			handle: {
@@ -692,11 +676,9 @@ export function refreshOwnership(
 		return { kind: "DB_FAILURE", cause: error };
 	}
 }
-
 // ---------------------------------------------------------------------------
 // Release
 // ---------------------------------------------------------------------------
-
 const RELEASE_SQL = `
 UPDATE run_ownership
 SET
@@ -712,42 +694,39 @@ WHERE singleton = 1
   AND fence_token = :fence_token
 RETURNING fence_token
 `;
-
 export interface ReleaseParams {
 	readonly db: SqliteConnection;
 	readonly handle: LockHandle;
 }
-
 export function releaseOwnership(
 	params: ReleaseParams,
 ): OwnershipOperationResult {
 	const { db, handle } = params;
-
 	try {
 		beginImmediate(db);
 	} catch (error) {
 		return { kind: "DB_FAILURE", cause: error };
 	}
-
 	try {
 		const row = db.prepare(RELEASE_SQL).get({
 			":incarnation_id": handle.incarnationId,
 			":owner_token": handle.ownerToken,
 			":fence_token": handle.fenceToken,
-		}) as { fence_token: number | bigint } | undefined;
-
+		}) as
+			| {
+					fence_token: number | bigint;
+			  }
+			| undefined;
 		if (row === undefined) {
 			rollback(db);
 			return { kind: "STALE_HANDLE" };
 		}
-
 		try {
 			commit(db);
 		} catch (error) {
 			rollback(db);
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		return {
 			kind: "SUCCESS",
 			handle: {

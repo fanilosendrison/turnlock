@@ -1,19 +1,17 @@
-import { STATE_SCHEMA_VERSION } from "../../src/constants";
+import { STATE_SCHEMA_VERSION } from "../../src/constants.js";
 import type {
 	PendingDelegationRecord,
 	StateFile,
-} from "../../src/services/state-io";
-import type { ArtifactRef } from "../../src/types/artifacts";
+} from "../../src/services/state-io.js";
+import type { ArtifactRef } from "../../src/types/artifacts.js";
 
 const DEFAULT_START = "2026-04-19T12:00:00.000Z";
-const DEFAULT_START_EPOCH = 1_745_062_800_000;
-
+const DEFAULT_START_EPOCH = 1745062800000;
 const defaultPolicy = {
 	maxAttempts: 3,
 	backoffBaseMs: 1000,
-	maxBackoffMs: 30_000,
+	maxBackoffMs: 30000,
 } as const;
-
 /** Build a minimal ArtifactRef for test state construction. */
 export function testArtifactRef(
 	kind: ArtifactRef["kind"],
@@ -32,9 +30,10 @@ export function testArtifactRef(
 		sizeBytes: 2,
 	};
 }
-
 export function buildInitialState<S extends object>(
-	overrides: Partial<StateFile<S>> & { data?: S } = {},
+	overrides: Partial<StateFile<S>> & {
+		data?: S;
+	} = {},
 ): StateFile<S> {
 	return {
 		schemaVersion: STATE_SCHEMA_VERSION,
@@ -52,9 +51,10 @@ export function buildInitialState<S extends object>(
 		...overrides,
 	};
 }
-
 export function buildMidRunState<S extends object>(
-	overrides: Partial<StateFile<S>> & { data?: S } = {},
+	overrides: Partial<StateFile<S>> & {
+		data?: S;
+	} = {},
 ): StateFile<S> {
 	return buildInitialState<S>({
 		currentPhase: "b",
@@ -64,11 +64,12 @@ export function buildMidRunState<S extends object>(
 		...overrides,
 	});
 }
-
 export function buildPendingPrompt<S extends object>(
 	label: string,
 	attempt: number,
-	overrides: Partial<StateFile<S>> & { data?: S } = {},
+	overrides: Partial<StateFile<S>> & {
+		data?: S;
+	} = {},
 ): StateFile<S> {
 	const pd: PendingDelegationRecord = {
 		label,
@@ -76,7 +77,7 @@ export function buildPendingPrompt<S extends object>(
 		resumeAt: "b",
 		manifestArtifact: testArtifactRef("delegation-manifest"),
 		emittedAtEpochMs: DEFAULT_START_EPOCH,
-		deadlineAtEpochMs: DEFAULT_START_EPOCH + 600_000,
+		deadlineAtEpochMs: DEFAULT_START_EPOCH + 600000,
 		attempt,
 		effectiveRetryPolicy: defaultPolicy,
 	};
@@ -86,12 +87,13 @@ export function buildPendingPrompt<S extends object>(
 		...overrides,
 	});
 }
-
 export function buildPendingBatch<S extends object>(
 	label: string,
 	jobIds: string[],
 	attempt: number,
-	overrides: Partial<StateFile<S>> & { data?: S } = {},
+	overrides: Partial<StateFile<S>> & {
+		data?: S;
+	} = {},
 ): StateFile<S> {
 	const pd: PendingDelegationRecord = {
 		label,
@@ -99,7 +101,7 @@ export function buildPendingBatch<S extends object>(
 		resumeAt: "b",
 		manifestArtifact: testArtifactRef("delegation-manifest"),
 		emittedAtEpochMs: DEFAULT_START_EPOCH,
-		deadlineAtEpochMs: DEFAULT_START_EPOCH + 600_000,
+		deadlineAtEpochMs: DEFAULT_START_EPOCH + 600000,
 		attempt,
 		effectiveRetryPolicy: defaultPolicy,
 		jobIds,

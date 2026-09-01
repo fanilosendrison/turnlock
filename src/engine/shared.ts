@@ -1,14 +1,15 @@
 import * as path from "node:path";
-import { batchBinding } from "../bindings/batch";
-import { promptBinding } from "../bindings/prompt";
-import type { DelegationBinding, DelegationManifest } from "../bindings/types";
-import type { DelegationRequest } from "../types/delegation";
-
+import { batchBinding } from "../bindings/batch.js";
+import { promptBinding } from "../bindings/prompt.js";
+import type {
+	DelegationBinding,
+	DelegationManifest,
+} from "../bindings/types.js";
+import type { DelegationRequest } from "../types/delegation.js";
 /**
  * Shared engine utilities extracted from dispatch-loop.ts and handle-resume.ts
  * to eliminate cross-file duplication.
  */
-
 export function selectBinding(
 	kind: "prompt" | "batch",
 ): DelegationBinding<DelegationRequest> {
@@ -19,7 +20,6 @@ export function selectBinding(
 			return batchBinding as DelegationBinding<DelegationRequest>;
 	}
 }
-
 export function reconstructManifest(
 	old: DelegationManifest,
 	updates: {

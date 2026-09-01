@@ -1,28 +1,30 @@
-import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { join } from "node:path";
+import { describe, test } from "node:test";
 import { z } from "zod";
-import type { DispatchContext, LoadedResults } from "../../src/engine/context";
-import { buildPhaseIO, type PhaseIOGuards } from "../../src/engine/phase-io";
+import type {
+	DispatchContext,
+	LoadedResults,
+} from "../../src/engine/context.js";
+import { buildPhaseIO, type PhaseIOGuards } from "../../src/engine/phase-io.js";
 import {
 	ExternalResolutionMissingError,
 	ExternalResolutionSchemaError,
 	ProtocolError,
-} from "../../src/errors/concrete";
+} from "../../src/errors/concrete.js";
 import type {
 	PendingDelegationRecord,
 	PendingExternalRequestRecord,
-} from "../../src/services/state-io";
-import type { JsonValue } from "../../src/types/external-request";
-import { createMockLogger } from "../helpers/mock-logger";
-import { testArtifactRef } from "../helpers/state-builder";
-import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+} from "../../src/services/state-io.js";
+import type { JsonValue } from "../../src/types/external-request.js";
+import { createMockLogger } from "../helpers/mock-logger.js";
+import { testArtifactRef } from "../helpers/state-builder.js";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 interface TestState {
 	readonly count: number;
 }
-
 const RUN_ID = "01HX0000000000000000000001";
-
 function makeGuards(): PhaseIOGuards {
 	return {
 		committed: { value: false },
@@ -30,7 +32,6 @@ function makeGuards(): PhaseIOGuards {
 		consumedCount: { value: 0 },
 	};
 }
-
 function makePendingExternal(runDir: string): PendingExternalRequestRecord {
 	return {
 		requestId: `${RUN_ID}/push-repo`,
@@ -40,27 +41,25 @@ function makePendingExternal(runDir: string): PendingExternalRequestRecord {
 		manifestArtifact: testArtifactRef("external-request-manifest"),
 		resultPath: join(runDir, "external-results", "push-repo.json"),
 		emittedAt: "2026-04-19T12:00:00.000Z",
-		emittedAtEpochMs: 1_745_062_800_000,
+		emittedAtEpochMs: 1745062800000,
 	};
 }
-
 function makePendingDelegation(): PendingDelegationRecord {
 	return {
 		label: "review",
 		kind: "prompt",
 		resumeAt: "resume",
 		manifestArtifact: testArtifactRef("delegation-manifest"),
-		emittedAtEpochMs: 1_745_062_800_000,
-		deadlineAtEpochMs: 1_745_063_400_000,
+		emittedAtEpochMs: 1745062800000,
+		deadlineAtEpochMs: 1745063400000,
 		attempt: 0,
 		effectiveRetryPolicy: {
 			maxAttempts: 3,
 			backoffBaseMs: 1000,
-			maxBackoffMs: 30_000,
+			maxBackoffMs: 30000,
 		},
 	};
 }
-
 function buildIO(options: {
 	readonly runDir: string;
 	readonly pendingDelegation?: PendingDelegationRecord;
@@ -75,7 +74,7 @@ function buildIO(options: {
 			name: "phase-io-test",
 			initial: "start",
 			initialState: { count: 0 },
-			resumeCommand: (runId) => `bun main.ts --run-id ${runId} --resume`,
+			resumeCommand: (runId) => `node main.js --run-id ${runId} --resume`,
 			phases: {
 				start: async (_state, io) => io.done({ ok: true }),
 				resume: async (_state, io) => io.done({ ok: true }),
@@ -88,7 +87,7 @@ function buildIO(options: {
 			ownerToken: "owner",
 			incarnationId: "01HXINCARNATION0000000000000",
 			fenceToken: 1n,
-			leaseUntilEpochMs: 9_999_999_999_999,
+			leaseUntilEpochMs: 9999999999999,
 		},
 		logger,
 		abortController: new AbortController(),
@@ -109,7 +108,6 @@ function buildIO(options: {
 	});
 	return { io, guards, logger };
 }
-
 describe("PhaseIO external request creation", () => {
 	test("requestExternal commits the expected PhaseResult", () => {
 		const runDir = makeTempDir();
@@ -125,8 +123,7 @@ describe("PhaseIO external request creation", () => {
 				"resume",
 				{ count: 1 },
 			);
-
-			expect(result).toEqual({
+			assert.deepStrictEqual(result, {
 				kind: "external-request",
 				request: {
 					label: "push-repo",
@@ -137,45 +134,46 @@ describe("PhaseIO external request creation", () => {
 				resumeAt: "resume",
 				nextState: { count: 1 },
 			});
-			expect(guards.committed.value).toBe(true);
+			assert.strictEqual(guards.committed.value, true);
 		} finally {
 			cleanupTempDir(runDir);
 		}
 	});
-
 	test("requestExternal rejects labels already used by any yield kind", () => {
 		const runDir = makeTempDir();
 		try {
 			const { io } = buildIO({ runDir, usedLabels: ["push-repo"] });
-			expect(() =>
-				io.requestExternal(
-					{ label: "push-repo", requestType: "git.push", payload: null },
-					"resume",
-					{ count: 1 },
-				),
-			).toThrow(ProtocolError);
+			assert.throws(
+				() =>
+					io.requestExternal(
+						{ label: "push-repo", requestType: "git.push", payload: null },
+						"resume",
+						{ count: 1 },
+					),
+				ProtocolError,
+			);
 		} finally {
 			cleanupTempDir(runDir);
 		}
 	});
-
 	test("requestExternal obeys the existing single-commit guard", () => {
 		const runDir = makeTempDir();
 		try {
 			const { io } = buildIO({ runDir });
 			io.done({ ok: true });
-			expect(() =>
-				io.requestExternal(
-					{ label: "push-repo", requestType: "git.push", payload: null },
-					"resume",
-					{ count: 1 },
-				),
-			).toThrow(ProtocolError);
+			assert.throws(
+				() =>
+					io.requestExternal(
+						{ label: "push-repo", requestType: "git.push", payload: null },
+						"resume",
+						{ count: 1 },
+					),
+				ProtocolError,
+			);
 		} finally {
 			cleanupTempDir(runDir);
 		}
 	});
-
 	test("requestExternal rejects invalid labels, request types, payloads, and metadata", () => {
 		const runDir = makeTempDir();
 		try {
@@ -206,32 +204,31 @@ describe("PhaseIO external request creation", () => {
 					metadata: { missing: undefined } as unknown as JsonValue,
 				},
 			];
-
 			for (const request of invalidRequests) {
 				const { io } = buildIO({ runDir });
-				expect(() =>
-					io.requestExternal(request, "resume", { count: 1 }),
-				).toThrow(ProtocolError);
+				assert.throws(
+					() => io.requestExternal(request, "resume", { count: 1 }),
+					ProtocolError,
+				);
 			}
 		} finally {
 			cleanupTempDir(runDir);
 		}
 	});
 });
-
 describe("PhaseIO external resolution consumption", () => {
 	test("consume without an external pending record fails", () => {
 		const runDir = makeTempDir();
 		try {
 			const { io } = buildIO({ runDir });
-			expect(() => io.consumePendingExternalResolution(z.unknown())).toThrow(
+			assert.throws(
+				() => io.consumePendingExternalResolution(z.unknown()),
 				ExternalResolutionMissingError,
 			);
 		} finally {
 			cleanupTempDir(runDir);
 		}
 	});
-
 	test("consume refuses a pending delegation in place of an external request", () => {
 		const runDir = makeTempDir();
 		try {
@@ -239,14 +236,14 @@ describe("PhaseIO external resolution consumption", () => {
 				runDir,
 				pendingDelegation: makePendingDelegation(),
 			});
-			expect(() => io.consumePendingExternalResolution(z.unknown())).toThrow(
+			assert.throws(
+				() => io.consumePendingExternalResolution(z.unknown()),
 				ProtocolError,
 			);
 		} finally {
 			cleanupTempDir(runDir);
 		}
 	});
-
 	test("consume refuses a missing loaded resolution", () => {
 		const runDir = makeTempDir();
 		try {
@@ -254,14 +251,14 @@ describe("PhaseIO external resolution consumption", () => {
 				runDir,
 				pendingExternalRequest: makePendingExternal(runDir),
 			});
-			expect(() => io.consumePendingExternalResolution(z.unknown())).toThrow(
+			assert.throws(
+				() => io.consumePendingExternalResolution(z.unknown()),
 				ExternalResolutionMissingError,
 			);
 		} finally {
 			cleanupTempDir(runDir);
 		}
 	});
-
 	test("consume validates one opaque resolution exactly once", () => {
 		const runDir = makeTempDir();
 		try {
@@ -279,21 +276,20 @@ describe("PhaseIO external resolution consumption", () => {
 				outcome: z.enum(["PUSHED", "REJECTED", "UNKNOWN"]),
 				remoteSha: z.string().optional(),
 			});
-
-			expect(io.consumePendingExternalResolution(schema)).toEqual({
+			assert.deepStrictEqual(io.consumePendingExternalResolution(schema), {
 				outcome: "PUSHED",
 				remoteSha: "abc123",
 			});
-			expect(guards.consumedCount.value).toBe(1);
-			expect(logger.eventTypes()).toContain("external_resolution_validated");
-			expect(() => io.consumePendingExternalResolution(schema)).toThrow(
+			assert.strictEqual(guards.consumedCount.value, 1);
+			assert.ok(logger.eventTypes().includes("external_resolution_validated"));
+			assert.throws(
+				() => io.consumePendingExternalResolution(schema),
 				ProtocolError,
 			);
 		} finally {
 			cleanupTempDir(runDir);
 		}
 	});
-
 	test("consume distinguishes a valid null JSON resolution from a missing file", () => {
 		const runDir = makeTempDir();
 		try {
@@ -307,13 +303,11 @@ describe("PhaseIO external resolution consumption", () => {
 					data: null,
 				},
 			});
-
-			expect(io.consumePendingExternalResolution(z.null())).toBeNull();
+			assert.strictEqual(io.consumePendingExternalResolution(z.null()), null);
 		} finally {
 			cleanupTempDir(runDir);
 		}
 	});
-
 	test("consume rejects a schema-incompatible resolution without delegation retry semantics", () => {
 		const runDir = makeTempDir();
 		try {
@@ -327,19 +321,21 @@ describe("PhaseIO external resolution consumption", () => {
 					data: { outcome: 42 },
 				},
 			});
-
-			expect(() =>
-				io.consumePendingExternalResolution(z.object({ outcome: z.string() })),
-			).toThrow(ExternalResolutionSchemaError);
-			expect(logger.eventTypes()).toContain(
-				"external_resolution_validation_failed",
+			assert.throws(
+				() =>
+					io.consumePendingExternalResolution(
+						z.object({ outcome: z.string() }),
+					),
+				ExternalResolutionSchemaError,
 			);
-			expect(logger.eventTypes()).not.toContain("retry_scheduled");
+			assert.ok(
+				logger.eventTypes().includes("external_resolution_validation_failed"),
+			);
+			assert.ok(!logger.eventTypes().includes("retry_scheduled"));
 		} finally {
 			cleanupTempDir(runDir);
 		}
 	});
-
 	test("delegation consume methods refuse an external pending record", () => {
 		const runDir = makeTempDir();
 		try {
@@ -353,7 +349,7 @@ describe("PhaseIO external resolution consumption", () => {
 					data: null,
 				},
 			});
-			expect(() => io.consumePendingResult(z.unknown())).toThrow(ProtocolError);
+			assert.throws(() => io.consumePendingResult(z.unknown()), ProtocolError);
 		} finally {
 			cleanupTempDir(runDir);
 		}

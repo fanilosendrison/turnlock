@@ -1,9 +1,10 @@
-// NIB-T §24 — events.ndjson (T-EV-01..14, P-EV-a/b/c)
-import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createLogger } from "../../src/services/logger";
-import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+// NIB-T §24 — events.ndjson (T-EV-01..14, P-EV-a/b/c)
+import { describe, test } from "node:test";
+import { createLogger } from "../../src/services/logger.js";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 function sampleEvent(runId = "01HX") {
 	return {
@@ -14,7 +15,6 @@ function sampleEvent(runId = "01HX") {
 		timestamp: "2026-04-19T12:00:00.000Z",
 	};
 }
-
 describe("events.ndjson lifecycle (T-EV-01..04)", () => {
 	test("T-EV-01 | enabled defaults → ndjson created on first event", () => {
 		const dir = makeTempDir();
@@ -23,7 +23,7 @@ describe("events.ndjson lifecycle (T-EV-01..04)", () => {
 			const path = join(dir, "events.ndjson");
 			logger.enableDiskEmit(path);
 			logger.emit(sampleEvent());
-			expect(existsSync(path)).toBe(true);
+			assert.strictEqual(existsSync(path), true);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -34,7 +34,7 @@ describe("events.ndjson lifecycle (T-EV-01..04)", () => {
 			const logger = createLogger({ enabled: true, persistEventLog: false });
 			logger.enableDiskEmit(join(dir, "events.ndjson"));
 			logger.emit(sampleEvent());
-			expect(existsSync(join(dir, "events.ndjson"))).toBe(false);
+			assert.strictEqual(existsSync(join(dir, "events.ndjson")), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -45,7 +45,7 @@ describe("events.ndjson lifecycle (T-EV-01..04)", () => {
 			const logger = createLogger({ enabled: false });
 			logger.enableDiskEmit(join(dir, "events.ndjson"));
 			logger.emit(sampleEvent());
-			expect(existsSync(join(dir, "events.ndjson"))).toBe(false);
+			assert.strictEqual(existsSync(join(dir, "events.ndjson")), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -62,13 +62,12 @@ describe("events.ndjson lifecycle (T-EV-01..04)", () => {
 			// contender NEVER calls enableDiskEmit (blocked preflight).
 			contender.emit(sampleEvent("CONTENDER"));
 			const sizeAfter = readFileSync(path, "utf-8").length;
-			expect(sizeAfter).toBe(sizeBefore);
+			assert.strictEqual(sizeAfter, sizeBefore);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
 });
-
 describe("events.ndjson format (T-EV-05..08)", () => {
 	test("T-EV-05 | 5 events → 5 lines terminated \\n", () => {
 		const dir = makeTempDir();
@@ -78,7 +77,7 @@ describe("events.ndjson format (T-EV-05..08)", () => {
 			logger.enableDiskEmit(path);
 			for (let i = 0; i < 5; i++) logger.emit(sampleEvent());
 			const raw = readFileSync(path, "utf-8");
-			expect(raw.split("\n").filter((l) => l.length > 0)).toHaveLength(5);
+			assert.strictEqual(raw.split("\n").filter((l) => l.length > 0).length, 5);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -91,9 +90,9 @@ describe("events.ndjson format (T-EV-05..08)", () => {
 			logger.enableDiskEmit(path);
 			logger.emit(sampleEvent());
 			const line = readFileSync(path, "utf-8").split("\n")[0];
-			expect(line).toBeDefined();
+			assert.notStrictEqual(line, undefined);
 			if (line === undefined) throw new Error("expected first event line");
-			expect(() => JSON.parse(line)).not.toThrow();
+			assert.doesNotThrow(() => JSON.parse(line));
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -107,7 +106,7 @@ describe("events.ndjson format (T-EV-05..08)", () => {
 			for (let i = 0; i < 3; i++) logger.emit(sampleEvent());
 			const raw = readFileSync(path, "utf-8");
 			const lines = raw.split("\n").slice(0, -1);
-			for (const l of lines) expect(l.trim().length).toBeGreaterThan(0);
+			for (const l of lines) assert.ok(l.trim().length > 0);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -120,13 +119,12 @@ describe("events.ndjson format (T-EV-05..08)", () => {
 			logger.enableDiskEmit(path);
 			logger.emit({ ...sampleEvent(), orchestratorName: "français-éé" });
 			const raw = readFileSync(path, "utf-8");
-			expect(raw).toContain("français");
+			assert.ok(raw.includes("français"));
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
 });
-
 describe("events.ndjson append-only (T-EV-09..10)", () => {
 	test("T-EV-09 | 5+3 events → 8 lines unchanged prefix", () => {
 		const dir = makeTempDir();
@@ -138,7 +136,7 @@ describe("events.ndjson append-only (T-EV-09..10)", () => {
 			const prefix = readFileSync(path, "utf-8");
 			for (let i = 0; i < 3; i++) logger.emit(sampleEvent());
 			const full = readFileSync(path, "utf-8");
-			expect(full.startsWith(prefix)).toBe(true);
+			assert.strictEqual(full.startsWith(prefix), true);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -156,13 +154,12 @@ describe("events.ndjson append-only (T-EV-09..10)", () => {
 			const lines = readFileSync(path, "utf-8")
 				.split("\n")
 				.filter((l) => l.length > 0);
-			expect(lines).toHaveLength(2);
+			assert.strictEqual(lines.length, 2);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
 });
-
 describe("events.ndjson reconstruction (T-EV-11..12)", () => {
 	test("T-EV-11 | reconstruction from events", () => {
 		const dir = makeTempDir();
@@ -171,7 +168,7 @@ describe("events.ndjson reconstruction (T-EV-11..12)", () => {
 			const path = join(dir, "events.ndjson");
 			logger.enableDiskEmit(path);
 			logger.emit(sampleEvent());
-			expect(existsSync(path)).toBe(true);
+			assert.strictEqual(existsSync(path), true);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -184,13 +181,12 @@ describe("events.ndjson reconstruction (T-EV-11..12)", () => {
 			logger.enableDiskEmit(path);
 			logger.emit(sampleEvent());
 			const raw = readFileSync(path, "utf-8");
-			expect(raw.includes('"data":')).toBe(false);
+			assert.strictEqual(raw.includes('"data":'), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
 });
-
 describe("owner-only (T-EV-13..14)", () => {
 	test("T-EV-13 | owner-only discipline", () => {
 		const dir = makeTempDir();
@@ -199,17 +195,16 @@ describe("owner-only (T-EV-13..14)", () => {
 			const path = join(dir, "events.ndjson");
 			owner.enableDiskEmit(path);
 			owner.emit(sampleEvent());
-			expect(existsSync(path)).toBe(true);
+			assert.strictEqual(existsSync(path), true);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
 	test("T-EV-14 | stderr active before acquire", () => {
 		const logger = createLogger({ enabled: true });
-		expect(() => logger.emit(sampleEvent())).not.toThrow();
+		assert.doesNotThrow(() => logger.emit(sampleEvent()));
 	});
 });
-
 describe("events.ndjson properties (P-EV-a..c)", () => {
 	test("P-EV-a | monotone growing", () => {
 		const dir = makeTempDir();
@@ -221,7 +216,7 @@ describe("events.ndjson properties (P-EV-a..c)", () => {
 			for (let i = 0; i < 10; i++) {
 				logger.emit(sampleEvent());
 				const size = readFileSync(path, "utf-8").length;
-				expect(size).toBeGreaterThanOrEqual(lastSize);
+				assert.ok(size >= lastSize);
 				lastSize = size;
 			}
 		} finally {
@@ -241,7 +236,9 @@ describe("events.ndjson properties (P-EV-a..c)", () => {
 				.split("\n")
 				.filter((l) => l.length > 0);
 			for (let i = 0; i < 5; i++) {
-				expect(lines[i]).toContain(`id-${i}`);
+				const line = lines[i];
+				if (line === undefined) assert.fail(`missing event line ${i}`);
+				assert.ok(line.includes(`id-${i}`));
 			}
 		} finally {
 			cleanupTempDir(dir);
@@ -257,7 +254,7 @@ describe("events.ndjson properties (P-EV-a..c)", () => {
 			const lines = readFileSync(path, "utf-8")
 				.split("\n")
 				.filter((l) => l.length > 0);
-			expect(lines).toHaveLength(20);
+			assert.strictEqual(lines.length, 20);
 		} finally {
 			cleanupTempDir(dir);
 		}

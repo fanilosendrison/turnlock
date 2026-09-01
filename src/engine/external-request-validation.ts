@@ -1,12 +1,11 @@
 import {
 	MAX_EVENT_FIELD_LENGTH,
 	MAX_EXTERNAL_LABEL_LENGTH,
-} from "../constants";
-import type { OrchestratorErrorOptions } from "../errors/base";
-import { ProtocolError } from "../errors/concrete";
-import { isJsonValue } from "../services/json-value";
-import type { ExternalRequest } from "../types/external-request";
-
+} from "../constants.js";
+import type { OrchestratorErrorOptions } from "../errors/base.js";
+import { ProtocolError } from "../errors/concrete.js";
+import { isJsonValue } from "../services/json-value.js";
+import type { ExternalRequest } from "../types/external-request.js";
 export function assertExternalRequest(
 	request: unknown,
 	options?: OrchestratorErrorOptions,
@@ -14,7 +13,6 @@ export function assertExternalRequest(
 	if (typeof request !== "object" || request === null) {
 		throw new ProtocolError("external request must be an object", options);
 	}
-
 	const candidate = request as Record<string, unknown>;
 	if (
 		typeof candidate.label !== "string" ||

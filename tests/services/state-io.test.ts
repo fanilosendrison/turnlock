@@ -1,5 +1,4 @@
-// NIB-T §6 — state-io (T-SI-01..12, P-SI-a/b/c)
-import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import {
 	existsSync,
 	mkdirSync,
@@ -8,25 +7,26 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+// NIB-T §6 — state-io (T-SI-01..12, P-SI-a/b/c)
+import { describe, test } from "node:test";
 import { z } from "zod";
-import { STATE_SCHEMA_VERSION } from "../../src/constants";
+import { STATE_SCHEMA_VERSION } from "../../src/constants.js";
 import {
 	StateCorruptedError,
 	StateMigrationBlockedError,
 	StateVersionMismatchError,
-} from "../../src/errors/concrete";
+} from "../../src/errors/concrete.js";
 import {
 	readState,
 	readStateSnapshot,
 	type StateFile,
 	writeStateAtomic,
-} from "../../src/services/state-io";
-import { loadFixture } from "../helpers/fixture-loader";
-import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+} from "../../src/services/state-io.js";
+import { loadFixture } from "../helpers/fixture-loader.js";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 const VALID_DIGEST =
 	"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
 function buildState<S>(data: S): StateFile<S> {
 	return {
 		schemaVersion: STATE_SCHEMA_VERSION,
@@ -43,12 +43,11 @@ function buildState<S>(data: S): StateFile<S> {
 		usedLabels: [],
 	};
 }
-
 describe("readState (T-SI-01..07)", () => {
 	test("T-SI-01 | absent → null", () => {
 		const dir = makeTempDir();
 		try {
-			expect(readState(dir)).toBeNull();
+			assert.strictEqual(readState(dir), null);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -61,12 +60,14 @@ describe("readState (T-SI-01..07)", () => {
 				loadFixture("states/initial-empty.json"),
 			);
 			const state = readState(dir);
-			expect(state).not.toBeNull();
-			expect(state?.schemaVersion).toBeGreaterThanOrEqual(3);
-			expect(
+			assert.notStrictEqual(state, null);
+			if (state === null) return;
+			assert.ok(state.schemaVersion >= 3);
+			assert.strictEqual(
 				JSON.parse(readFileSync(join(dir, "state.json"), "utf-8"))
 					.schemaVersion,
-			).toBe(2);
+				2,
+			);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -75,7 +76,7 @@ describe("readState (T-SI-01..07)", () => {
 		const dir = makeTempDir();
 		try {
 			writeFileSync(join(dir, "state.json"), "{invalid json");
-			expect(() => readState(dir)).toThrow(StateCorruptedError);
+			assert.throws(() => readState(dir), StateCorruptedError);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -87,7 +88,7 @@ describe("readState (T-SI-01..07)", () => {
 				join(dir, "state.json"),
 				loadFixture("states/version-mismatch.json"),
 			);
-			expect(() => readState(dir)).toThrow(StateVersionMismatchError);
+			assert.throws(() => readState(dir), StateVersionMismatchError);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -96,7 +97,7 @@ describe("readState (T-SI-01..07)", () => {
 		const dir = makeTempDir();
 		try {
 			writeFileSync(join(dir, "state.json"), JSON.stringify({ runId: "x" }));
-			expect(() => readState(dir)).toThrow(StateCorruptedError);
+			assert.throws(() => readState(dir), StateCorruptedError);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -108,8 +109,8 @@ describe("readState (T-SI-01..07)", () => {
 			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
 			const schema = z.object({ count: z.number() });
 			const read = readState(dir, schema);
-			expect(read).not.toBeNull();
-			expect(read?.data.count).toBe(5);
+			assert.notStrictEqual(read, null);
+			assert.strictEqual(read?.data.count, 5);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -120,13 +121,12 @@ describe("readState (T-SI-01..07)", () => {
 			const state = buildState({ count: "oops" });
 			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
 			const schema = z.object({ count: z.number() });
-			expect(() => readState(dir, schema)).toThrow(StateCorruptedError);
+			assert.throws(() => readState(dir, schema), StateCorruptedError);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
 });
-
 describe("state v2 to v4 migration", () => {
 	test("blocks a v2 state whose manifestPath is outside RUN_DIR", () => {
 		const dir = makeTempDir();
@@ -135,13 +135,13 @@ describe("state v2 to v4 migration", () => {
 				loadFixture("states/mid-run-agent-pending.json"),
 			) as Record<string, unknown>;
 			writeFileSync(join(dir, "state.json"), JSON.stringify(legacy));
-
-			expect(() => readStateSnapshot(dir)).toThrow(StateMigrationBlockedError);
+			assert.throws(() => readStateSnapshot(dir), StateMigrationBlockedError);
 			try {
 				readStateSnapshot(dir);
 			} catch (err) {
-				expect(err).toBeInstanceOf(StateMigrationBlockedError);
-				expect((err as StateMigrationBlockedError).reason).toBe(
+				assert.ok(err instanceof StateMigrationBlockedError);
+				assert.strictEqual(
+					(err as StateMigrationBlockedError).reason,
 					"MANIFEST_OUTSIDE_RUN_DIR",
 				);
 			}
@@ -149,7 +149,6 @@ describe("state v2 to v4 migration", () => {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("migrates a v2 state without any pending record (no-op)", () => {
 		const dir = makeTempDir();
 		try {
@@ -158,16 +157,14 @@ describe("state v2 to v4 migration", () => {
 				loadFixture("states/mid-run-no-pending.json"),
 			);
 			const result = readStateSnapshot(dir);
-
-			expect(result.migratedFromVersion).toBe(2);
-			expect(result.state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
-			expect(result.state).not.toHaveProperty("pendingDelegation");
-			expect(result.state).not.toHaveProperty("pendingExternalRequest");
+			assert.strictEqual(result.migratedFromVersion, 2);
+			assert.strictEqual(result.state?.schemaVersion, STATE_SCHEMA_VERSION);
+			assert.ok(!("pendingDelegation" in Object(result.state)));
+			assert.ok(!("pendingExternalRequest" in Object(result.state)));
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("migrates a v2 initial-empty state to v4 (no-op)", () => {
 		const dir = makeTempDir();
 		try {
@@ -176,13 +173,12 @@ describe("state v2 to v4 migration", () => {
 				loadFixture("states/initial-empty.json"),
 			);
 			const state = readState(dir);
-			expect(state).not.toBeNull();
-			expect(state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			assert.notStrictEqual(state, null);
+			assert.strictEqual(state?.schemaVersion, STATE_SCHEMA_VERSION);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("rejects an external pending record mislabeled as state schema v2", () => {
 		const dir = makeTempDir();
 		try {
@@ -201,13 +197,11 @@ describe("state v2 to v4 migration", () => {
 				},
 			};
 			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
-
-			expect(() => readState(dir)).toThrow(StateCorruptedError);
+			assert.throws(() => readState(dir), StateCorruptedError);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("rejects a v3 state containing both pending record kinds", () => {
 		const dir = makeTempDir();
 		try {
@@ -224,7 +218,7 @@ describe("state v2 to v4 migration", () => {
 					effectiveRetryPolicy: {
 						maxAttempts: 3,
 						backoffBaseMs: 1000,
-						maxBackoffMs: 30_000,
+						maxBackoffMs: 30000,
 					},
 				},
 				pendingExternalRequest: {
@@ -239,14 +233,12 @@ describe("state v2 to v4 migration", () => {
 				},
 			};
 			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
-
-			expect(() => readState(dir)).toThrow(StateCorruptedError);
+			assert.throws(() => readState(dir), StateCorruptedError);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
 });
-
 describe("v3 to v4 migration", () => {
 	test("no-op: v3 with no pending records migrates to v4", () => {
 		const dir = makeTempDir();
@@ -258,16 +250,14 @@ describe("v3 to v4 migration", () => {
 				schemaVersion: 3,
 			};
 			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
-
 			const result = readStateSnapshot(dir);
-			expect(result.migratedFromVersion).toBe(3);
-			expect(result.state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
-			expect(result.state?.data).toEqual({ count: 1 });
+			assert.strictEqual(result.migratedFromVersion, 3);
+			assert.strictEqual(result.state?.schemaVersion, STATE_SCHEMA_VERSION);
+			assert.deepStrictEqual(result.state?.data, { count: 1 });
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("blocked: MANIFEST_MISSING when file does not exist inside run dir", () => {
 		const dir = makeTempDir();
 		try {
@@ -285,19 +275,19 @@ describe("v3 to v4 migration", () => {
 					effectiveRetryPolicy: {
 						maxAttempts: 3,
 						backoffBaseMs: 1000,
-						maxBackoffMs: 30_000,
+						maxBackoffMs: 30000,
 					},
 				},
 				usedLabels: ["rev"],
 			};
 			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
-
-			expect(() => readStateSnapshot(dir)).toThrow(StateMigrationBlockedError);
+			assert.throws(() => readStateSnapshot(dir), StateMigrationBlockedError);
 			try {
 				readStateSnapshot(dir);
 			} catch (err) {
-				expect(err).toBeInstanceOf(StateMigrationBlockedError);
-				expect((err as StateMigrationBlockedError).reason).toBe(
+				assert.ok(err instanceof StateMigrationBlockedError);
+				assert.strictEqual(
+					(err as StateMigrationBlockedError).reason,
 					"MANIFEST_MISSING",
 				);
 			}
@@ -305,7 +295,6 @@ describe("v3 to v4 migration", () => {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("blocked: MANIFEST_SYMLINK when manifest is a symbolic link", () => {
 		const dir = makeTempDir();
 		try {
@@ -317,7 +306,6 @@ describe("v3 to v4 migration", () => {
 			// Create a symlink at the manifest path pointing to the real file
 			const symlinkPath = join(dir, "delegations", "rev-0.json");
 			symlinkSync(realFile, symlinkPath);
-
 			const v3State = {
 				...buildState({ count: 1 }),
 				schemaVersion: 3,
@@ -332,19 +320,19 @@ describe("v3 to v4 migration", () => {
 					effectiveRetryPolicy: {
 						maxAttempts: 3,
 						backoffBaseMs: 1000,
-						maxBackoffMs: 30_000,
+						maxBackoffMs: 30000,
 					},
 				},
 				usedLabels: ["rev"],
 			};
 			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
-
-			expect(() => readStateSnapshot(dir)).toThrow(StateMigrationBlockedError);
+			assert.throws(() => readStateSnapshot(dir), StateMigrationBlockedError);
 			try {
 				readStateSnapshot(dir);
 			} catch (err) {
-				expect(err).toBeInstanceOf(StateMigrationBlockedError);
-				expect((err as StateMigrationBlockedError).reason).toBe(
+				assert.ok(err instanceof StateMigrationBlockedError);
+				assert.strictEqual(
+					(err as StateMigrationBlockedError).reason,
 					"MANIFEST_SYMLINK",
 				);
 			}
@@ -352,14 +340,12 @@ describe("v3 to v4 migration", () => {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("blocked: MANIFEST_NOT_REGULAR when manifest is a directory", () => {
 		const dir = makeTempDir();
 		try {
 			// Create a directory at the manifest path instead of a file
 			const manifestDir = join(dir, "delegations", "rev-0.json");
 			mkdirSync(manifestDir, { recursive: true });
-
 			const v3State = {
 				...buildState({ count: 1 }),
 				schemaVersion: 3,
@@ -374,19 +360,19 @@ describe("v3 to v4 migration", () => {
 					effectiveRetryPolicy: {
 						maxAttempts: 3,
 						backoffBaseMs: 1000,
-						maxBackoffMs: 30_000,
+						maxBackoffMs: 30000,
 					},
 				},
 				usedLabels: ["rev"],
 			};
 			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
-
-			expect(() => readStateSnapshot(dir)).toThrow(StateMigrationBlockedError);
+			assert.throws(() => readStateSnapshot(dir), StateMigrationBlockedError);
 			try {
 				readStateSnapshot(dir);
 			} catch (err) {
-				expect(err).toBeInstanceOf(StateMigrationBlockedError);
-				expect((err as StateMigrationBlockedError).reason).toBe(
+				assert.ok(err instanceof StateMigrationBlockedError);
+				assert.strictEqual(
+					(err as StateMigrationBlockedError).reason,
 					"MANIFEST_NOT_REGULAR",
 				);
 			}
@@ -394,7 +380,6 @@ describe("v3 to v4 migration", () => {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("blocked: MANIFEST_DIGEST_MISMATCH for external request", () => {
 		const dir = makeTempDir();
 		try {
@@ -405,7 +390,6 @@ describe("v3 to v4 migration", () => {
 				kind: "external-request-manifest",
 			});
 			writeFileSync(manifestPath, manifestContent);
-
 			const v3State = {
 				...buildState({ count: 1 }),
 				schemaVersion: 3,
@@ -424,13 +408,13 @@ describe("v3 to v4 migration", () => {
 				usedLabels: ["push-repo"],
 			};
 			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
-
-			expect(() => readStateSnapshot(dir)).toThrow(StateMigrationBlockedError);
+			assert.throws(() => readStateSnapshot(dir), StateMigrationBlockedError);
 			try {
 				readStateSnapshot(dir);
 			} catch (err) {
-				expect(err).toBeInstanceOf(StateMigrationBlockedError);
-				expect((err as StateMigrationBlockedError).reason).toBe(
+				assert.ok(err instanceof StateMigrationBlockedError);
+				assert.strictEqual(
+					(err as StateMigrationBlockedError).reason,
 					"MANIFEST_DIGEST_MISMATCH",
 				);
 			}
@@ -438,7 +422,6 @@ describe("v3 to v4 migration", () => {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("successful: v3 delegation manifestPath converted to manifestArtifact", () => {
 		const dir = makeTempDir();
 		try {
@@ -449,7 +432,6 @@ describe("v3 to v4 migration", () => {
 				skill: "test",
 			});
 			writeFileSync(join(dir, "delegations", "rev-0.json"), manifestContent);
-
 			const v3State = {
 				...buildState({ count: 1 }),
 				schemaVersion: 3,
@@ -464,45 +446,48 @@ describe("v3 to v4 migration", () => {
 					effectiveRetryPolicy: {
 						maxAttempts: 3,
 						backoffBaseMs: 1000,
-						maxBackoffMs: 30_000,
+						maxBackoffMs: 30000,
 					},
 				},
 				usedLabels: ["rev"],
 			};
 			writeFileSync(join(dir, "state.json"), JSON.stringify(v3State));
-
 			const result = readStateSnapshot(dir);
-			expect(result.migratedFromVersion).toBe(3);
-			expect(result.state?.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+			assert.strictEqual(result.migratedFromVersion, 3);
+			assert.strictEqual(result.state?.schemaVersion, STATE_SCHEMA_VERSION);
 			// Verify manifestArtifact was created and manifestPath removed
 			const pd = (result.state as unknown as Record<string, unknown>)
 				.pendingDelegation as Record<string, unknown>;
-			expect(pd).not.toHaveProperty("manifestPath");
-			expect(pd.manifestArtifact).toBeDefined();
+			assert.ok(!("manifestPath" in Object(pd)));
+			assert.notStrictEqual(pd.manifestArtifact, undefined);
 			const artifact = pd.manifestArtifact as Record<string, unknown>;
-			expect(artifact.kind).toBe("delegation-manifest");
-			expect(artifact.digestAlgorithm).toBe("sha256");
-			expect(typeof artifact.digest).toBe("string");
-			expect(artifact.mediaType).toBe("application/json");
-			expect(artifact.relativePath).toContain("artifacts/sha256/");
-			expect(artifact.sizeBytes).toBe(Buffer.byteLength(manifestContent));
-
+			assert.strictEqual(artifact.kind, "delegation-manifest");
+			assert.strictEqual(artifact.digestAlgorithm, "sha256");
+			assert.strictEqual(typeof artifact.digest, "string");
+			assert.strictEqual(artifact.mediaType, "application/json");
+			if (typeof artifact.relativePath !== "string") {
+				assert.fail("expected the immutable artifact relative path");
+			}
+			assert.ok(artifact.relativePath.includes("artifacts/sha256/"));
+			assert.strictEqual(
+				artifact.sizeBytes,
+				Buffer.byteLength(manifestContent),
+			);
 			// Verify the immutable blob was installed
-			expect(existsSync(join(dir, artifact.relativePath as string))).toBe(true);
+			assert.strictEqual(existsSync(join(dir, artifact.relativePath)), true);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
 });
-
 describe("writeStateAtomic (T-SI-08..12)", () => {
 	test("T-SI-08 | first write → state.json present, tmp absent", () => {
 		const dir = makeTempDir();
 		try {
 			const s = buildState({ a: 1 });
 			writeStateAtomic(dir, s);
-			expect(existsSync(join(dir, "state.json"))).toBe(true);
-			expect(existsSync(join(dir, "state.json.tmp"))).toBe(false);
+			assert.strictEqual(existsSync(join(dir, "state.json")), true);
+			assert.strictEqual(existsSync(join(dir, "state.json.tmp")), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -513,8 +498,8 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 			writeStateAtomic(dir, buildState({ a: 1 }));
 			writeStateAtomic(dir, buildState({ a: 2 }));
 			const raw = readFileSync(join(dir, "state.json"), "utf-8");
-			expect(raw).toContain('"a":2');
-			expect(existsSync(join(dir, "state.json.tmp"))).toBe(false);
+			assert.ok(raw.includes('"a":2'));
+			assert.strictEqual(existsSync(join(dir, "state.json.tmp")), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -523,14 +508,17 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 		const dir = makeTempDir();
 		try {
 			const schema = z.object({ count: z.number() });
-			const bad = buildState<{ count: number }>({
+			const bad = buildState<{
+				count: number;
+			}>({
 				count: "bad" as unknown as number,
 			});
-			expect(() => writeStateAtomic(dir, bad, schema)).toThrow(
+			assert.throws(
+				() => writeStateAtomic(dir, bad, schema),
 				StateCorruptedError,
 			);
-			expect(existsSync(join(dir, "state.json"))).toBe(false);
-			expect(existsSync(join(dir, "state.json.tmp"))).toBe(false);
+			assert.strictEqual(existsSync(join(dir, "state.json")), false);
+			assert.strictEqual(existsSync(join(dir, "state.json.tmp")), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -543,9 +531,11 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 				join(dir, "state.json.tmp"),
 				JSON.stringify(buildState({ a: 2 })),
 			);
-			const read = readState<{ a: number }>(dir);
-			expect(read).not.toBeNull();
-			expect(read?.data).toEqual({ a: 1 });
+			const read = readState<{
+				a: number;
+			}>(dir);
+			assert.notStrictEqual(read, null);
+			assert.deepStrictEqual(read?.data, { a: 1 });
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -555,17 +545,18 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 		try {
 			writeStateAtomic(dir, buildState({ a: 1 }));
 			const raw = readFileSync(join(dir, "state.json"), "utf-8");
-			expect(raw.includes("pendingDelegation")).toBe(false);
-			expect(raw.includes("pendingExternalRequest")).toBe(false);
+			assert.strictEqual(raw.includes("pendingDelegation"), false);
+			assert.strictEqual(raw.includes("pendingExternalRequest"), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("writes and reads one pending external request", () => {
 		const dir = makeTempDir();
 		try {
-			const state: StateFile<{ a: number }> = {
+			const state: StateFile<{
+				a: number;
+			}> = {
 				...buildState({ a: 1 }),
 				pendingExternalRequest: {
 					requestId: "01HX0000000000000000000001/push-repo",
@@ -581,15 +572,14 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 				usedLabels: ["push-repo"],
 			};
 			writeStateAtomic(dir, state);
-
-			expect(readState(dir)?.pendingExternalRequest).toEqual(
+			assert.deepStrictEqual(
+				readState(dir)?.pendingExternalRequest,
 				state.pendingExternalRequest,
 			);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("rejects a pending external request without a manifest digest", () => {
 		const dir = makeTempDir();
 		try {
@@ -608,13 +598,11 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 				usedLabels: ["push-repo"],
 			};
 			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
-
-			expect(() => readState(dir)).toThrow(StateCorruptedError);
+			assert.throws(() => readState(dir), StateCorruptedError);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("requires accepted resolution metadata to be all-or-none", () => {
 		const dir = makeTempDir();
 		try {
@@ -636,17 +624,17 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 				usedLabels: ["push-repo"],
 			};
 			writeFileSync(join(dir, "state.json"), JSON.stringify(state));
-
-			expect(() => readState(dir)).toThrow(StateCorruptedError);
+			assert.throws(() => readState(dir), StateCorruptedError);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("round-trips a fully accepted external resolution descriptor", () => {
 		const dir = makeTempDir();
 		try {
-			const state: StateFile<{ a: number }> = {
+			const state: StateFile<{
+				a: number;
+			}> = {
 				...buildState({ a: 1 }),
 				pendingExternalRequest: {
 					requestId: "01HX0000000000000000000001/push-repo",
@@ -666,8 +654,8 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 				usedLabels: ["push-repo"],
 			};
 			writeStateAtomic(dir, state);
-
-			expect(readState(dir)?.pendingExternalRequest).toEqual(
+			assert.deepStrictEqual(
+				readState(dir)?.pendingExternalRequest,
 				state.pendingExternalRequest,
 			);
 		} finally {
@@ -675,15 +663,17 @@ describe("writeStateAtomic (T-SI-08..12)", () => {
 		}
 	});
 });
-
 describe("state-io properties (P-SI-a/b/c)", () => {
 	test("P-SI-a | round-trip structural identity", () => {
 		const dir = makeTempDir();
 		try {
 			const s = buildState({ x: "y", arr: [1, 2] });
 			writeStateAtomic(dir, s);
-			const read = readState<{ x: string; arr: number[] }>(dir);
-			expect(read).toEqual(s);
+			const read = readState<{
+				x: string;
+				arr: number[];
+			}>(dir);
+			assert.deepStrictEqual(read, s);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -696,7 +686,7 @@ describe("state-io properties (P-SI-a/b/c)", () => {
 				writeStateAtomic(dir, buildState({ n: i }));
 				for (let r = 0; r < 5; r++) {
 					const read = readState(dir);
-					expect(read).not.toBeNull();
+					assert.notStrictEqual(read, null);
 				}
 			}
 		} finally {
@@ -708,7 +698,7 @@ describe("state-io properties (P-SI-a/b/c)", () => {
 		try {
 			for (let i = 0; i < 20; i++) {
 				writeStateAtomic(dir, buildState({ i }));
-				expect(existsSync(join(dir, "state.json.tmp"))).toBe(false);
+				assert.strictEqual(existsSync(join(dir, "state.json.tmp")), false);
 			}
 		} finally {
 			cleanupTempDir(dir);

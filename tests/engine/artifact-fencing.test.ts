@@ -1,3 +1,7 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 // TL-F-001 point 2 — Artifact fencing tests
 //
 // Validates the immutable-blob-first publication protocol:
@@ -8,56 +12,48 @@
 //   - migration v3→v4 installs blob, is idempotent, persists in SQLite
 //   - wrong ArtifactKind rejected at state boundary
 //   - path traversal rejected by artifact-store validation
-
-import { describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { STATE_SCHEMA_VERSION } from "../../src/constants";
+import { describe, test } from "node:test";
+import { STATE_SCHEMA_VERSION } from "../../src/constants.js";
 import {
 	ArtifactIntegrityError,
 	StateCorruptedError,
 	StateMigrationBlockedError,
-} from "../../src/errors/concrete";
-import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
-import { acquireOwnership } from "../../src/persistence/sqlite/ownership";
-import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
-import { readAuthoritativeState } from "../../src/persistence/sqlite/run-state-store";
+} from "../../src/errors/concrete.js";
+import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
+import { acquireOwnership } from "../../src/persistence/sqlite/ownership.js";
+import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
+import { readAuthoritativeState } from "../../src/persistence/sqlite/run-state-store.js";
 import {
 	installPreparedArtifact,
 	prepareJsonArtifact,
 	readAndVerifyArtifact,
 	validateArtifactRef,
-} from "../../src/services/artifact-store";
-import { contentDigest } from "../../src/services/content-digest";
-import { readState } from "../../src/services/state-io";
-import type { ArtifactRef } from "../../src/types/artifacts";
-import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
-import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed";
+} from "../../src/services/artifact-store.js";
+import { contentDigest } from "../../src/services/content-digest.js";
+import { readState } from "../../src/services/state-io.js";
+import type { ArtifactRef } from "../../src/types/artifacts.js";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
+import { unsafeEnsureInitialStateRow } from "../helpers/unsafe-state-seed.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 function sha256(content: string | Uint8Array): string {
 	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
-
 // ---------------------------------------------------------------------------
 // 1. terminalResult present in run_state after handleDone
 // ---------------------------------------------------------------------------
-
 describe("terminalResult in authoritative state", () => {
 	test("terminalResult is committed to SQLite and readable back", () => {
 		const dir = makeTempDir();
 		try {
 			const dbPath = path.join(dir, "test.sqlite3");
 			const runDb = openRunDatabase({
-				driver: bunSqliteDriver,
+				driver: nodeSqliteDriver,
 				dbPath,
 				busyTimeoutMs: 2000,
 			});
-
 			try {
 				const acquireResult = acquireOwnership({
 					db: runDb.connection,
@@ -65,19 +61,17 @@ describe("terminalResult in authoritative state", () => {
 					orchestratorName: "test",
 					nowEpochMs: 1,
 					nowIso: "2026-01-01T00:00:00.000Z",
-					leaseDurationMs: 60_000,
+					leaseDurationMs: 60000,
 					contentionDeadlineMs: 2000,
 				});
 				if (acquireResult.kind !== "ACQUIRED") {
 					throw new Error(`acquire failed: ${acquireResult.kind}`);
 				}
-
 				// Prepare terminal artifact
 				const prepared = prepareJsonArtifact(dir, "terminal-output", {
 					result: "ok",
 				});
 				installPreparedArtifact(dir, prepared);
-
 				// Build state with terminalResult
 				const stateRecord = {
 					schemaVersion: STATE_SCHEMA_VERSION,
@@ -102,7 +96,6 @@ describe("terminalResult in authoritative state", () => {
 					stateRevision: "0",
 					committedFenceToken: "0",
 				};
-
 				const stateJson = JSON.stringify(stateRecord);
 				unsafeEnsureInitialStateRow(
 					runDb.connection,
@@ -112,18 +105,19 @@ describe("terminalResult in authoritative state", () => {
 					1,
 					"2026-01-01T00:00:00.000Z",
 				);
-
 				// Read back
-				const read = readAuthoritativeState<{ stage: string }>(
-					runDb.connection,
-				);
-				expect(read.state).not.toBeNull();
-				expect(read.state!.terminalResult).toBeDefined();
-				expect(read.state!.terminalResult!.kind).toBe("done");
-				expect(read.state!.terminalResult!.outputArtifact.kind).toBe(
+				const read = readAuthoritativeState<{
+					stage: string;
+				}>(runDb.connection);
+				assert.notStrictEqual(read.state, null);
+				assert.notStrictEqual(read.state!.terminalResult, undefined);
+				assert.strictEqual(read.state!.terminalResult!.kind, "done");
+				assert.strictEqual(
+					read.state!.terminalResult!.outputArtifact.kind,
 					"terminal-output",
 				);
-				expect(read.state!.terminalResult!.outputArtifact.digest).toBe(
+				assert.strictEqual(
+					read.state!.terminalResult!.outputArtifact.digest,
 					prepared.ref.digest,
 				);
 			} finally {
@@ -134,11 +128,9 @@ describe("terminalResult in authoritative state", () => {
 		}
 	});
 });
-
 // ---------------------------------------------------------------------------
 // 2. Wrong ArtifactKind rejected by state validation
 // ---------------------------------------------------------------------------
-
 describe("ArtifactKind enforcement", () => {
 	test("pendingDelegation.manifestArtifact with wrong kind is rejected", () => {
 		const dir = makeTempDir();
@@ -178,14 +170,12 @@ describe("ArtifactKind enforcement", () => {
 					},
 				},
 			};
-
 			fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(state));
-			expect(() => readState(dir)).toThrow(StateCorruptedError);
+			assert.throws(() => readState(dir), StateCorruptedError);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("pendingExternalRequest.manifestArtifact with wrong kind is rejected", () => {
 		const dir = makeTempDir();
 		const digest = sha256("x");
@@ -221,14 +211,12 @@ describe("ArtifactKind enforcement", () => {
 					emittedAtEpochMs: 1000,
 				},
 			};
-
 			fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(state));
-			expect(() => readState(dir)).toThrow(StateCorruptedError);
+			assert.throws(() => readState(dir), StateCorruptedError);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("terminalResult.outputArtifact with wrong kind is rejected", () => {
 		const dir = makeTempDir();
 		const digest = sha256("x");
@@ -260,19 +248,16 @@ describe("ArtifactKind enforcement", () => {
 					completedAtEpochMs: 1000,
 				},
 			};
-
 			fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(state));
-			expect(() => readState(dir)).toThrow(StateCorruptedError);
+			assert.throws(() => readState(dir), StateCorruptedError);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
 });
-
 // ---------------------------------------------------------------------------
 // 3. Path traversal rejected by artifact-store validation
 // ---------------------------------------------------------------------------
-
 describe("artifact-store path confinement", () => {
 	test("ArtifactRef with ../ in relativePath is rejected", () => {
 		const ref: ArtifactRef = {
@@ -284,11 +269,10 @@ describe("artifact-store path confinement", () => {
 			mediaType: "application/json",
 			sizeBytes: 2,
 		};
-		expect(() => {
+		assert.throws(() => {
 			validateArtifactRef(ref, "terminal-output");
-		}).toThrow(ArtifactIntegrityError);
+		}, ArtifactIntegrityError);
 	});
-
 	test("ArtifactRef with absolute relativePath is rejected", () => {
 		const ref: ArtifactRef = {
 			kind: "delegation-manifest",
@@ -299,11 +283,10 @@ describe("artifact-store path confinement", () => {
 			mediaType: "application/json",
 			sizeBytes: 2,
 		};
-		expect(() => {
+		assert.throws(() => {
 			validateArtifactRef(ref, "delegation-manifest");
-		}).toThrow(ArtifactIntegrityError);
+		}, ArtifactIntegrityError);
 	});
-
 	test("ArtifactRef whose relativePath does not match digest is rejected", () => {
 		const ref: ArtifactRef = {
 			kind: "external-request-manifest",
@@ -315,16 +298,14 @@ describe("artifact-store path confinement", () => {
 			mediaType: "application/json",
 			sizeBytes: 2,
 		};
-		expect(() => {
+		assert.throws(() => {
 			validateArtifactRef(ref, "external-request-manifest");
-		}).toThrow(ArtifactIntegrityError);
+		}, ArtifactIntegrityError);
 	});
 });
-
 // ---------------------------------------------------------------------------
 // 4. v3→v4 migration installs blob and is idempotent
 // ---------------------------------------------------------------------------
-
 describe("v3→v4 migration durability", () => {
 	test("migration installs blob and produces valid v4 state", () => {
 		const dir = makeTempDir();
@@ -335,7 +316,6 @@ describe("v3→v4 migration durability", () => {
 			const legacyManifest = { kind: "prompt", label: "rev", attempt: 0 };
 			const legacyPath = path.join(delegDir, "rev-0.json");
 			fs.writeFileSync(legacyPath, JSON.stringify(legacyManifest));
-
 			// Build a v3 state with manifestPath pointing to the legacy file
 			const v3State = {
 				schemaVersion: 3,
@@ -365,38 +345,34 @@ describe("v3→v4 migration durability", () => {
 					},
 				},
 			};
-
 			fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(v3State));
-
 			// Migrate
 			const result = readState(dir);
-			expect(result).not.toBeNull();
-			expect(result!.schemaVersion).toBe(4);
-			expect(result!.pendingDelegation).toBeDefined();
-			expect(result!.pendingDelegation!.manifestArtifact).toBeDefined();
-
+			assert.notStrictEqual(result, null);
+			assert.strictEqual(result!.schemaVersion, 4);
+			assert.notStrictEqual(result!.pendingDelegation, undefined);
+			assert.notStrictEqual(
+				result!.pendingDelegation!.manifestArtifact,
+				undefined,
+			);
 			const artifact = result!.pendingDelegation!.manifestArtifact!;
-			expect(artifact.kind).toBe("delegation-manifest");
-			expect(artifact.relativePath).toMatch(/^artifacts\/sha256\//);
-
+			assert.strictEqual(artifact.kind, "delegation-manifest");
+			assert.match(artifact.relativePath, /^artifacts\/sha256\//);
 			// Verify the blob was actually installed
 			const blobPath = path.join(dir, artifact.relativePath);
-			expect(fs.existsSync(blobPath)).toBe(true);
-
+			assert.strictEqual(fs.existsSync(blobPath), true);
 			// Verify blob content matches
 			const blobContent = JSON.parse(fs.readFileSync(blobPath, "utf-8"));
-			expect(blobContent).toEqual(legacyManifest);
-
+			assert.deepStrictEqual(blobContent, legacyManifest);
 			// Verify digest matches
 			const digest = contentDigest(
 				Buffer.from(JSON.stringify(legacyManifest), "utf-8"),
 			);
-			expect(artifact.digest).toBe(digest);
+			assert.strictEqual(artifact.digest, digest);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("migration is idempotent — re-running with blob already installed succeeds", () => {
 		const dir = makeTempDir();
 		try {
@@ -405,7 +381,6 @@ describe("v3→v4 migration durability", () => {
 			const legacyManifest = { kind: "prompt", label: "rev", attempt: 0 };
 			const legacyPath = path.join(delegDir, "rev-0.json");
 			fs.writeFileSync(legacyPath, JSON.stringify(legacyManifest));
-
 			const v3State = {
 				schemaVersion: 3,
 				runId: "R1",
@@ -434,34 +409,36 @@ describe("v3→v4 migration durability", () => {
 					},
 				},
 			};
-
 			// First migration
 			fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(v3State));
 			const first = readState(dir);
-			expect(first!.pendingDelegation!.manifestArtifact).toBeDefined();
-
+			assert.notStrictEqual(
+				first!.pendingDelegation!.manifestArtifact,
+				undefined,
+			);
 			// Delete the in-memory migrated state and re-read — simulates
 			// a second resume where SQLite still has v3
 			const blobPath = path.join(
 				dir,
 				first!.pendingDelegation!.manifestArtifact!.relativePath,
 			);
-			expect(fs.existsSync(blobPath)).toBe(true);
-
+			assert.strictEqual(fs.existsSync(blobPath), true);
 			// Second migration — blob already exists
 			const second = readState(dir);
-			expect(second!.pendingDelegation!.manifestArtifact).toBeDefined();
-			expect(second!.pendingDelegation!.manifestArtifact!.digest).toBe(
+			assert.notStrictEqual(
+				second!.pendingDelegation!.manifestArtifact,
+				undefined,
+			);
+			assert.strictEqual(
+				second!.pendingDelegation!.manifestArtifact!.digest,
 				first!.pendingDelegation!.manifestArtifact!.digest,
 			);
-
 			// Blob still exists and is unchanged
-			expect(fs.existsSync(blobPath)).toBe(true);
+			assert.strictEqual(fs.existsSync(blobPath), true);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("migration with ../ in legacy absolute path is rejected gracefully", () => {
 		const dir = makeTempDir();
 		try {
@@ -493,17 +470,16 @@ describe("v3→v4 migration durability", () => {
 					},
 				},
 			};
-
 			fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(v3State));
-
 			// Migration blocked: path escapes RUN_DIR, should throw
 			// StateMigrationBlockedError with MANIFEST_OUTSIDE_RUN_DIR.
-			expect(() => readState(dir)).toThrow(StateMigrationBlockedError);
+			assert.throws(() => readState(dir), StateMigrationBlockedError);
 			try {
 				readState(dir);
 			} catch (err) {
-				expect(err).toBeInstanceOf(StateMigrationBlockedError);
-				expect((err as StateMigrationBlockedError).reason).toBe(
+				assert.ok(err instanceof StateMigrationBlockedError);
+				assert.strictEqual(
+					(err as StateMigrationBlockedError).reason,
 					"MANIFEST_OUTSIDE_RUN_DIR",
 				);
 			}
@@ -512,11 +488,9 @@ describe("v3→v4 migration durability", () => {
 		}
 	});
 });
-
 // ---------------------------------------------------------------------------
 // 5. readAndVerifyArtifact digest verification
 // ---------------------------------------------------------------------------
-
 describe("readAndVerifyArtifact", () => {
 	test("returns bytes for valid artifact", () => {
 		const dir = makeTempDir();
@@ -525,16 +499,14 @@ describe("readAndVerifyArtifact", () => {
 				x: 1,
 			});
 			installPreparedArtifact(dir, prepared);
-
 			const bytes = readAndVerifyArtifact(dir, prepared.ref);
-			expect(JSON.parse(Buffer.from(bytes).toString("utf-8"))).toEqual({
+			assert.deepStrictEqual(JSON.parse(Buffer.from(bytes).toString("utf-8")), {
 				x: 1,
 			});
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("throws on tampered blob (content changed but path same)", () => {
 		const dir = makeTempDir();
 		try {
@@ -542,19 +514,16 @@ describe("readAndVerifyArtifact", () => {
 				x: 1,
 			});
 			installPreparedArtifact(dir, prepared);
-
 			// Tamper with the blob
 			const blobPath = path.join(dir, prepared.ref.relativePath);
 			fs.writeFileSync(blobPath, '{"x":2}');
-
-			expect(() => {
+			assert.throws(() => {
 				readAndVerifyArtifact(dir, prepared.ref);
-			}).toThrow(ArtifactIntegrityError);
+			}, ArtifactIntegrityError);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-
 	test("throws when sizeBytes mismatches", () => {
 		const dir = makeTempDir();
 		try {
@@ -562,16 +531,14 @@ describe("readAndVerifyArtifact", () => {
 				a: 1,
 			});
 			installPreparedArtifact(dir, prepared);
-
 			// Corrupt sizeBytes
 			const badRef: ArtifactRef = {
 				...prepared.ref,
 				sizeBytes: 99999,
 			};
-
-			expect(() => {
+			assert.throws(() => {
 				readAndVerifyArtifact(dir, badRef);
-			}).toThrow(ArtifactIntegrityError);
+			}, ArtifactIntegrityError);
 		} finally {
 			cleanupTempDir(dir);
 		}

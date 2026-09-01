@@ -1,23 +1,22 @@
-import { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
 import {
 	isSubprocessAlive,
 	killAndWaitForSigkill,
 	killSubprocessIfAlive,
 	waitForExitWithTimeout,
-} from "./crash-worker-process";
-
+} from "./crash-worker-process.js";
+import { spawnNode } from "./node-subprocess.js";
 export const CRASH_TEST_ORCHESTRATOR_NAME = "crash-orchestrator-test";
-
 const WORKER_PATH = join(
-	import.meta.dir,
+	import.meta.dirname,
 	"..",
 	"engine",
 	"fixtures",
-	"orchestrator-bootstrap-crash-worker.ts",
+	"orchestrator-bootstrap-crash-worker.js",
 );
-
 export interface WorkerSignal {
 	readonly type: "FAULT_POINT_REACHED" | "PHASE_ENTERED";
 	readonly point?: string;
@@ -30,7 +29,6 @@ export interface WorkerSignal {
 		readonly marker: string;
 	};
 }
-
 export interface PersistenceSnapshot {
 	readonly schemaVersion: number;
 	readonly incarnation: {
@@ -62,29 +60,26 @@ export interface PersistenceSnapshot {
 		readonly committedAtIso: string;
 	};
 }
-
 export interface WorkerOutput {
 	readonly exitCode: number;
 	readonly stdout: string;
 	readonly stderr: string;
 }
-
 function sqliteIntegerToString(value: number | bigint): string {
 	return typeof value === "bigint" ? value.toString() : String(value);
 }
-
 export function readPersistenceSnapshot(dbPath: string): PersistenceSnapshot {
-	const db = new Database(dbPath, { readonly: true });
+	const db = nodeSqliteDriver.open(dbPath);
 	try {
 		const schema = db
-			.query("SELECT schema_version FROM schema_metadata WHERE singleton = 1")
-			.get() as { schema_version: number } | null;
+			.prepare("SELECT schema_version FROM schema_metadata WHERE singleton = 1")
+			.get() as {
+			schema_version: number;
+		} | null;
 		const incarnation = db
-			.query(
-				`SELECT incarnation_id, run_id, orchestrator_name,
+			.prepare(`SELECT incarnation_id, run_id, orchestrator_name,
 				        created_at_epoch_ms, created_at_iso
-				 FROM run_incarnation WHERE singleton = 1`,
-			)
+				 FROM run_incarnation WHERE singleton = 1`)
 			.get() as {
 			incarnation_id: string;
 			run_id: string;
@@ -93,11 +88,9 @@ export function readPersistenceSnapshot(dbPath: string): PersistenceSnapshot {
 			created_at_iso: string;
 		} | null;
 		const ownership = db
-			.query(
-				`SELECT incarnation_id, ownership_status, owner_token,
+			.prepare(`SELECT incarnation_id, ownership_status, owner_token,
 				        fence_token, lease_until_epoch_ms
-				 FROM run_ownership WHERE singleton = 1`,
-			)
+				 FROM run_ownership WHERE singleton = 1`)
 			.get() as {
 			incarnation_id: string;
 			ownership_status: string;
@@ -106,13 +99,11 @@ export function readPersistenceSnapshot(dbPath: string): PersistenceSnapshot {
 			lease_until_epoch_ms: number | null;
 		} | null;
 		const state = db
-			.query(
-				`SELECT incarnation_id, state_revision, state_schema_version,
+			.prepare(`SELECT incarnation_id, state_revision, state_schema_version,
 				        state_json, state_digest, committed_by_owner_token,
 				        committed_by_fence_token, committed_at_epoch_ms,
 				        committed_at_iso
-				 FROM run_state WHERE singleton = 1`,
-			)
+				 FROM run_state WHERE singleton = 1`)
 			.get() as {
 			incarnation_id: string;
 			state_revision: number | bigint;
@@ -125,18 +116,15 @@ export function readPersistenceSnapshot(dbPath: string): PersistenceSnapshot {
 			committed_at_iso: string;
 		} | null;
 		const counts = db
-			.query(
-				`SELECT
+			.prepare(`SELECT
 				   (SELECT COUNT(*) FROM run_incarnation) AS incarnations,
 				   (SELECT COUNT(*) FROM run_ownership) AS ownership_rows,
-				   (SELECT COUNT(*) FROM run_state) AS state_rows`,
-			)
+				   (SELECT COUNT(*) FROM run_state) AS state_rows`)
 			.get() as {
 			incarnations: number;
 			ownership_rows: number;
 			state_rows: number;
 		} | null;
-
 		if (
 			schema === null ||
 			incarnation === null ||
@@ -146,7 +134,6 @@ export function readPersistenceSnapshot(dbPath: string): PersistenceSnapshot {
 		) {
 			throw new Error("SQLite bootstrap snapshot is incomplete");
 		}
-
 		return {
 			schemaVersion: schema.schema_version,
 			incarnation: {
@@ -184,22 +171,19 @@ export function readPersistenceSnapshot(dbPath: string): PersistenceSnapshot {
 		db.close();
 	}
 }
-
 export function expireOnlyOwnershipLease(dbPath: string): void {
-	const db = new Database(dbPath);
+	const db = nodeSqliteDriver.open(dbPath);
 	try {
-		db.run(
+		db.prepare(
 			"UPDATE run_ownership SET lease_until_epoch_ms = ? WHERE singleton = 1",
-			[Date.now() - 1],
-		);
+		).run(Date.now() - 1);
 	} finally {
 		db.close();
 	}
 }
-
 async function waitForSignal(
 	signalFile: string,
-	timeoutMs = 10_000,
+	timeoutMs = 10000,
 ): Promise<WorkerSignal> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
@@ -210,11 +194,10 @@ async function waitForSignal(
 				// The worker publishes by rename, but retry defensively.
 			}
 		}
-		await Bun.sleep(10);
+		await sleep(10);
 	}
 	throw new Error(`Timed out waiting for worker signal: ${signalFile}`);
 }
-
 function spawnWorker(args: readonly string[]) {
 	const env: Record<string, string> = {};
 	for (const [name, value] of Object.entries(process.env)) {
@@ -223,22 +206,14 @@ function spawnWorker(args: readonly string[]) {
 	env.NODE_ENV = "turnlock-crash-worker";
 	env.TURNLOCK_TEST = "0";
 	env.TURNLOCK_RUN_DIR_ROOT = "";
-
-	const child = Bun.spawn({
-		cmd: ["bun", "run", WORKER_PATH, ...args],
-		env,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	const child = spawnNode(WORKER_PATH, args, { env });
 	return {
 		child,
-		stdout: new Response(child.stdout).text(),
-		stderr: new Response(child.stderr).text(),
+		stdout: child.stdout,
+		stderr: child.stderr,
 	};
 }
-
 export type RunningCrashWorker = ReturnType<typeof spawnWorker>;
-
 export async function killAndCollect(
 	worker: RunningCrashWorker,
 ): Promise<WorkerOutput> {
@@ -249,7 +224,6 @@ export async function killAndCollect(
 	const [stdout, stderr] = await Promise.all([worker.stdout, worker.stderr]);
 	return { exitCode, stdout, stderr };
 }
-
 async function waitForLiveWorkerSignal(
 	worker: RunningCrashWorker,
 	signalFile: string,
@@ -267,19 +241,21 @@ async function waitForLiveWorkerSignal(
 		}),
 	]);
 }
-
 function assertWorkerIsAlive(worker: RunningCrashWorker): void {
 	if (!isSubprocessAlive(worker.child)) {
 		throw new Error("Worker is not alive");
 	}
 }
-
 export async function crashInitialModeAt(
 	runDirRoot: string,
 	runId: string,
 	signalFile: string,
 	faultPoint: string,
-): Promise<{ signal: WorkerSignal } & WorkerOutput> {
+): Promise<
+	{
+		signal: WorkerSignal;
+	} & WorkerOutput
+> {
 	const worker = spawnWorker([
 		"--worker-mode",
 		"initial",
@@ -295,7 +271,6 @@ export async function crashInitialModeAt(
 		faultPoint,
 	]);
 	let failure: unknown;
-
 	try {
 		const signal = await waitForLiveWorkerSignal(worker, signalFile);
 		assertWorkerIsAlive(worker);
@@ -306,23 +281,23 @@ export async function crashInitialModeAt(
 	} finally {
 		await killSubprocessIfAlive(worker.child, "orchestrator crash worker");
 	}
-
 	const [stdout, stderr] = await Promise.all([worker.stdout, worker.stderr]);
 	throw new Error(
 		`Initial crash worker failed: ${failure instanceof Error ? failure.message : String(failure)}; stdout=${JSON.stringify(stdout)}; stderr=${JSON.stringify(stderr)}`,
 	);
 }
-
 export interface PublicResumeOptions {
 	readonly sentinelFile?: string;
 }
-
 export async function spawnPublicResumeAtPhase(
 	runDirRoot: string,
 	runId: string,
 	phaseSignalFile: string,
 	options: PublicResumeOptions = {},
-): Promise<{ worker: RunningCrashWorker; signal: WorkerSignal }> {
+): Promise<{
+	worker: RunningCrashWorker;
+	signal: WorkerSignal;
+}> {
 	const args = [
 		"--worker-mode",
 		"resume",
@@ -342,7 +317,6 @@ export async function spawnPublicResumeAtPhase(
 	const worker = spawnWorker(args);
 	let handedOff = false;
 	let failure: unknown;
-
 	try {
 		const signal = await waitForLiveWorkerSignal(worker, phaseSignalFile);
 		assertWorkerIsAlive(worker);
@@ -355,13 +329,11 @@ export async function spawnPublicResumeAtPhase(
 			await killSubprocessIfAlive(worker.child, "orchestrator crash worker");
 		}
 	}
-
 	const [stdout, stderr] = await Promise.all([worker.stdout, worker.stderr]);
 	throw new Error(
 		`Resume worker failed: ${failure instanceof Error ? failure.message : String(failure)}; stdout=${JSON.stringify(stdout)}; stderr=${JSON.stringify(stderr)}`,
 	);
 }
-
 export async function runInitialToCompletion(
 	runDirRoot: string,
 	runId: string,
@@ -394,7 +366,6 @@ export async function runInitialToCompletion(
 		await killSubprocessIfAlive(worker.child, "completed initial worker");
 	}
 }
-
 export async function runPublicResumeToCompletion(
 	runDirRoot: string,
 	runId: string,

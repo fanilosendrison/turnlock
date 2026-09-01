@@ -4,9 +4,7 @@
 //
 // Schema version history:
 //   1 — initial (TL-F-001 fix)
-
 export const CURRENT_SCHEMA_VERSION = 1;
-
 // DDL is executed inside a single transaction at database creation.
 export const SCHEMA_DDL = `
 CREATE TABLE IF NOT EXISTS schema_metadata (

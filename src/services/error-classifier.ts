@@ -1,16 +1,19 @@
-import type { OrchestratorError } from "../errors/base";
-import { AbortedError, PhaseError } from "../errors/concrete";
-
+import type { OrchestratorError } from "../errors/base.js";
+import { AbortedError, PhaseError } from "../errors/concrete.js";
 export type ErrorCategory = "transient" | "permanent" | "abort" | "unknown";
-
 function isOrchestratorError(err: Error): err is OrchestratorError {
-	return "kind" in err && typeof (err as { kind: unknown }).kind === "string";
+	return (
+		"kind" in err &&
+		typeof (
+			err as {
+				kind: unknown;
+			}
+		).kind === "string"
+	);
 }
-
 export function classify(err: unknown): ErrorCategory {
 	if (!(err instanceof Error)) return "unknown";
 	if (!isOrchestratorError(err)) return "unknown";
-
 	switch (err.kind) {
 		case "delegation_timeout":
 		case "delegation_schema":
@@ -43,6 +46,8 @@ export function classify(err: unknown): ErrorCategory {
 		case "state_migration_blocked":
 		case "legacy_lock_migration_blocked":
 		case "mixed_ownership_protocol_detected":
+		case "indeterminate_phase_execution":
+		case "initial_dispatch_already_claimed":
 			return "permanent";
 	}
 }

@@ -1,9 +1,8 @@
 import {
 	type ParsedProtocolBlock,
 	parseProtocolBlock,
-} from "../../src/services/protocol";
-import type { OrchestratorEvent } from "../../src/types/events";
-
+} from "../../src/services/protocol.js";
+import type { OrchestratorEvent } from "../../src/types/events.js";
 export interface MockStdio {
 	readonly stdout: string;
 	readonly stderr: string;
@@ -13,11 +12,9 @@ export interface MockStdio {
 	getProtocolBlocks(): ParsedProtocolBlock[];
 	getEvents(): OrchestratorEvent[];
 }
-
 export function createMockStdio(): MockStdio {
 	let stdout = "";
 	let stderr = "";
-
 	return {
 		get stdout() {
 			return stdout;

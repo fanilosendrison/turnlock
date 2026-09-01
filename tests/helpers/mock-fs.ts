@@ -10,7 +10,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-
 export interface MockFs {
 	readonly root: string;
 	writeFile(path: string, content: string): void;
@@ -21,7 +20,6 @@ export interface MockFs {
 	injectWriteError(path: string, error: Error): void;
 	reset(): void;
 }
-
 /**
  * MockFs is backed by a real temp dir so that sync fs primitives (openSync with
  * O_EXCL, writeFileSync, renameSync, readFileSync) exercise the real POSIX
@@ -30,11 +28,9 @@ export interface MockFs {
 export function createMockFs(): MockFs {
 	let root = mkdtempSync(join(tmpdir(), "turnlock-test-"));
 	const errorInjections = new Map<string, Error>();
-
 	const ensureDir = (filePath: string): void => {
 		mkdirSync(dirname(filePath), { recursive: true });
 	};
-
 	const self: MockFs = {
 		get root() {
 			return root;
@@ -77,6 +73,5 @@ export function createMockFs(): MockFs {
 			root = mkdtempSync(join(tmpdir(), "turnlock-test-"));
 		},
 	};
-
 	return self;
 }

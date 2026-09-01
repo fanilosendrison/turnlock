@@ -22,6 +22,7 @@ vendor/
 
 # ---------- Build Artifacts ----------
 dist/
+.test-dist/
 build/
 out/
 target/
@@ -69,12 +70,11 @@ htmlcov/
 
 # ---------- Stack-specific (add below) ----------
 
-# ---------- TypeScript / Bun / Node ----------
+# ---------- TypeScript / Node ----------
 *.tsbuildinfo
 .tsbuildinfo
 .turbo/
 .cache/
-.bun/
 
 # ---------- Local generated artifacts (tool outputs, not versioned) ----------
 STACK_EVAL.yaml
@@ -96,4 +96,6 @@ AGENTS.md
 !/docs
 /docs/*
 !/docs/sqlite-ownership-migration.md
+!/docs/migrations/
+!/docs/migrations/**
 /specs

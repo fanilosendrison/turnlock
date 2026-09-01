@@ -1,10 +1,10 @@
 export type JsonPrimitive = string | number | boolean | null;
-
 export type JsonValue =
 	| JsonPrimitive
 	| readonly JsonValue[]
-	| { readonly [key: string]: JsonValue };
-
+	| {
+			readonly [key: string]: JsonValue;
+	  };
 export interface ExternalRequest {
 	readonly label: string;
 	readonly requestType: string;

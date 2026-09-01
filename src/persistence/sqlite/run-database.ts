@@ -3,21 +3,17 @@
 // Owns the lifecycle of the concrete SqliteConnection and provides the
 // authoritative persistence operations that replace the file-based lock and
 // state.json direct writes (once TL-F-001 is fully implemented).
-
-import { CURRENT_SCHEMA_VERSION, SCHEMA_DDL } from "./schema";
-import type { SqliteConnection, SqliteDriver } from "./sqlite-driver";
-
+import { CURRENT_SCHEMA_VERSION, SCHEMA_DDL } from "./schema.js";
+import type { SqliteConnection, SqliteDriver } from "./sqlite-driver.js";
 export interface RunDatabaseConfig {
 	readonly driver: SqliteDriver;
 	readonly dbPath: string;
 	readonly busyTimeoutMs: number;
 }
-
 export interface RunDatabase {
 	readonly connection: SqliteConnection;
 	close(): void;
 }
-
 function configurePragmas(db: SqliteConnection, busyTimeoutMs: number): void {
 	// journal_mode may need an exclusive lock while another process is opening
 	// the same run DB. Install the busy handler first so that startup races are
@@ -27,14 +23,15 @@ function configurePragmas(db: SqliteConnection, busyTimeoutMs: number): void {
 	db.exec(`PRAGMA synchronous = FULL`);
 	db.exec(`PRAGMA foreign_keys = ON`);
 }
-
 function initializeSchema(db: SqliteConnection): void {
 	db.exec(SCHEMA_DDL);
-
 	const existing = db
 		.prepare("SELECT schema_version FROM schema_metadata WHERE singleton = 1")
-		.get() as { schema_version?: number } | undefined;
-
+		.get() as
+		| {
+				schema_version?: number;
+		  }
+		| undefined;
 	if (existing === undefined) {
 		db.prepare(
 			"INSERT INTO schema_metadata (singleton, schema_version) VALUES (1, ?)",
@@ -45,10 +42,8 @@ function initializeSchema(db: SqliteConnection): void {
 		);
 	}
 }
-
 export function openRunDatabase(config: RunDatabaseConfig): RunDatabase {
 	const db = config.driver.open(config.dbPath);
-
 	try {
 		configurePragmas(db, config.busyTimeoutMs);
 		initializeSchema(db);
@@ -56,7 +51,6 @@ export function openRunDatabase(config: RunDatabaseConfig): RunDatabase {
 		db.close();
 		throw error;
 	}
-
 	return {
 		connection: db,
 		close: () => db.close(),

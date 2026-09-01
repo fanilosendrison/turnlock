@@ -4,27 +4,30 @@ import {
 	DEFAULT_MAX_ATTEMPTS,
 	DEFAULT_MAX_BACKOFF_MS,
 	DEFAULT_TIMEOUT_MS,
-} from "../constants";
-import { InvalidConfigError, ProtocolError } from "../errors/concrete";
+} from "../constants.js";
+import { InvalidConfigError, ProtocolError } from "../errors/concrete.js";
 import {
 	installPreparedArtifact,
 	prepareJsonArtifact,
-} from "../services/artifact-store";
-import { clock } from "../services/clock";
-import type { PendingDelegationRecord, StateFile } from "../services/state-io";
+} from "../services/artifact-store.js";
+import { clock } from "../services/clock.js";
+import type {
+	PendingDelegationRecord,
+	StateFile,
+} from "../services/state-io.js";
 import type {
 	BatchDelegationRequest,
 	DelegationRequest,
-} from "../types/delegation";
-import { type DispatchContext, doExit } from "./context";
-import { clearPendingYield } from "./pending-yield";
-import { selectBinding } from "./shared";
+} from "../types/delegation.js";
+import { type DispatchContext, doExit } from "./context.js";
+import { clearPendingYield } from "./pending-yield.js";
+import { writeProtocolStdout } from "./protocol-stdout.js";
+import { selectBinding } from "./shared.js";
 import {
 	commitStateWithProjection,
 	projectCanonicalArtifactFenced,
 	releaseOwnershipFromContext,
-} from "./state-commit";
-
+} from "./state-commit.js";
 export async function handleDelegate<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
@@ -39,7 +42,6 @@ export async function handleDelegate<S extends object>(
 	const request = result.request;
 	const { label, kind } = request;
 	const { resumeAt } = result;
-
 	if (!(resumeAt in ctx.config.phases)) {
 		throw new ProtocolError(`unknown phase: ${resumeAt}`, {
 			runId: ctx.runId,
@@ -61,7 +63,6 @@ export async function handleDelegate<S extends object>(
 			phase: state.currentPhase,
 		});
 	}
-
 	if (kind === "batch") {
 		const req = request as BatchDelegationRequest;
 		if (req.jobs.length === 0) {
@@ -79,7 +80,6 @@ export async function handleDelegate<S extends object>(
 			ids.add(job.id);
 		}
 	}
-
 	const effectiveRetryPolicy = {
 		maxAttempts:
 			request.retry?.maxAttempts ??
@@ -98,12 +98,10 @@ export async function handleDelegate<S extends object>(
 		request.timeout?.perDelegationMs ??
 		ctx.config.timeout?.perDelegationMs ??
 		DEFAULT_TIMEOUT_MS;
-
 	const emittedAtEpochMs = clock.nowEpochMs();
 	const emittedAt = clock.nowWallIso();
 	const deadlineAtEpochMs = emittedAtEpochMs + timeoutMs;
 	const attempt = 0;
-
 	const binding = selectBinding(kind);
 	const manifestContext = {
 		runId: ctx.runId,
@@ -119,17 +117,14 @@ export async function handleDelegate<S extends object>(
 		runDir: ctx.runDir,
 	};
 	const manifest = binding.buildManifest(request, manifestContext);
-
 	// 1. Prepare immutable artifact.
 	const prepared = prepareJsonArtifact(
 		ctx.runDir,
 		"delegation-manifest",
 		manifest,
 	);
-
 	// 2. Install immutable blob (may be orphaned if commit fails — acceptable).
 	installPreparedArtifact(ctx.runDir, prepared);
-
 	// 3. Build pending delegation record with ArtifactRef.
 	const pendingDelegation: PendingDelegationRecord = {
 		label,
@@ -146,7 +141,6 @@ export async function handleDelegate<S extends object>(
 				}
 			: {}),
 	};
-
 	const newState: StateFile<S> = {
 		...clearPendingYield(state),
 		data: result.nextState,
@@ -157,10 +151,8 @@ export async function handleDelegate<S extends object>(
 		pendingDelegation,
 		usedLabels: [...state.usedLabels, label],
 	};
-
 	// 4. Commit fenced.
 	commitStateWithProjection(ctx, newState);
-
 	// 5. Project canonical manifest (fenced).  Must happen before events
 	//    so a crash after commit but before projection is recoverable.
 	const canonicalManifestPath = path.join(
@@ -176,7 +168,6 @@ export async function handleDelegate<S extends object>(
 		},
 		canonicalManifestPath,
 	);
-
 	// 6. Events + protocol only after successful commit AND projection.
 	ctx.logger.emit({
 		eventType: "delegation_emit",
@@ -188,15 +179,13 @@ export async function handleDelegate<S extends object>(
 			kind === "batch" ? (request as BatchDelegationRequest).jobs.length : 1,
 		timestamp: emittedAt,
 	});
-
 	const resumeCmd = ctx.config.resumeCommand(ctx.runId);
 	const block = binding.buildProtocolBlock(
 		manifest,
 		canonicalManifestPath,
 		resumeCmd,
 	);
-	process.stdout.write(block);
-
+	writeProtocolStdout(block);
 	releaseOwnershipFromContext(ctx);
 	doExit(0);
 }

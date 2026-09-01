@@ -5,59 +5,59 @@ import {
 	PENDING_INITIAL_DISPATCH_VERSION,
 	PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
 	STATE_SCHEMA_VERSION,
-} from "../constants";
+} from "../constants.js";
 import {
 	InvalidConfigError,
 	ProtocolError,
 	RunLockedError,
 	StateMigrationBlockedError,
 	StateMissingError,
-} from "../errors/concrete";
-import { bunSqliteDriver } from "../persistence/sqlite/bun-sqlite-driver";
+} from "../errors/concrete.js";
+import { nodeSqliteDriver } from "../persistence/sqlite/node-sqlite-driver.js";
 import {
 	acquireOwnership,
 	releaseOwnership,
-} from "../persistence/sqlite/ownership";
+} from "../persistence/sqlite/ownership.js";
 import {
 	bootstrapNewRunAtomic,
 	type CommittedState,
 	migrateLegacyRunAtomic,
-} from "../persistence/sqlite/run-bootstrap";
-import { openRunDatabase } from "../persistence/sqlite/run-database";
+} from "../persistence/sqlite/run-bootstrap.js";
+import { openRunDatabase } from "../persistence/sqlite/run-database.js";
 import {
+	commitState,
 	type ProjectionInternalDependencies,
 	projectAuthoritativeStateFenced,
 	readAuthoritativeState,
 	type StateRecord,
-} from "../persistence/sqlite/run-state-store";
-import { clock } from "../services/clock";
-import { createLogger } from "../services/logger";
-import { cleanupOldRuns, resolveRunDir } from "../services/run-dir";
-import { generateRunId } from "../services/run-id";
+} from "../persistence/sqlite/run-state-store.js";
+import { clock } from "../services/clock.js";
+import { createLogger } from "../services/logger.js";
+import { cleanupOldRuns, resolveRunDir } from "../services/run-dir.js";
+import { generateRunId } from "../services/run-id.js";
 import {
 	migrateV3ToV4,
 	readStateSnapshot,
 	type StateFile,
-} from "../services/state-io";
-import { summarizeZodError, validateResult } from "../services/validator";
-import type { TerminalDoneRecord } from "../types/artifacts";
-import type { OrchestratorConfig } from "../types/config";
-import { type DispatchContext, doExit, isTestExitSignal } from "./context";
-import { runDispatchLoop } from "./dispatch-loop";
-import { emitRunLockedError, handleTopLevelError } from "./error-emitter";
-import { runHandleResume } from "./handle-resume";
-import { assertOwnershipStorageCompatibility } from "./ownership-storage-compatibility";
+} from "../services/state-io.js";
+import { summarizeZodError, validateResult } from "../services/validator.js";
+import type { TerminalDoneRecord } from "../types/artifacts.js";
+import type { OrchestratorConfig } from "../types/config.js";
+import { type DispatchContext, doExit, isTestExitSignal } from "./context.js";
+import { runDispatchLoop } from "./dispatch-loop.js";
+import { emitRunLockedError, handleTopLevelError } from "./error-emitter.js";
+import { runHandleResume } from "./handle-resume.js";
+import { assertOwnershipStorageCompatibility } from "./ownership-storage-compatibility.js";
 import {
 	type ParsedArgv,
 	parseArgv,
 	validateConfig,
 	validateExternalRunId,
-} from "./preflight";
-import { installSignalHandlers } from "./signal-handlers";
-import { claimInitialDispatchWithProjection } from "./state-commit";
+} from "./preflight.js";
+import { installSignalHandlers } from "./signal-handlers.js";
+import { claimInitialDispatchWithProjection } from "./state-commit.js";
 
 const DB_FILENAME = "turnlock.sqlite3";
-
 export interface RunOrchestratorInternalHooks {
 	afterBootstrapResult?(): void;
 	beforeInitialProjection?(): void;
@@ -65,15 +65,12 @@ export interface RunOrchestratorInternalHooks {
 	beforeInitialDispatchClaim?(): void;
 	afterInitialDispatchClaim?(): void;
 }
-
 export interface RunOrchestratorInternalDependencies {
 	readonly hooks?: RunOrchestratorInternalHooks;
 	readonly projectionDependencies?: ProjectionInternalDependencies;
 }
-
 const productionRunOrchestratorDependencies: RunOrchestratorInternalDependencies =
 	{};
-
 /** Migrate a legacy state.json snapshot into an authoritative SQLite run
  *  atomically (single BEGIN IMMEDIATE ... COMMIT).
  *
@@ -89,16 +86,15 @@ function seedLegacyStateToSqlite<S extends object>(
 	state: StateFile<S>,
 ): {
 	runDb: ReturnType<typeof openRunDatabase>;
-	handle: import("../persistence/sqlite/ownership").LockHandle;
+	handle: import("../persistence/sqlite/ownership.js").LockHandle;
 	committed: CommittedState;
 } {
 	const dbPath = path.join(runDir, DB_FILENAME);
 	const runDb = openRunDatabase({
-		driver: bunSqliteDriver,
+		driver: nodeSqliteDriver,
 		dbPath,
 		busyTimeoutMs: 2000,
 	});
-
 	try {
 		const migrateResult = migrateLegacyRunAtomic({
 			db: runDb.connection,
@@ -115,7 +111,6 @@ function seedLegacyStateToSqlite<S extends object>(
 			stateSchemaVersion: STATE_SCHEMA_VERSION,
 			contentionDeadlineMs: 5000,
 		});
-
 		if (migrateResult.kind === "MIGRATED") {
 			return {
 				runDb,
@@ -123,7 +118,6 @@ function seedLegacyStateToSqlite<S extends object>(
 				committed: migrateResult.committed,
 			};
 		}
-
 		if (migrateResult.kind === "ALREADY_ESTABLISHED") {
 			// Another process seeded between our pre-check and this call.
 			// We must close this connection — the caller will re-open or
@@ -136,7 +130,6 @@ function seedLegacyStateToSqlite<S extends object>(
 				{ runId, orchestratorName: state.orchestratorName },
 			);
 		}
-
 		if (migrateResult.kind === "ACTIVE_CONFLICT") {
 			runDb.close();
 			throw new StateMissingError("Legacy migration: active owner conflict", {
@@ -144,7 +137,6 @@ function seedLegacyStateToSqlite<S extends object>(
 				orchestratorName: state.orchestratorName,
 			});
 		}
-
 		if (migrateResult.kind === "INCOMPLETE_EXISTING_BOOTSTRAP") {
 			runDb.close();
 			throw new StateMissingError(
@@ -152,7 +144,6 @@ function seedLegacyStateToSqlite<S extends object>(
 				{ runId, orchestratorName: state.orchestratorName },
 			);
 		}
-
 		if (migrateResult.kind === "DB_FAILURE") {
 			runDb.close();
 			throw new StateMissingError("Legacy migration: DB failure", {
@@ -161,7 +152,6 @@ function seedLegacyStateToSqlite<S extends object>(
 				cause: migrateResult.cause,
 			});
 		}
-
 		// DB_CONTENTION_TIMEOUT
 		runDb.close();
 		throw new StateMissingError("Legacy migration: DB contention timeout", {
@@ -175,7 +165,6 @@ function seedLegacyStateToSqlite<S extends object>(
 		throw err;
 	}
 }
-
 function stateRecordToStateFile<S extends object>(
 	record: StateRecord<S>,
 	runDir: string,
@@ -207,7 +196,6 @@ function stateRecordToStateFile<S extends object>(
 		(result as unknown as Record<string, unknown>).terminalResult =
 			record.terminalResult;
 	}
-
 	// v3→v4 migration: if the SQLite state still uses the old manifestPath
 	// format, convert to manifestArtifact on the fly.
 	if (record.schemaVersion === 3) {
@@ -217,10 +205,8 @@ function stateRecordToStateFile<S extends object>(
 		);
 		return migrated as unknown as StateFile<S>;
 	}
-
 	return result;
 }
-
 /** Inline migration for SQLite-based resume — converts v3 manifestPath to v4
  *  manifestArtifact by reading the legacy manifest file from disk.
  *  This is a defensive fallback; the primary migration happens before
@@ -231,9 +217,6 @@ function migrateStateFileV3ToV4(
 	runDir: string,
 ): Record<string, unknown> {
 	try {
-		const { migrateV3ToV4 } = require("../services/state-io") as {
-			migrateV3ToV4: typeof import("../services/state-io").migrateV3ToV4;
-		};
 		const result = migrateV3ToV4(parsed, runDir);
 		if (result.kind === "MIGRATED") {
 			return result.state;
@@ -246,7 +229,6 @@ function migrateStateFileV3ToV4(
 		return parsed;
 	}
 }
-
 async function runInitialMode<S extends object>(
 	config: OrchestratorConfig<S>,
 	argv: ParsedArgv,
@@ -258,7 +240,6 @@ async function runInitialMode<S extends object>(
 	}
 	const cwd = process.cwd();
 	const runDir = resolveRunDir(cwd, config.name, runId, config.runDirRoot);
-
 	fs.mkdirSync(runDir, { recursive: true });
 	fs.mkdirSync(path.join(runDir, "delegations"), { recursive: true });
 	fs.mkdirSync(path.join(runDir, "results"), { recursive: true });
@@ -270,9 +251,7 @@ async function runInitialMode<S extends object>(
 	fs.mkdirSync(path.join(runDir, "artifacts", "sha256"), {
 		recursive: true,
 	});
-
 	const logger = createLogger(config.logging);
-
 	if (config.stateSchema) {
 		const validation = validateResult(config.initialState, config.stateSchema);
 		if (!validation.ok) {
@@ -286,10 +265,8 @@ async function runInitialMode<S extends object>(
 			);
 		}
 	}
-
 	const nowEpoch = clock.nowEpochMs();
 	const nowIso = clock.nowWallIso();
-
 	// Guard: refuse to establish SQLite ownership if a legacy .lock exists.
 	// A reused runId may point to an existing RUN_DIR containing artifacts
 	// from a legacy process.  existsSync is a defensive best-effort check;
@@ -303,17 +280,15 @@ async function runInitialMode<S extends object>(
 		runId,
 		orchestratorName: config.name,
 	});
-
 	// Open SQLite database and bootstrap atomically.
 	// incarnation + ownership + state are established in a single
 	// BEGIN IMMEDIATE ... COMMIT.  The LockHandle is only returned
 	// after the COMMIT succeeds.
 	const runDb = openRunDatabase({
-		driver: bunSqliteDriver,
+		driver: nodeSqliteDriver,
 		dbPath,
 		busyTimeoutMs: 2000,
 	});
-
 	const initialRecord: Record<string, unknown> = {
 		schemaVersion: STATE_SCHEMA_VERSION,
 		runId,
@@ -331,7 +306,6 @@ async function runInitialMode<S extends object>(
 		[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD]:
 			PENDING_INITIAL_DISPATCH_VERSION,
 	};
-
 	const bootstrapResult = bootstrapNewRunAtomic({
 		db: runDb.connection,
 		runId,
@@ -343,7 +317,6 @@ async function runInitialMode<S extends object>(
 		stateSchemaVersion: STATE_SCHEMA_VERSION,
 		contentionDeadlineMs: 5000,
 	});
-
 	if (bootstrapResult.kind !== "BOOTSTRAPPED") {
 		runDb.close();
 		if (bootstrapResult.kind === "ACTIVE_CONFLICT") {
@@ -374,10 +347,8 @@ async function runInitialMode<S extends object>(
 			{ runId, orchestratorName: config.name },
 		);
 	}
-
 	const handle = bootstrapResult.handle;
 	const committed = bootstrapResult.committed;
-
 	// Build the dispatch state from the committed authoritative record, never
 	// from the pre-lock config values. The private initial-dispatch marker is
 	// intentionally omitted from StateFile and remains SQLite-only evidence.
@@ -402,7 +373,6 @@ async function runInitialMode<S extends object>(
 		usedLabels: (committedState.usedLabels as readonly string[]) ?? [],
 	};
 	const initialPhase = initialFile.currentPhase;
-
 	const abortController = new AbortController();
 	const ctx: DispatchContext<S> = {
 		config,
@@ -417,7 +387,6 @@ async function runInitialMode<S extends object>(
 		accumulatedDurationMs: initialFile.accumulatedDurationMs,
 		stateRevision: committed.stateRevision,
 	};
-
 	// Every post-bootstrap boundary, including the durable claim, has one
 	// cleanup owner. SIGKILL deliberately bypasses this path so the successor
 	// must take over only after the lease expires.
@@ -434,7 +403,6 @@ async function runInitialMode<S extends object>(
 			dependencies.projectionDependencies,
 		);
 		dependencies.hooks?.afterInitialProjection?.();
-
 		logger.enableDiskEmit(path.join(runDir, "events.ndjson"));
 		logger.emit({
 			eventType: "orchestrator_start",
@@ -443,7 +411,6 @@ async function runInitialMode<S extends object>(
 			initialPhase,
 			timestamp: nowIso,
 		});
-
 		installSignalHandlers(ctx);
 		try {
 			cleanupOldRuns(
@@ -456,14 +423,12 @@ async function runInitialMode<S extends object>(
 		} catch {
 			// best-effort
 		}
-
 		dependencies.hooks?.beforeInitialDispatchClaim?.();
 		claimInitialDispatchWithProjection(ctx);
 		dependencies.hooks?.afterInitialDispatchClaim?.();
 	} catch (setupErr) {
 		const releaseResult = releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
-
 		if (
 			releaseResult.kind !== "SUCCESS" &&
 			releaseResult.kind !== "STALE_HANDLE"
@@ -485,13 +450,10 @@ async function runInitialMode<S extends object>(
 				},
 			);
 		}
-
 		throw setupErr;
 	}
-
 	await runDispatchLoop(ctx, initialFile);
 }
-
 async function runResumeMode<S extends object>(
 	config: OrchestratorConfig<S>,
 	argv: ParsedArgv,
@@ -510,11 +472,9 @@ async function runResumeMode<S extends object>(
 			orchestratorName: config.name,
 		});
 	}
-
 	const logger = createLogger(config.logging);
 	const dbPath = path.join(runDir, DB_FILENAME);
 	const dbExists = fs.existsSync(dbPath);
-
 	// Centralized ownership-storage compatibility guard.
 	// Applied BEFORE any DB creation, ownership acquisition, fence token
 	// increment, state projection, or phase execution.
@@ -529,10 +489,8 @@ async function runResumeMode<S extends object>(
 		runId,
 		orchestratorName: config.name,
 	});
-
 	let runDb: ReturnType<typeof openRunDatabase>;
-	let handle: import("../persistence/sqlite/ownership").LockHandle;
-
+	let handle: import("../persistence/sqlite/ownership.js").LockHandle;
 	if (!dbExists) {
 		// Legacy migration path: state.json exists but no SQLite DB.
 		// readStateSnapshot now throws StateMigrationBlockedError with the
@@ -559,7 +517,6 @@ async function runResumeMode<S extends object>(
 				orchestratorName: config.name,
 			});
 		}
-
 		// Validate identity BEFORE creating the DB — a mismatched legacy
 		// state.json must not be silently reassigned to a different run.
 		if (snapshot.state.runId !== runId) {
@@ -574,7 +531,6 @@ async function runResumeMode<S extends object>(
 				{ runId, orchestratorName: config.name },
 			);
 		}
-
 		// snapshot.state.schemaVersion is guaranteed to be STATE_SCHEMA_VERSION
 		// because readStateSnapshot now throws on blocked migration.
 		//
@@ -591,13 +547,11 @@ async function runResumeMode<S extends object>(
 		// without an authoritative state row if the previous process crashed
 		// between schema creation and the fenced initial state establishment.
 		runDb = openRunDatabase({
-			driver: bunSqliteDriver,
+			driver: nodeSqliteDriver,
 			dbPath,
 			busyTimeoutMs: 2000,
 		});
-
 		const preRead = readAuthoritativeState<S>(runDb.connection);
-
 		if (preRead.state !== null) {
 			// Validate identity BEFORE acquiring ownership — a DB placed
 			// in the wrong RUN_DIR must be rejected before we take the
@@ -616,11 +570,9 @@ async function runResumeMode<S extends object>(
 					{ runId, orchestratorName: config.name },
 				);
 			}
-
 			// Fully bootstrapped — acquire ownership normally.
 			const nowEpoch = clock.nowEpochMs();
 			const nowIso = clock.nowWallIso();
-
 			const acquireResult = acquireOwnership({
 				db: runDb.connection,
 				runId,
@@ -630,7 +582,6 @@ async function runResumeMode<S extends object>(
 				leaseDurationMs: 30 * 60 * 1000,
 				contentionDeadlineMs: 5000,
 			});
-
 			if (acquireResult.kind === "ACTIVE_CONFLICT") {
 				runDb.close();
 				emitRunLockedError(
@@ -649,7 +600,6 @@ async function runResumeMode<S extends object>(
 				);
 				doExit(2);
 			}
-
 			if (acquireResult.kind !== "ACQUIRED") {
 				runDb.close();
 				throw new ProtocolError(
@@ -657,7 +607,6 @@ async function runResumeMode<S extends object>(
 					{ runId, orchestratorName: config.name },
 				);
 			}
-
 			handle = acquireResult.handle;
 		} else {
 			// Incomplete bootstrap — the DB has schema tables but no
@@ -667,7 +616,6 @@ async function runResumeMode<S extends object>(
 			// existing ownership rows via CAS, and seedLegacyStateToSqlite
 			// is idempotent (INSERT OR IGNORE).
 			runDb.close();
-
 			const legacyStatePath = path.join(runDir, "state.json");
 			if (!fs.existsSync(legacyStatePath)) {
 				throw new StateMissingError(
@@ -675,7 +623,6 @@ async function runResumeMode<S extends object>(
 					{ runId, orchestratorName: config.name },
 				);
 			}
-
 			let snapshot: ReturnType<typeof readStateSnapshot<S>>;
 			try {
 				snapshot = readStateSnapshot<S>(runDir, config.stateSchema);
@@ -698,7 +645,6 @@ async function runResumeMode<S extends object>(
 					{ runId, orchestratorName: config.name },
 				);
 			}
-
 			// Validate identity before seed.
 			if (snapshot.state.runId !== runId) {
 				throw new ProtocolError(
@@ -712,7 +658,6 @@ async function runResumeMode<S extends object>(
 					{ runId, orchestratorName: config.name },
 				);
 			}
-
 			// seedLegacyStateToSqlite is idempotent — it opens the DB,
 			// pre-creates the incarnation (INSERT OR IGNORE), acquires
 			// ownership (CAS), seeds the state (INSERT OR IGNORE), and
@@ -722,7 +667,6 @@ async function runResumeMode<S extends object>(
 			handle = seeded.handle;
 		}
 	}
-
 	// Read authoritative state from SQLite (defense-in-depth — should
 	// always succeed after the paths above).
 	//
@@ -737,7 +681,6 @@ async function runResumeMode<S extends object>(
 				orchestratorName: config.name,
 			});
 		}
-
 		// Attempt v3→v4 migration via migrateV3ToV4.  The migration is
 		// all-or-nothing: if any legacy manifest cannot be converted, the
 		// result includes the blocking reason.  A v3 state with no legacy
@@ -745,13 +688,11 @@ async function runResumeMode<S extends object>(
 		let authoritativeRecord = readResult.state;
 		let authoritativeDigest = readResult.digest;
 		let pendingInitialDispatch = readResult.pendingInitialDispatch;
-
 		if (readResult.state.schemaVersion === 3) {
 			const migrationResult = migrateV3ToV4(
 				readResult.state as unknown as Record<string, unknown>,
 				runDir,
 			);
-
 			if (migrationResult.kind === "MIGRATED") {
 				const maybeMigrated = migrationResult.state;
 				// All legacy fields were converted (or none existed) — commit the v4 state.
@@ -767,11 +708,6 @@ async function runResumeMode<S extends object>(
 							}
 						: {}),
 				};
-
-				const { commitState } =
-					require("../persistence/sqlite/run-state-store") as {
-						commitState: typeof import("../persistence/sqlite/run-state-store").commitState;
-					};
 				const commitResult = commitState({
 					db: runDb.connection,
 					handle,
@@ -780,7 +716,6 @@ async function runResumeMode<S extends object>(
 					nowEpochMs: clock.nowEpochMs(),
 					nowIso: clock.nowWallIso(),
 				});
-
 				if (commitResult.kind !== "COMMITTED") {
 					throw new ProtocolError(
 						`v3→v4 migration commit failed: ${commitResult.kind}`,
@@ -794,7 +729,6 @@ async function runResumeMode<S extends object>(
 						},
 					);
 				}
-
 				authoritativeRecord = commitResult.committed.state as StateRecord<S>;
 				authoritativeDigest = commitResult.committed.stateDigest;
 				pendingInitialDispatch = false;
@@ -809,11 +743,9 @@ async function runResumeMode<S extends object>(
 				);
 			}
 		}
-
 		// Build the in-memory StateFile from the authoritative record (which
 		// may now be v4 with the updated revision).
 		const state = stateRecordToStateFile(authoritativeRecord, runDir);
-
 		// Project state.json from the authoritative record under fence.
 		// The fenced projection re-reads from SQLite — content always comes
 		// from the authority.
@@ -828,7 +760,6 @@ async function runResumeMode<S extends object>(
 			undefined,
 			dependencies.projectionDependencies,
 		);
-
 		if (state.runId !== runId) {
 			throw new ProtocolError(
 				`RUN_DIR mismatch with argv — state.runId=${state.runId}, argv.runId=${runId}`,
@@ -841,7 +772,6 @@ async function runResumeMode<S extends object>(
 				{ runId, orchestratorName: config.name },
 			);
 		}
-
 		fs.mkdirSync(path.join(runDir, "external-requests"), { recursive: true });
 		fs.mkdirSync(path.join(runDir, "external-results"), { recursive: true });
 		fs.mkdirSync(path.join(runDir, "accepted-external-resolutions"), {
@@ -850,9 +780,7 @@ async function runResumeMode<S extends object>(
 		fs.mkdirSync(path.join(runDir, "artifacts", "sha256"), {
 			recursive: true,
 		});
-
 		logger.enableDiskEmit(path.join(runDir, "events.ndjson"));
-
 		const abortController = new AbortController();
 		const ctx: DispatchContext<S> = {
 			config,
@@ -867,16 +795,13 @@ async function runResumeMode<S extends object>(
 			accumulatedDurationMs: state.accumulatedDurationMs,
 			stateRevision: authoritativeRecord.stateRevision,
 		};
-
 		installSignalHandlers(ctx);
-
 		await runHandleResume(ctx, state, pendingInitialDispatch);
 	} catch (primaryError) {
 		// Single cleanup owner — release ownership then close the DB.
 		// Internal branches MUST NOT release or close; they just throw.
 		const releaseResult = releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
-
 		if (
 			releaseResult.kind !== "SUCCESS" &&
 			releaseResult.kind !== "STALE_HANDLE"
@@ -897,11 +822,9 @@ async function runResumeMode<S extends object>(
 					"\n",
 			);
 		}
-
 		throw primaryError;
 	}
 }
-
 export async function runOrchestratorInternal<S extends object>(
 	config: OrchestratorConfig<S>,
 	argv: ParsedArgv,
@@ -914,7 +837,6 @@ export async function runOrchestratorInternal<S extends object>(
 		await runInitialMode(config, argv, dependencies);
 	}
 }
-
 export async function runOrchestrator<S extends object>(
 	config: OrchestratorConfig<S>,
 ): Promise<void> {

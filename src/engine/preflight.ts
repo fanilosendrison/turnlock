@@ -1,13 +1,11 @@
-import { InvalidConfigError } from "../errors/concrete";
-import { isValidRunId } from "../services/run-id";
-import type { OrchestratorConfig } from "../types/config";
-
+import { InvalidConfigError } from "../errors/concrete.js";
+import { isValidRunId } from "../services/run-id.js";
+import type { OrchestratorConfig } from "../types/config.js";
 export interface ParsedArgv {
 	readonly resume: boolean;
 	readonly runId?: string;
 	readonly rest: readonly string[];
 }
-
 export function parseArgv(args: readonly string[]): ParsedArgv {
 	let resume = false;
 	let runId: string | undefined;
@@ -30,7 +28,6 @@ export function parseArgv(args: readonly string[]): ParsedArgv {
 	}
 	return { resume, rest };
 }
-
 export function validateConfig<S extends object>(
 	config: OrchestratorConfig<S>,
 ): void {
@@ -74,7 +71,6 @@ export function validateConfig<S extends object>(
 		);
 	}
 }
-
 export function validateExternalRunId(
 	runId: string,
 	orchestratorName: string,

@@ -1,63 +1,55 @@
+import assert from "node:assert/strict";
+import { join } from "node:path";
 // TL-F-001 — SQLite ownership campaign.
 //
 // Seeds a SQLite DB with an expired HELD ownership row, then spawns N
 // contenders that all race to take over.  With the CAS-based lock, exactly
 // one contender must win.
-
-import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
-import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
-import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
-import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+import { describe, test } from "node:test";
+import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
+import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
+import { spawnNode } from "../helpers/node-subprocess.js";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 const CONTENDER_COUNT = 24;
-
 interface ContenderReport {
 	id: string;
 	outcome: string;
 	ownerToken?: string;
 	fenceToken?: string;
 }
-
 function spawnContender(
 	contenderScript: string,
 	dbPath: string,
 	id: string,
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-	return new Promise((resolve) => {
-		const proc = Bun.spawn({
-			cmd: ["bun", "run", contenderScript],
-			env: {
-				...process.env,
-				TL_DB_PATH: dbPath,
-				TL_CONTENDER_ID: id,
-			},
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-
-		const stdoutPromise = new Response(proc.stdout).text();
-		const stderrPromise = new Response(proc.stderr).text();
-
-		proc.exited.then(async (exitCode) => {
-			resolve({
-				stdout: await stdoutPromise,
-				stderr: await stderrPromise,
-				exitCode,
-			});
-		});
+): Promise<{
+	stdout: string;
+	stderr: string;
+	exitCode: number;
+}> {
+	const subprocess = spawnNode(contenderScript, [], {
+		env: {
+			...process.env,
+			TL_DB_PATH: dbPath,
+			TL_CONTENDER_ID: id,
+		},
 	});
+	return subprocess.exited.then(async (exitCode) => ({
+		stdout: await subprocess.stdout,
+		stderr: await subprocess.stderr,
+		exitCode,
+	}));
 }
-
 describe("TL-F-001 SQLite ownership campaign", () => {
-	test("exactly one contender wins the CAS race", async () => {
+	test("exactly one contender wins the CAS race", {
+		timeout: 60000,
+	}, async () => {
 		const dir = makeTempDir();
 		const dbPath = join(dir, "turnlock.sqlite3");
-
 		try {
 			// Open the DB to create the schema, then seed an expired HELD row.
 			const seedDb = openRunDatabase({
-				driver: bunSqliteDriver,
+				driver: nodeSqliteDriver,
 				dbPath,
 				busyTimeoutMs: 500,
 			});
@@ -76,16 +68,16 @@ describe("TL-F-001 SQLite ownership campaign", () => {
 					        0, -1);
 				`);
 			seedDb.close();
-
 			// Spawn all contenders.
-			const contenderScript = join(import.meta.dir, "fixtures", "contender.ts");
-
+			const contenderScript = join(
+				import.meta.dirname,
+				"fixtures",
+				"contender.js",
+			);
 			const promises = Array.from({ length: CONTENDER_COUNT }, (_, i) =>
 				spawnContender(contenderScript, dbPath, String(i)),
 			);
-
 			const results = await Promise.all(promises);
-
 			const reports: ContenderReport[] = [];
 			for (const r of results) {
 				if (r.exitCode !== 0) {
@@ -100,7 +92,6 @@ describe("TL-F-001 SQLite ownership campaign", () => {
 					console.error("unparseable contender output:", line.slice(0, 200));
 				}
 			}
-
 			const acquired = reports.filter((r) => r.outcome === "ACQUIRED");
 			const casMisses = reports.filter(
 				(r) => r.outcome === "PREDECESSOR_CAS_MISS",
@@ -110,24 +101,21 @@ describe("TL-F-001 SQLite ownership campaign", () => {
 				(r) => r.outcome === "DB_CONTENTION_TIMEOUT",
 			);
 			const errors = reports.filter((r) => r.outcome.startsWith("ERROR"));
-
 			console.error(
 				`TL-F-001 SQLite: ACQUIRED=${acquired.length} CAS_MISS=${casMisses.length} CONFLICT=${conflicts.length} TIMEOUT=${timeouts.length} ERROR=${errors.length}`,
 			);
-
-			expect(reports.length).toBe(CONTENDER_COUNT);
-			expect(errors.length).toBe(0);
-
+			assert.strictEqual(reports.length, CONTENDER_COUNT);
+			assert.strictEqual(errors.length, 0);
 			// Exactly one winner — the CAS guarantees it.
-			expect(acquired.length).toBe(1);
-			expect(acquired[0]?.fenceToken).toBe("6"); // predecessor had fence 5
-
+			assert.strictEqual(acquired.length, 1);
+			assert.strictEqual(acquired[0]?.fenceToken, "6"); // predecessor had fence 5
 			// All non-winning outcomes must be safe.
-			expect(
+			assert.strictEqual(
 				acquired.length + casMisses.length + conflicts.length + timeouts.length,
-			).toBe(CONTENDER_COUNT);
+				CONTENDER_COUNT,
+			);
 		} finally {
 			cleanupTempDir(dir);
 		}
-	}, 60_000);
+	});
 });

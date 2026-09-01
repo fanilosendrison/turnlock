@@ -1,7 +1,6 @@
-import type { DelegationRequest } from "../types/delegation";
+import type { DelegationRequest } from "../types/delegation.js";
 
-export { MANIFEST_VERSION } from "../constants";
-
+export { MANIFEST_VERSION } from "../constants.js";
 export interface DelegationContext {
 	readonly runId: string;
 	readonly orchestratorName: string;
@@ -15,13 +14,11 @@ export interface DelegationContext {
 	readonly deadlineAtEpochMs: number;
 	readonly runDir: string;
 }
-
 export interface DelegationManifestJob {
 	readonly id: string;
 	readonly prompt: string;
 	readonly resultPath: string;
 }
-
 export interface DelegationManifest {
 	readonly manifestVersion: 2;
 	readonly runId: string;
@@ -41,7 +38,6 @@ export interface DelegationManifest {
 	readonly jobs?: readonly DelegationManifestJob[];
 	readonly resultPath?: string;
 }
-
 export interface DelegationBinding<Req extends DelegationRequest> {
 	readonly kind: Req["kind"];
 	buildManifest(request: Req, context: DelegationContext): DelegationManifest;

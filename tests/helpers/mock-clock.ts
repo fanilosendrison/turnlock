@@ -1,5 +1,4 @@
-import type { Clock } from "../../src/types/config";
-
+import type { Clock } from "../../src/types/config.js";
 export interface MockClock extends Clock {
 	setWall(isoOrDate: string | Date): void;
 	setEpochMs(ms: number): void;
@@ -8,7 +7,6 @@ export interface MockClock extends Clock {
 	advanceEpoch(ms: number): void;
 	advanceMono(ms: number): void;
 }
-
 export function createMockClock(
 	initialIso = "2026-04-19T12:00:00.000Z",
 	initialEpoch?: number,
@@ -17,7 +15,6 @@ export function createMockClock(
 	let wall = new Date(initialIso);
 	let epoch = initialEpoch ?? wall.getTime();
 	let mono = initialMono;
-
 	return {
 		nowWall(): Date {
 			return new Date(wall.getTime());

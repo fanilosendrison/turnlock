@@ -1,29 +1,28 @@
+import assert from "node:assert/strict";
+import { join } from "node:path";
 // Lot 2 — ownership refresh and release tests.
 //
 // Covers: valid refresh, stale handle rejection, expired handle,
 // valid release, double release, fenceToken preservation.
-
-import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
-import { bunSqliteDriver } from "../../src/persistence/sqlite/bun-sqlite-driver";
+import { describe, test } from "node:test";
+import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
 import {
 	acquireOwnership,
 	refreshOwnership,
 	releaseOwnership,
-} from "../../src/persistence/sqlite/ownership";
-import { openRunDatabase } from "../../src/persistence/sqlite/run-database";
-import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir";
+} from "../../src/persistence/sqlite/ownership.js";
+import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 const LEASE_MS = 30 * 60 * 1000;
-const CONTENTION_DEADLINE_MS = 2_000;
-const NOW_EPOCH = 1_000_000_000_000;
+const CONTENTION_DEADLINE_MS = 2000;
+const NOW_EPOCH = 1000000000000;
 const NOW_ISO = "2001-09-09T01:46:40.000Z";
-
 function setup() {
 	const dir = makeTempDir();
 	const dbPath = join(dir, "turnlock.sqlite3");
 	const runDb = openRunDatabase({
-		driver: bunSqliteDriver,
+		driver: nodeSqliteDriver,
 		dbPath,
 		busyTimeoutMs: 500,
 	});
@@ -36,7 +35,6 @@ function setup() {
 		},
 	};
 }
-
 function acquire(
 	runDb: ReturnType<typeof openRunDatabase>,
 	nowEpoch = NOW_EPOCH,
@@ -52,53 +50,47 @@ function acquire(
 		leaseClockEpochMs: () => nowEpoch,
 	});
 }
-
 describe("ownership refresh", () => {
 	test("valid refresh extends the lease", () => {
 		const ctx = setup();
 		try {
 			const result = acquire(ctx.runDb);
-			expect(result.kind).toBe("ACQUIRED");
+			assert.strictEqual(result.kind, "ACQUIRED");
 			if (result.kind !== "ACQUIRED") return;
 			const handle = result.handle;
-
 			const refreshResult = refreshOwnership({
 				db: ctx.runDb.connection,
 				handle,
-				nowEpochMs: NOW_EPOCH + 10_000,
-				leaseClockEpochMs: () => NOW_EPOCH + 10_000,
+				nowEpochMs: NOW_EPOCH + 10000,
+				leaseClockEpochMs: () => NOW_EPOCH + 10000,
 				leaseDurationMs: LEASE_MS,
 			});
-			expect(refreshResult.kind).toBe("SUCCESS");
+			assert.strictEqual(refreshResult.kind, "SUCCESS");
 			if (refreshResult.kind !== "SUCCESS") return;
-			expect(refreshResult.handle.leaseUntilEpochMs).toBe(
-				NOW_EPOCH + 10_000 + LEASE_MS,
+			assert.strictEqual(
+				refreshResult.handle.leaseUntilEpochMs,
+				NOW_EPOCH + 10000 + LEASE_MS,
 			);
-			expect(refreshResult.handle.fenceToken).toBe(handle.fenceToken);
-			expect(refreshResult.handle.ownerToken).toBe(handle.ownerToken);
+			assert.strictEqual(refreshResult.handle.fenceToken, handle.fenceToken);
+			assert.strictEqual(refreshResult.handle.ownerToken, handle.ownerToken);
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("stale handle is rejected", () => {
 		const ctx = setup();
 		try {
 			const result = acquire(ctx.runDb);
-			expect(result.kind).toBe("ACQUIRED");
+			assert.strictEqual(result.kind, "ACQUIRED");
 			if (result.kind !== "ACQUIRED") return;
-
 			// Manually release (so the handle is stale).
-			ctx.runDb.connection.exec(
-				`UPDATE run_ownership
+			ctx.runDb.connection.exec(`UPDATE run_ownership
 				 SET ownership_status = 'FREE',
 				     owner_token = NULL,
 				     owner_pid = NULL,
 				     acquired_at_epoch_ms = NULL,
 				     lease_until_epoch_ms = NULL
-				 WHERE singleton = 1`,
-			);
-
+				 WHERE singleton = 1`);
 			const refreshResult = refreshOwnership({
 				db: ctx.runDb.connection,
 				handle: result.handle,
@@ -106,19 +98,17 @@ describe("ownership refresh", () => {
 				leaseClockEpochMs: () => NOW_EPOCH,
 				leaseDurationMs: LEASE_MS,
 			});
-			expect(refreshResult.kind).toBe("STALE_HANDLE");
+			assert.strictEqual(refreshResult.kind, "STALE_HANDLE");
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("expired handle is rejected", () => {
 		const ctx = setup();
 		try {
 			const result = acquire(ctx.runDb, 0); // acquired at epoch 0
-			expect(result.kind).toBe("ACQUIRED");
+			assert.strictEqual(result.kind, "ACQUIRED");
 			if (result.kind !== "ACQUIRED") return;
-
 			// Try to refresh long after expiry.
 			const refreshResult = refreshOwnership({
 				db: ctx.runDb.connection,
@@ -127,29 +117,25 @@ describe("ownership refresh", () => {
 				leaseClockEpochMs: () => NOW_EPOCH,
 				leaseDurationMs: LEASE_MS,
 			});
-			expect(refreshResult.kind).toBe("EXPIRED_HANDLE");
+			assert.strictEqual(refreshResult.kind, "EXPIRED_HANDLE");
 		} finally {
 			ctx.cleanup();
 		}
 	});
 });
-
 describe("ownership release", () => {
 	test("valid release sets FREE and preserves fenceToken", () => {
 		const ctx = setup();
 		try {
 			const result = acquire(ctx.runDb);
-			expect(result.kind).toBe("ACQUIRED");
+			assert.strictEqual(result.kind, "ACQUIRED");
 			if (result.kind !== "ACQUIRED") return;
-
 			const fenceBefore = result.handle.fenceToken;
-
 			const releaseResult = releaseOwnership({
 				db: ctx.runDb.connection,
 				handle: result.handle,
 			});
-			expect(releaseResult.kind).toBe("SUCCESS");
-
+			assert.strictEqual(releaseResult.kind, "SUCCESS");
 			// Verify row is FREE but fenceToken unchanged.
 			const row = ctx.runDb.connection
 				.prepare(
@@ -160,60 +146,52 @@ describe("ownership release", () => {
 				fence_token: number;
 				owner_token: string | null;
 			};
-			expect(row.ownership_status).toBe("FREE");
-			expect(row.owner_token).toBeNull();
-			expect(BigInt(row.fence_token)).toBe(fenceBefore);
+			assert.strictEqual(row.ownership_status, "FREE");
+			assert.strictEqual(row.owner_token, null);
+			assert.strictEqual(BigInt(row.fence_token), fenceBefore);
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("stale handle release is rejected", () => {
 		const ctx = setup();
 		try {
 			const result = acquire(ctx.runDb);
-			expect(result.kind).toBe("ACQUIRED");
+			assert.strictEqual(result.kind, "ACQUIRED");
 			if (result.kind !== "ACQUIRED") return;
-
 			// Manually release first.
-			ctx.runDb.connection.exec(
-				`UPDATE run_ownership
+			ctx.runDb.connection.exec(`UPDATE run_ownership
 				 SET ownership_status = 'FREE',
 				     owner_token = NULL,
 				     owner_pid = NULL,
 				     acquired_at_epoch_ms = NULL,
 				     lease_until_epoch_ms = NULL
-				 WHERE singleton = 1`,
-			);
-
+				 WHERE singleton = 1`);
 			const releaseResult = releaseOwnership({
 				db: ctx.runDb.connection,
 				handle: result.handle,
 			});
-			expect(releaseResult.kind).toBe("STALE_HANDLE");
+			assert.strictEqual(releaseResult.kind, "STALE_HANDLE");
 		} finally {
 			ctx.cleanup();
 		}
 	});
-
 	test("double release is rejected", () => {
 		const ctx = setup();
 		try {
 			const result = acquire(ctx.runDb);
-			expect(result.kind).toBe("ACQUIRED");
+			assert.strictEqual(result.kind, "ACQUIRED");
 			if (result.kind !== "ACQUIRED") return;
-
 			const first = releaseOwnership({
 				db: ctx.runDb.connection,
 				handle: result.handle,
 			});
-			expect(first.kind).toBe("SUCCESS");
-
+			assert.strictEqual(first.kind, "SUCCESS");
 			const second = releaseOwnership({
 				db: ctx.runDb.connection,
 				handle: result.handle,
 			});
-			expect(second.kind).toBe("STALE_HANDLE");
+			assert.strictEqual(second.kind, "STALE_HANDLE");
 		} finally {
 			ctx.cleanup();
 		}

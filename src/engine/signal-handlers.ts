@@ -1,9 +1,9 @@
-import { AbortedError } from "../errors/concrete";
-import { clock } from "../services/clock";
-import { writeProtocolBlock } from "../services/protocol";
-import { type DispatchContext, doExit } from "./context";
-import { releaseOwnershipBestEffort } from "./state-commit";
-
+import { AbortedError } from "../errors/concrete.js";
+import { clock } from "../services/clock.js";
+import { writeProtocolBlock } from "../services/protocol.js";
+import { type DispatchContext, doExit } from "./context.js";
+import { writeProtocolStdout } from "./protocol-stdout.js";
+import { releaseOwnershipBestEffort } from "./state-commit.js";
 export function installSignalHandlers<S extends object>(
 	ctx: DispatchContext<S>,
 ): void {
@@ -42,7 +42,7 @@ export function installSignalHandlers<S extends object>(
 				signal,
 				phase: ctx.currentPhase ?? null,
 			});
-			process.stdout.write(block);
+			writeProtocolStdout(block);
 		} catch {
 			// silent
 		}
@@ -53,7 +53,6 @@ export function installSignalHandlers<S extends object>(
 		}
 		doExit(code);
 	};
-
 	process.on("SIGINT", makeHandler("SIGINT"));
 	process.on("SIGTERM", makeHandler("SIGTERM"));
 }

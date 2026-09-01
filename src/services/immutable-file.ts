@@ -1,12 +1,9 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
-
 export type ImmutableFileInstallResult = "created" | "existing";
-
 function isFileError(error: unknown, code: string): boolean {
 	return (error as NodeJS.ErrnoException).code === code;
 }
-
 function pathExists(filePath: string): boolean {
 	try {
 		fs.lstatSync(filePath);
@@ -16,7 +13,6 @@ function pathExists(filePath: string): boolean {
 		throw error;
 	}
 }
-
 function removeTemporaryFileBestEffort(temporaryPath: string): void {
 	try {
 		fs.unlinkSync(temporaryPath);
@@ -24,13 +20,11 @@ function removeTemporaryFileBestEffort(temporaryPath: string): void {
 		// A stale uniquely named temp file is non-authoritative.
 	}
 }
-
 export function installImmutableFileAtomic(
 	targetPath: string,
 	content: Uint8Array,
 ): ImmutableFileInstallResult {
 	if (pathExists(targetPath)) return "existing";
-
 	const temporaryPath = `${targetPath}.tmp-${process.pid}-${randomUUID()}`;
 	const flags =
 		fs.constants.O_WRONLY |
@@ -44,7 +38,6 @@ export function installImmutableFileAtomic(
 		} finally {
 			fs.closeSync(descriptor);
 		}
-
 		try {
 			// Hard-link publication is atomic and fails if a first artifact already won.
 			fs.linkSync(temporaryPath, targetPath);
@@ -57,7 +50,6 @@ export function installImmutableFileAtomic(
 		removeTemporaryFileBestEffort(temporaryPath);
 	}
 }
-
 export function readRegularFileBytes(filePath: string): Buffer {
 	const flags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW;
 	const descriptor = fs.openSync(filePath, flags);

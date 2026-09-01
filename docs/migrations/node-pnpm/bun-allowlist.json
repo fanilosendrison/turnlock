@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "status": "active",
+  "default": "deny",
+  "excludedPathRules": [
+    ".git/**",
+    "node_modules/**",
+    "dist/**",
+    ".test-dist/**",
+    "docs/migrations/node-pnpm/archive/**"
+  ],
+  "permanentExceptions": [
+    {
+      "path": ".github/workflows/bootstrap-proof.yml",
+      "category": "policy-enforcement",
+      "requiredLiterals": ["bun-failure-sentinel", "unexpected Bun invocation"]
+    },
+    {
+      "path": "README.md",
+      "category": "external-consumer-interop",
+      "requiredLiterals": ["including Bun"]
+    },
+    {
+      "path": "package.json",
+      "category": "policy-enforcement",
+      "requiredLiterals": ["test:policy", "bun-policy.test.mjs"]
+    },
+    {
+      "path": "docs/migrations/node-pnpm/functional-parity-contract.md",
+      "category": "migration-contract",
+      "requiredLiterals": ["No Bun lock", "external Bun consumers"]
+    },
+    {
+      "path": "tests/services/protocol.test.ts",
+      "category": "external-consumer-interop",
+      "requiredLiterals": ["bun run ./main.ts"]
+    },
+    {
+      "path": "tests/fixtures/protocol/delegate-agent.txt",
+      "category": "historical-protocol-fixture",
+      "requiredLiterals": ["bun run ./main.ts"]
+    },
+    {
+      "path": "tests/fixtures/protocol/delegate-batch.txt",
+      "category": "historical-protocol-fixture",
+      "requiredLiterals": ["bun run ./main.ts"]
+    },
+    {
+      "path": "tests/fixtures/protocol/delegate-prompt.txt",
+      "category": "historical-protocol-fixture",
+      "requiredLiterals": ["bun run ./main.ts"]
+    },
+    {
+      "path": "tests/fixtures/protocol/request-external.txt",
+      "category": "historical-protocol-fixture",
+      "requiredLiterals": ["bun run ./main.ts"]
+    },
+    {
+      "path": "scripts/validate-bun-policy.mjs",
+      "category": "policy-enforcement",
+      "requiredLiterals": ["BUN_REFERENCE_PATTERN", "bun:test", "bun\\.lockb?"]
+    },
+    {
+      "path": "scripts/test/bun-policy.test.mjs",
+      "category": "policy-enforcement",
+      "requiredLiterals": ["bun:test", "bun run test"]
+    }
+  ]
+}

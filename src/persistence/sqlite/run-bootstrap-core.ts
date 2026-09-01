@@ -10,16 +10,15 @@
 // Fault injection is supported through BootstrapInternalDependencies for
 // testing atomicity guarantees.  The public API (run-bootstrap.ts) never
 // exposes these hooks.
-
 import { createHash } from "node:crypto";
 import {
 	LEGACY_PENDING_INITIAL_DISPATCH_STATE_FIELD,
 	LEGACY_PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
 	PENDING_INITIAL_DISPATCH_STATE_FIELD,
 	PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
-} from "../../constants";
-import { generateRunId } from "../../services/run-id";
-import { DbIntegrityError } from "./errors";
+} from "../../constants.js";
+import { generateRunId } from "../../services/run-id.js";
+import { DbIntegrityError } from "./errors.js";
 import {
 	acquireOwnershipDirectInTransaction,
 	beginImmediate,
@@ -28,13 +27,11 @@ import {
 	ensureOwnershipRowInTransaction,
 	type LockHandle,
 	rollback,
-} from "./ownership";
-import type { SqliteConnection } from "./sqlite-driver";
-
+} from "./ownership.js";
+import type { SqliteConnection } from "./sqlite-driver.js";
 // ---------------------------------------------------------------------------
 // Fault injection types (internal — never exposed on the public API)
 // ---------------------------------------------------------------------------
-
 /** Closed set of fault points for bootstrap atomicity testing.
  *
  *  The first five points are pre-commit — an injected failure at any of
@@ -49,7 +46,6 @@ export type BootstrapFaultPoint =
 	| "AFTER_STATE_WRITE"
 	| "BEFORE_COMMIT"
 	| "AFTER_COMMIT_BEFORE_HANDLE";
-
 /** Sentinel error for fault injection tests.
  *
  *  Tests throw this from `onFaultPoint` when a target frontier is reached.
@@ -60,11 +56,9 @@ export class InjectedBootstrapFailure extends Error {
 		this.name = "InjectedBootstrapFailure";
 	}
 }
-
 // ---------------------------------------------------------------------------
 // Dependencies
 // ---------------------------------------------------------------------------
-
 /** Injectable dependencies for atomic run bootstrap and legacy migration.
  *
  *  The production value is {@link productionDependencies}.  Tests may supply a
@@ -73,7 +67,6 @@ export class InjectedBootstrapFailure extends Error {
 export interface RunBootstrapDependencies {
 	readonly generateId: () => string;
 }
-
 /** Internal dependencies — extends RunBootstrapDependencies with fault
  *  injection hooks reserved for testing.
  *
@@ -83,16 +76,13 @@ export interface BootstrapInternalDependencies
 	extends RunBootstrapDependencies {
 	readonly onFaultPoint?: (point: BootstrapFaultPoint) => void;
 }
-
 /** Production dependencies — always uses `generateRunId`. */
 export const productionDependencies: BootstrapInternalDependencies = {
 	generateId: generateRunId,
 };
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
 export interface CommittedState {
 	readonly state: Record<string, unknown>;
 	readonly stateDigest: string;
@@ -100,7 +90,6 @@ export interface CommittedState {
 	readonly committedFenceToken: string;
 	readonly incarnationId: string;
 }
-
 export interface BootstrapNewRunParams {
 	readonly db: SqliteConnection;
 	readonly runId: string;
@@ -114,14 +103,15 @@ export interface BootstrapNewRunParams {
 	readonly stateSchemaVersion: number;
 	readonly contentionDeadlineMs: number;
 }
-
 export type BootstrapNewRunResult =
 	| {
 			readonly kind: "BOOTSTRAPPED";
 			readonly handle: LockHandle;
 			readonly committed: CommittedState;
 	  }
-	| { readonly kind: "ALREADY_ESTABLISHED" }
+	| {
+			readonly kind: "ALREADY_ESTABLISHED";
+	  }
 	| {
 			readonly kind: "ACTIVE_CONFLICT";
 			readonly leaseUntilEpochMs: number;
@@ -130,9 +120,13 @@ export type BootstrapNewRunResult =
 			readonly kind: "INCOMPLETE_EXISTING_BOOTSTRAP";
 			readonly details: string;
 	  }
-	| { readonly kind: "DB_CONTENTION_TIMEOUT" }
-	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
-
+	| {
+			readonly kind: "DB_CONTENTION_TIMEOUT";
+	  }
+	| {
+			readonly kind: "DB_FAILURE";
+			readonly cause: unknown;
+	  };
 export interface MigrateLegacyRunParams {
 	readonly db: SqliteConnection;
 	readonly runId: string;
@@ -150,47 +144,49 @@ export interface MigrateLegacyRunParams {
 	readonly stateSchemaVersion: number;
 	readonly contentionDeadlineMs: number;
 }
-
 export type MigrateLegacyRunResult =
 	| {
 			readonly kind: "MIGRATED";
 			readonly handle: LockHandle;
 			readonly committed: CommittedState;
 	  }
-	| { readonly kind: "ALREADY_ESTABLISHED" }
-	| { readonly kind: "ACTIVE_CONFLICT" }
+	| {
+			readonly kind: "ALREADY_ESTABLISHED";
+	  }
+	| {
+			readonly kind: "ACTIVE_CONFLICT";
+	  }
 	| {
 			readonly kind: "INCOMPLETE_EXISTING_BOOTSTRAP";
 			readonly details: string;
 	  }
-	| { readonly kind: "DB_CONTENTION_TIMEOUT" }
-	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
-
+	| {
+			readonly kind: "DB_CONTENTION_TIMEOUT";
+	  }
+	| {
+			readonly kind: "DB_FAILURE";
+			readonly cause: unknown;
+	  };
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 function bigintFromRow(value: unknown): bigint {
 	if (typeof value === "bigint") return value;
 	if (typeof value === "number") return BigInt(value);
 	throw new DbIntegrityError(`expected bigint, got ${typeof value}`);
 }
-
 /** @internal — exported for use by bootstrap-atomicity.test.ts (tests only). */
 export function computeDigest(jsonStr: string): string {
 	return `sha256:${createHash("sha256").update(jsonStr).digest("hex")}`;
 }
-
 /** @internal — exported for use by bootstrap-atomicity.test.ts (tests only). */
 export function isBusy(error: unknown): boolean {
 	const msg = String(error);
 	return msg.includes("SQLITE_BUSY") || msg.includes("database is locked");
 }
-
 // ---------------------------------------------------------------------------
 // Diagnostic helpers — reads current DB state to classify what we found
 // ---------------------------------------------------------------------------
-
 interface DbSnapshot {
 	readonly hasIncarnation: boolean;
 	readonly hasOwnership: boolean;
@@ -199,7 +195,6 @@ interface DbSnapshot {
 	readonly fenceToken: bigint | null;
 	readonly leaseUntilEpochMs: number | null;
 }
-
 function readDbSnapshot(db: SqliteConnection): DbSnapshot {
 	const incRow = db
 		.prepare("SELECT 1 FROM run_incarnation WHERE singleton = 1")
@@ -218,7 +213,6 @@ function readDbSnapshot(db: SqliteConnection): DbSnapshot {
 	const stateRow = db
 		.prepare("SELECT 1 FROM run_state WHERE singleton = 1")
 		.get();
-
 	return {
 		hasIncarnation: incRow !== undefined,
 		hasOwnership: ownRow !== undefined,
@@ -228,7 +222,6 @@ function readDbSnapshot(db: SqliteConnection): DbSnapshot {
 		leaseUntilEpochMs: ownRow?.lease_until_epoch_ms ?? null,
 	};
 }
-
 // ---------------------------------------------------------------------------
 // Internal: establishRunInTransaction
 // ---------------------------------------------------------------------------
@@ -242,7 +235,6 @@ function readDbSnapshot(db: SqliteConnection): DbSnapshot {
 //
 // @internal — exported for use by bootstrap-atomicity.test.ts (tests only).
 // Not part of the public API.
-
 export interface EstablishResult {
 	readonly incarnationId: string;
 	readonly ownerToken: string;
@@ -254,7 +246,6 @@ export interface EstablishResult {
 	/** The normalized state object that was actually inserted into run_state. */
 	readonly normalizedState: Record<string, unknown>;
 }
-
 /** Recovery policy for partial DB states.
  *
  *  - FORBIDDEN: any existing row in incarnation, ownership, or state tables
@@ -267,7 +258,6 @@ export interface EstablishResult {
  *    The ownership row may be FREE or expired; the fence token is
  *    incremented.  Used by migrateLegacyRunAtomic. */
 export type PartialRecoveryPolicy = "FORBIDDEN" | "FROM_VALIDATED_LEGACY_STATE";
-
 /** @internal — exported for use by bootstrap-atomicity.test.ts (tests only). */
 export function establishRunInTransaction(
 	db: SqliteConnection,
@@ -305,7 +295,6 @@ export function establishRunInTransaction(
 		stateSchemaVersion,
 		partialRecovery,
 	} = params;
-
 	// Normalize timestamps: for a new run, use the post-lock clock;
 	// for legacy migration, preserve the legacy timestamps independently.
 	const effectiveStartedAtEpochMs = params.legacyStartedAtEpochMs ?? nowEpochMs;
@@ -313,7 +302,6 @@ export function establishRunInTransaction(
 	const effectiveLastTransitionAtEpochMs =
 		params.legacyLastTransitionAtEpochMs ?? nowEpochMs;
 	const effectiveLastTransitionAt = params.legacyLastTransitionAt ?? nowIso;
-
 	const initialStateObj = JSON.parse(rawInitialStateJson) as Record<
 		string,
 		unknown
@@ -323,10 +311,8 @@ export function establishRunInTransaction(
 	initialStateObj.lastTransitionAt = effectiveLastTransitionAt;
 	initialStateObj.lastTransitionAtEpochMs = effectiveLastTransitionAtEpochMs;
 	const initialStateJson = JSON.stringify(initialStateObj);
-
 	// 1. Check current state.
 	const snapshot = readDbSnapshot(db);
-
 	// Already fully established?
 	if (snapshot.hasIncarnation && snapshot.hasOwnership && snapshot.hasState) {
 		// If ownership is actively held by another process, report conflict.
@@ -343,13 +329,11 @@ export function establishRunInTransaction(
 		// unowned.  This is a valid state for --resume, not for --initial.
 		return null; // ALREADY_ESTABLISHED
 	}
-
 	// Partial state detection — policy-dependent.
 	const hasAnyRow =
 		snapshot.hasIncarnation || snapshot.hasOwnership || snapshot.hasState;
 	const isComplete =
 		snapshot.hasIncarnation && snapshot.hasOwnership && snapshot.hasState;
-
 	if (hasAnyRow && !isComplete) {
 		// Incomplete bootstrap: at least one table has rows but not all three.
 		if (partialRecovery === "FORBIDDEN") {
@@ -360,7 +344,6 @@ export function establishRunInTransaction(
 				"INCOMPLETE_BOOTSTRAP: partial DB detected — recovery forbidden without validated legacy state",
 			);
 		}
-
 		// FROM_VALIDATED_LEGACY_STATE: recovery allowed only with a
 		// validated state.json as the authoritative source.
 		//
@@ -377,16 +360,13 @@ export function establishRunInTransaction(
 			}
 			// Ownership is FREE or expired — proceed to recovery.
 		}
-
 		if (snapshot.hasState && !snapshot.hasOwnership) {
 			throw new DbIntegrityError(
 				"INCOMPLETE_BOOTSTRAP: state exists but no ownership row",
 			);
 		}
-
 		// Incarnation-only or incarnation+ownership(FREE) — proceed.
 	}
-
 	// 2. Ensure incarnation — use the caller-supplied candidate.
 	//    If a row already exists the candidate is discarded and the
 	//    persisted identity is returned.
@@ -399,10 +379,8 @@ export function establishRunInTransaction(
 		params.legacyStartedAt ?? nowIso,
 	);
 	params.onFaultPoint?.("AFTER_INCARNATION_WRITE");
-
 	// 3. Ensure ownership row.
 	ensureOwnershipRowInTransaction(db, incarnationId);
-
 	// 4. Acquire ownership directly.
 	const acquireResult = acquireOwnershipDirectInTransaction(
 		db,
@@ -412,20 +390,16 @@ export function establishRunInTransaction(
 		nowEpochMs,
 		leaseDurationMs,
 	);
-
 	if (acquireResult === null) {
 		throw new DbIntegrityError(
 			"ACTIVE_CONFLICT: ownership held by another process",
 		);
 	}
 	params.onFaultPoint?.("AFTER_OWNERSHIP_WRITE");
-
 	// 5. Insert initial state.
 	const digest = computeDigest(initialStateJson);
-
 	const insertResult = db
-		.prepare(
-			`INSERT INTO run_state (
+		.prepare(`INSERT INTO run_state (
 			    singleton,
 			    incarnation_id,
 			    state_revision,
@@ -451,8 +425,7 @@ export function establishRunInTransaction(
 			WHERE NOT EXISTS (
 			    SELECT 1 FROM run_state WHERE singleton = 1
 			)
-			RETURNING state_revision, state_digest, committed_by_fence_token`,
-		)
+			RETURNING state_revision, state_digest, committed_by_fence_token`)
 		.get({
 			":incarnation_id": incarnationId,
 			":schema_version": stateSchemaVersion,
@@ -469,7 +442,6 @@ export function establishRunInTransaction(
 				committed_by_fence_token: number | bigint;
 		  }
 		| undefined;
-
 	if (insertResult === undefined) {
 		// State row already exists — this means another caller raced us
 		// (should be impossible under BEGIN IMMEDIATE, but defensive).
@@ -485,18 +457,15 @@ export function establishRunInTransaction(
 					committed_by_fence_token: number | bigint;
 			  }
 			| undefined;
-
 		if (existingState !== undefined) {
 			// State exists — the run was established by someone else.
 			return null; // ALREADY_ESTABLISHED
 		}
-
 		throw new DbIntegrityError(
 			"Failed to insert initial state row — unknown reason",
 		);
 	}
 	params.onFaultPoint?.("AFTER_STATE_WRITE");
-
 	// 6. Verify coherence.
 	const finalSnapshot = readDbSnapshot(db);
 	if (
@@ -508,7 +477,6 @@ export function establishRunInTransaction(
 			"Post-insert coherence check failed — partial state detected",
 		);
 	}
-
 	return {
 		incarnationId,
 		ownerToken,
@@ -522,7 +490,6 @@ export function establishRunInTransaction(
 		normalizedState: initialStateObj,
 	};
 }
-
 // ---------------------------------------------------------------------------
 // Core: bootstrapNewRunAtomicCore
 // ---------------------------------------------------------------------------
@@ -531,7 +498,6 @@ export function establishRunInTransaction(
 // Production callers go through `bootstrapNewRunAtomic` (run-bootstrap.ts)
 // which injects `productionDependencies`.  Tests inject a deterministic
 // generator to prove identity stability across SQLITE_BUSY retries.
-
 /** Bootstrap a brand-new run atomically.
  *
  *  All three tables (incarnation, ownership, state) are populated inside a
@@ -561,7 +527,6 @@ export function bootstrapNewRunAtomicCore(
 		stateSchemaVersion,
 		contentionDeadlineMs,
 	} = params;
-
 	const ownerToken = deps.generateId();
 	const incarnationCandidate = deps.generateId();
 	const ownerPid = process.pid;
@@ -572,16 +537,12 @@ export function bootstrapNewRunAtomicCore(
 	//
 	// incarnationCandidate is generated once before the retry loop so
 	// that SQLITE_BUSY retries preserve the same logical identity.
-
 	const deadlineMs = performance.now() + contentionDeadlineMs;
 	const maxAttempts = 10;
-
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
 		if (performance.now() > deadlineMs) break;
-
 		let transactionStarted = false;
 		let committed = false;
-
 		try {
 			beginImmediate(db);
 			transactionStarted = true;
@@ -593,11 +554,9 @@ export function bootstrapNewRunAtomicCore(
 			if (isBusy(error)) continue;
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		// Capture clock AFTER lock acquisition.
 		const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
 		const lockIso = new Date(lockEpochMs).toISOString();
-
 		let establishResult: EstablishResult | null;
 		try {
 			establishResult = establishRunInTransaction(db, {
@@ -626,7 +585,11 @@ export function bootstrapNewRunAtomicCore(
 						.prepare(
 							"SELECT lease_until_epoch_ms FROM run_ownership WHERE singleton = 1",
 						)
-						.get() as { lease_until_epoch_ms: number } | undefined;
+						.get() as
+						| {
+								lease_until_epoch_ms: number;
+						  }
+						| undefined;
 					return {
 						kind: "ACTIVE_CONFLICT",
 						leaseUntilEpochMs:
@@ -642,14 +605,12 @@ export function bootstrapNewRunAtomicCore(
 			}
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		if (establishResult === null) {
 			if (transactionStarted && !committed) {
 				rollback(db);
 			}
 			return { kind: "ALREADY_ESTABLISHED" };
 		}
-
 		// Pre-commit fault point + COMMIT — both wrapped so injected
 		// failures at BEFORE_COMMIT trigger rollback.
 		try {
@@ -663,13 +624,11 @@ export function bootstrapNewRunAtomicCore(
 			if (isBusy(error)) continue;
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		// Post-commit fault point — for structural verification only.
 		// An injected failure here CANNOT be rolled back (COMMIT already
 		// succeeded).  Crash-recovery tests in later lots will prove
 		// correct handle reconstruction after a post-commit crash.
 		deps.onFaultPoint?.("AFTER_COMMIT_BEFORE_HANDLE");
-
 		// Only after COMMIT: build LockHandle and CommittedState.
 		const handle: LockHandle = {
 			ownerToken: establishResult.ownerToken,
@@ -677,7 +636,6 @@ export function bootstrapNewRunAtomicCore(
 			fenceToken: establishResult.fenceToken,
 			leaseUntilEpochMs: establishResult.leaseUntilEpochMs,
 		};
-
 		const committedState: CommittedState = {
 			state: {
 				...establishResult.normalizedState,
@@ -690,13 +648,10 @@ export function bootstrapNewRunAtomicCore(
 			committedFenceToken: establishResult.committedFenceToken,
 			incarnationId: establishResult.incarnationId,
 		};
-
 		return { kind: "BOOTSTRAPPED", handle, committed: committedState };
 	}
-
 	return { kind: "DB_CONTENTION_TIMEOUT" };
 }
-
 // ---------------------------------------------------------------------------
 // Core: migrateLegacyRunAtomicCore
 // ---------------------------------------------------------------------------
@@ -705,7 +660,6 @@ export function bootstrapNewRunAtomicCore(
 // Production callers go through `migrateLegacyRunAtomic` (run-bootstrap.ts)
 // which injects `productionDependencies`.  Tests inject a deterministic
 // generator to prove identity stability across SQLITE_BUSY retries.
-
 /** Migrate a legacy run (state.json, no SQLite DB) into an authoritative
  *  SQLite run atomically.
  *
@@ -740,7 +694,6 @@ export function migrateLegacyRunAtomicCore(
 		stateSchemaVersion,
 		contentionDeadlineMs,
 	} = params;
-
 	// Generate owner token and incarnation candidate once before the
 	// retry loop — a SQLITE_BUSY retry is an infrastructure retry,
 	// not a new logical migration attempt, and must preserve the same
@@ -748,7 +701,6 @@ export function migrateLegacyRunAtomicCore(
 	const ownerToken = deps.generateId();
 	const incarnationCandidate = deps.generateId();
 	const ownerPid = process.pid;
-
 	// Build the initial state JSON with legacy timestamps.
 	const initialStateForDb: Record<string, unknown> = {
 		...legacyState,
@@ -762,16 +714,12 @@ export function migrateLegacyRunAtomicCore(
 	delete initialStateForDb[LEGACY_PENDING_INITIAL_DISPATCH_STATE_FIELD];
 	delete initialStateForDb[LEGACY_PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD];
 	const initialStateJson = JSON.stringify(initialStateForDb);
-
 	const deadlineMs = performance.now() + contentionDeadlineMs;
 	const maxAttempts = 10;
-
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
 		if (performance.now() > deadlineMs) break;
-
 		let transactionStarted = false;
 		let committed = false;
-
 		try {
 			beginImmediate(db);
 			transactionStarted = true;
@@ -783,11 +731,9 @@ export function migrateLegacyRunAtomicCore(
 			if (isBusy(error)) continue;
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		// Capture clock AFTER lock acquisition.
 		const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
 		const lockIso = new Date(lockEpochMs).toISOString();
-
 		let establishResult: EstablishResult | null;
 		try {
 			establishResult = establishRunInTransaction(db, {
@@ -826,14 +772,12 @@ export function migrateLegacyRunAtomicCore(
 			}
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		if (establishResult === null) {
 			if (transactionStarted && !committed) {
 				rollback(db);
 			}
 			return { kind: "ALREADY_ESTABLISHED" };
 		}
-
 		// Pre-commit fault point + COMMIT — both wrapped so injected
 		// failures at BEFORE_COMMIT trigger rollback.
 		try {
@@ -847,13 +791,11 @@ export function migrateLegacyRunAtomicCore(
 			if (isBusy(error)) continue;
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		// Post-commit fault point — for structural verification only.
 		// An injected failure here CANNOT be rolled back (COMMIT already
 		// succeeded).  Crash-recovery tests in later lots will prove
 		// correct handle reconstruction after a post-commit crash.
 		deps.onFaultPoint?.("AFTER_COMMIT_BEFORE_HANDLE");
-
 		// Only after COMMIT: build LockHandle and CommittedState.
 		const handle: LockHandle = {
 			ownerToken: establishResult.ownerToken,
@@ -861,7 +803,6 @@ export function migrateLegacyRunAtomicCore(
 			fenceToken: establishResult.fenceToken,
 			leaseUntilEpochMs: establishResult.leaseUntilEpochMs,
 		};
-
 		const committedState: CommittedState = {
 			state: {
 				...establishResult.normalizedState,
@@ -874,15 +815,11 @@ export function migrateLegacyRunAtomicCore(
 			committedFenceToken: establishResult.committedFenceToken,
 			incarnationId: establishResult.incarnationId,
 		};
-
 		return { kind: "MIGRATED", handle, committed: committedState };
 	}
-
 	return { kind: "DB_CONTENTION_TIMEOUT" };
 }
-
 // ---------------------------------------------------------------------------
 // Re-export for convenience
 // ---------------------------------------------------------------------------
-
-export type { LockHandle } from "./ownership";
+export type { LockHandle } from "./ownership.js";

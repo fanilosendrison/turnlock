@@ -1,17 +1,15 @@
 import * as path from "node:path";
-import { InvalidConfigError } from "../errors/concrete";
-import { writeProtocolBlock } from "../services/protocol";
-import type { BatchDelegationRequest } from "../types/delegation";
+import { InvalidConfigError } from "../errors/concrete.js";
+import { writeProtocolBlock } from "../services/protocol.js";
+import type { BatchDelegationRequest } from "../types/delegation.js";
 import type {
 	DelegationBinding,
 	DelegationContext,
 	DelegationManifest,
-} from "./types";
-import { MANIFEST_VERSION } from "./types";
-
+} from "./types.js";
+import { MANIFEST_VERSION } from "./types.js";
 export const batchBinding: DelegationBinding<BatchDelegationRequest> = {
 	kind: "batch",
-
 	buildManifest(
 		request: BatchDelegationRequest,
 		context: DelegationContext,
@@ -21,7 +19,6 @@ export const batchBinding: DelegationBinding<BatchDelegationRequest> = {
 				`batch delegation '${request.label}' has no jobs`,
 			);
 		}
-
 		const batchDir = path.join(
 			context.runDir,
 			"results",
@@ -32,7 +29,6 @@ export const batchBinding: DelegationBinding<BatchDelegationRequest> = {
 			prompt: job.prompt,
 			resultPath: path.join(batchDir, `${job.id}.json`),
 		}));
-
 		return {
 			manifestVersion: MANIFEST_VERSION,
 			runId: context.runId,
@@ -51,7 +47,6 @@ export const batchBinding: DelegationBinding<BatchDelegationRequest> = {
 			jobs,
 		};
 	},
-
 	buildProtocolBlock(
 		manifest: DelegationManifest,
 		manifestPath: string,

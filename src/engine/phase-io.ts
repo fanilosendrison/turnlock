@@ -5,24 +5,28 @@ import {
 	ExternalResolutionMissingError,
 	ExternalResolutionSchemaError,
 	ProtocolError,
-} from "../errors/concrete";
-import { clock } from "../services/clock";
+} from "../errors/concrete.js";
+import { clock } from "../services/clock.js";
 import type {
 	PendingDelegationRecord,
 	PendingExternalRequestRecord,
-} from "../services/state-io";
-import { summarizeZodError, validateResult } from "../services/validator";
-import type { PhaseIO, PhaseResult } from "../types/phase";
-import type { DispatchContext, LoadedResults } from "./context";
-import { assertExternalRequest } from "./external-request-validation";
-import { refreshOwnershipFromContext } from "./state-commit";
-
+} from "../services/state-io.js";
+import { summarizeZodError, validateResult } from "../services/validator.js";
+import type { PhaseIO, PhaseResult } from "../types/phase.js";
+import type { DispatchContext, LoadedResults } from "./context.js";
+import { assertExternalRequest } from "./external-request-validation.js";
+import { refreshOwnershipFromContext } from "./state-commit.js";
 export interface PhaseIOGuards {
-	readonly committed: { value: boolean };
-	readonly committedResult: { value: PhaseResult<object> | null };
-	readonly consumedCount: { value: number };
+	readonly committed: {
+		value: boolean;
+	};
+	readonly committedResult: {
+		value: PhaseResult<object> | null;
+	};
+	readonly consumedCount: {
+		value: number;
+	};
 }
-
 export function buildPhaseIO<S extends object>(args: {
 	ctx: DispatchContext<S>;
 	currentPhase: string;
@@ -41,7 +45,6 @@ export function buildPhaseIO<S extends object>(args: {
 		usedLabelsAtEntry,
 		guards,
 	} = args;
-
 	function errorContext() {
 		return {
 			runId: ctx.runId,
@@ -49,13 +52,11 @@ export function buildPhaseIO<S extends object>(args: {
 			phase: currentPhase,
 		};
 	}
-
 	function guardCommitted(): void {
 		if (guards.committed.value) {
 			throw new ProtocolError("PhaseResult already committed", errorContext());
 		}
 	}
-
 	function commit<Output = void>(
 		result: PhaseResult<S, Output>,
 	): PhaseResult<S, Output> {
@@ -63,7 +64,6 @@ export function buildPhaseIO<S extends object>(args: {
 		guards.committedResult.value = result as PhaseResult<object>;
 		return result;
 	}
-
 	function assertPendingDelegation(): PendingDelegationRecord {
 		if (!pendingAtEntry) {
 			if (pendingExternalAtEntry) {
@@ -79,7 +79,6 @@ export function buildPhaseIO<S extends object>(args: {
 		}
 		return pendingAtEntry;
 	}
-
 	function assertPendingExternal(): PendingExternalRequestRecord {
 		if (!pendingExternalAtEntry) {
 			if (pendingAtEntry) {
@@ -95,7 +94,6 @@ export function buildPhaseIO<S extends object>(args: {
 		}
 		return pendingExternalAtEntry;
 	}
-
 	function guardSingleConsume(label: string, subject: string): void {
 		if (guards.consumedCount.value >= 1) {
 			throw new ProtocolError(
@@ -104,7 +102,6 @@ export function buildPhaseIO<S extends object>(args: {
 			);
 		}
 	}
-
 	return {
 		delegate(request, resumeAt, nextState) {
 			guardCommitted();
@@ -147,7 +144,6 @@ export function buildPhaseIO<S extends object>(args: {
 		args: process.argv.slice(2),
 		runDir: ctx.runDir,
 		signal: ctx.abortController.signal,
-
 		consumePendingResult<T>(schema: ZodSchema<T>): T {
 			const pd = assertPendingDelegation();
 			if (pd.kind === "batch") {
@@ -192,7 +188,6 @@ export function buildPhaseIO<S extends object>(args: {
 			});
 			return validation.data;
 		},
-
 		consumePendingBatchResults<T>(schema: ZodSchema<T>): readonly T[] {
 			const pd = assertPendingDelegation();
 			if (pd.kind !== "batch") {
@@ -242,7 +237,6 @@ export function buildPhaseIO<S extends object>(args: {
 			});
 			return validated;
 		},
-
 		consumePendingExternalResolution<T>(schema: ZodSchema<T>): T {
 			const pending = assertPendingExternal();
 			guardSingleConsume(pending.label, "external resolution");
@@ -285,7 +279,6 @@ export function buildPhaseIO<S extends object>(args: {
 			});
 			return validation.data;
 		},
-
 		refreshLock(): void {
 			refreshOwnershipFromContext(ctx);
 		},

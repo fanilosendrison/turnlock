@@ -2,7 +2,6 @@
 //
 // Every commit CAS on (incarnation_id, owner_token, fence_token, lease,
 // state_revision).  The `state.json` file is a projection, not the authority.
-
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -13,40 +12,39 @@ import {
 	PENDING_INITIAL_DISPATCH_VERSION,
 	PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
 	STATE_SCHEMA_VERSION,
-} from "../../constants";
+} from "../../constants.js";
 import {
 	AuthorityLostError,
 	PersistenceFailureError,
-} from "../../errors/concrete";
-import type { TerminalDoneRecord } from "../../types/artifacts";
-import { DbIntegrityError } from "./errors";
-import { beginImmediate, commit, type LockHandle, rollback } from "./ownership";
-import type { SqliteConnection } from "./sqlite-driver";
-
+} from "../../errors/concrete.js";
+import type { TerminalDoneRecord } from "../../types/artifacts.js";
+import { DbIntegrityError } from "./errors.js";
+import {
+	beginImmediate,
+	commit,
+	type LockHandle,
+	rollback,
+} from "./ownership.js";
+import type { SqliteConnection } from "./sqlite-driver.js";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
 export interface StateAuthorityMetadata {
 	readonly runIncarnationId: string;
 	readonly stateRevision: string;
 	readonly committedFenceToken: string;
 }
-
 /** Internal crash boundaries for the repairable state.json projection. */
 export type ProjectionFaultPoint =
 	| "AFTER_TEMP_FILE_WRITE"
 	| "AFTER_TEMP_FILE_FSYNC"
 	| "AFTER_RENAME"
 	| "BEFORE_DIRECTORY_FSYNC";
-
 /** Internal-only dependencies used by crash-injection tests. */
 export interface ProjectionInternalDependencies {
 	readonly onFaultPoint?: (point: ProjectionFaultPoint) => void;
 }
-
 const productionProjectionDependencies: ProjectionInternalDependencies = {};
-
 export interface StateRecord<S extends object> {
 	readonly schemaVersion: number;
 	readonly runId: string;
@@ -68,12 +66,10 @@ export interface StateRecord<S extends object> {
 	readonly stateRevision: string;
 	readonly committedFenceToken: string;
 }
-
 export interface CommittedState<S extends object> {
 	readonly state: StateRecord<S>;
 	readonly stateDigest: string;
 }
-
 export interface CommitStateParams<S extends object> {
 	readonly db: SqliteConnection;
 	readonly handle: LockHandle;
@@ -85,34 +81,55 @@ export interface CommitStateParams<S extends object> {
 	 *  BEGIN IMMEDIATE.  Defaults to `Date.now`. */
 	readonly leaseClockEpochMs?: () => number;
 }
-
 export type CommitStateResult =
-	| { readonly kind: "COMMITTED"; readonly committed: CommittedState<object> }
-	| { readonly kind: "STALE_HANDLE" }
-	| { readonly kind: "EXPIRED_HANDLE" }
-	| { readonly kind: "REVISION_CONFLICT" }
-	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
-
+	| {
+			readonly kind: "COMMITTED";
+			readonly committed: CommittedState<object>;
+	  }
+	| {
+			readonly kind: "STALE_HANDLE";
+	  }
+	| {
+			readonly kind: "EXPIRED_HANDLE";
+	  }
+	| {
+			readonly kind: "REVISION_CONFLICT";
+	  }
+	| {
+			readonly kind: "DB_FAILURE";
+			readonly cause: unknown;
+	  };
 export interface ClaimInitialDispatchParams {
 	readonly db: SqliteConnection;
 	readonly handle: LockHandle;
 	/** Optional clock for lease-critical timestamp capture after BEGIN IMMEDIATE. */
 	readonly leaseClockEpochMs?: () => number;
 }
-
 /** Result of consuming the one-time authorization to invoke the first phase. */
 export type ClaimInitialDispatchResult =
-	| { readonly kind: "CLAIMED"; readonly committed: CommittedState<object> }
-	| { readonly kind: "INITIAL_DISPATCH_NOT_PENDING" }
-	| { readonly kind: "STALE_HANDLE" }
-	| { readonly kind: "EXPIRED_HANDLE" }
-	| { readonly kind: "REVISION_CONFLICT" }
-	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
-
+	| {
+			readonly kind: "CLAIMED";
+			readonly committed: CommittedState<object>;
+	  }
+	| {
+			readonly kind: "INITIAL_DISPATCH_NOT_PENDING";
+	  }
+	| {
+			readonly kind: "STALE_HANDLE";
+	  }
+	| {
+			readonly kind: "EXPIRED_HANDLE";
+	  }
+	| {
+			readonly kind: "REVISION_CONFLICT";
+	  }
+	| {
+			readonly kind: "DB_FAILURE";
+			readonly cause: unknown;
+	  };
 // ---------------------------------------------------------------------------
 // Fenced initial state establishment (replaces ensureInitialStateRow)
 // ---------------------------------------------------------------------------
-
 /** Result of a fenced initial state establishment. */
 export type InitializeStateResult =
 	| {
@@ -124,10 +141,16 @@ export type InitializeStateResult =
 			readonly state: StateRecord<object>;
 			readonly digest: string;
 	  }
-	| { readonly kind: "STALE_HANDLE" }
-	| { readonly kind: "EXPIRED_HANDLE" }
-	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
-
+	| {
+			readonly kind: "STALE_HANDLE";
+	  }
+	| {
+			readonly kind: "EXPIRED_HANDLE";
+	  }
+	| {
+			readonly kind: "DB_FAILURE";
+			readonly cause: unknown;
+	  };
 export interface InitializeStateParams {
 	readonly db: SqliteConnection;
 	readonly handle: LockHandle;
@@ -138,21 +161,17 @@ export interface InitializeStateParams {
 	 *  BEGIN IMMEDIATE.  Defaults to `Date.now`. */
 	readonly leaseClockEpochMs?: () => number;
 }
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 function bigintFromRow(value: unknown): bigint {
 	if (typeof value === "bigint") return value;
 	if (typeof value === "number") return BigInt(value);
 	throw new DbIntegrityError(`expected bigint, got ${typeof value}`);
 }
-
 function computeDigest(jsonStr: string): string {
 	return `sha256:${createHash("sha256").update(jsonStr).digest("hex")}`;
 }
-
 /**
  * Recognise a pending initial-dispatch marker written by either the current
  * build (new field names) or a v0.10.0 build (legacy field names).
@@ -172,14 +191,12 @@ function isPendingInitialDispatchV1(parsed: Record<string, unknown>): boolean {
 			PENDING_INITIAL_DISPATCH_VERSION;
 	return newMarker || legacyMarker;
 }
-
 /** True when any recognised marker pair (new or legacy) is present. */
 function hasAnyPendingInitialDispatchMarker(
 	parsed: Record<string, unknown>,
 ): boolean {
 	return isPendingInitialDispatchV1(parsed);
 }
-
 /**
  * Remove every known form of the pending-dispatch marker from the state
  * object so the committed row is clean regardless of which build created it.
@@ -192,11 +209,9 @@ function stripAllPendingInitialDispatchMarkers(
 	delete state[LEGACY_PENDING_INITIAL_DISPATCH_STATE_FIELD];
 	delete state[LEGACY_PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD];
 }
-
 // ---------------------------------------------------------------------------
 // SQL
 // ---------------------------------------------------------------------------
-
 const COMMIT_STATE_SQL = `
 UPDATE run_state
 SET
@@ -227,7 +242,6 @@ RETURNING
     state_digest,
     committed_by_fence_token
 `;
-
 const READ_STATE_SQL = `
 SELECT
     rs.state_schema_version,
@@ -244,17 +258,14 @@ FROM run_state rs
 JOIN run_incarnation ri ON ri.incarnation_id = rs.incarnation_id
 WHERE rs.singleton = 1
 `;
-
 const READ_RAW_STATE_JSON_SQL = `
 SELECT state_json
 FROM run_state
 WHERE singleton = 1
 `;
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
 const INITIALIZE_STATE_SQL = `
 INSERT INTO run_state (
     singleton,
@@ -298,7 +309,6 @@ RETURNING
     state_digest,
     committed_by_fence_token
 `;
-
 /** Establish the initial authoritative state row under the current fence.
  *
  *  Unlike the legacy `ensureInitialStateRow` (which used a blind
@@ -321,25 +331,21 @@ export function initializeStateUnderFence(
 		nowEpochMs: _nowEpochMs,
 		nowIso: _nowIso,
 	} = params;
-
 	const schemaVersion =
 		(initialState.schemaVersion as number) ?? STATE_SCHEMA_VERSION;
 	const jsonStr = JSON.stringify(initialState);
 	const digest = computeDigest(jsonStr);
-
 	try {
 		beginImmediate(db);
 	} catch (error) {
 		return { kind: "DB_FAILURE", cause: error };
 	}
-
 	// Capture clock AFTER lock acquisition — the wait for
 	// BEGIN IMMEDIATE (governed by busy_timeout) must not
 	// produce a stale lease check.  Use the provided lease
 	// clock if available, otherwise the real clock.
 	const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
 	const lockIso = new Date(lockEpochMs).toISOString();
-
 	try {
 		const row = db.prepare(INITIALIZE_STATE_SQL).get({
 			":incarnation_id": handle.incarnationId,
@@ -358,7 +364,6 @@ export function initializeStateUnderFence(
 					committed_by_fence_token: number | bigint;
 			  }
 			| undefined;
-
 		if (row !== undefined) {
 			// Insert succeeded — commit and return the authoritative state.
 			try {
@@ -367,7 +372,6 @@ export function initializeStateUnderFence(
 				rollback(db);
 				return { kind: "DB_FAILURE", cause: error };
 			}
-
 			const revision = String(bigintFromRow(row.state_revision));
 			return {
 				kind: "INITIALIZED",
@@ -384,7 +388,6 @@ export function initializeStateUnderFence(
 				},
 			};
 		}
-
 		// Insert returned no row.  Diagnose why.
 		//
 		// CRITICAL: check ownership BEFORE checking whether run_state
@@ -392,14 +395,11 @@ export function initializeStateUnderFence(
 		// ALREADY_INITIALIZED — the caller would continue with a handle
 		// it no longer owns.
 		rollback(db);
-
 		// Read ownership first.
 		const ownershipRow = db
-			.prepare(
-				`SELECT ownership_status, owner_token, fence_token,
+			.prepare(`SELECT ownership_status, owner_token, fence_token,
 				        lease_until_epoch_ms
-				 FROM run_ownership WHERE singleton = 1`,
-			)
+				 FROM run_ownership WHERE singleton = 1`)
 			.get() as
 			| {
 					ownership_status: string;
@@ -408,7 +408,6 @@ export function initializeStateUnderFence(
 					lease_until_epoch_ms: number | null;
 			  }
 			| undefined;
-
 		if (ownershipRow === undefined) {
 			return {
 				kind: "DB_FAILURE",
@@ -417,26 +416,21 @@ export function initializeStateUnderFence(
 				),
 			};
 		}
-
 		if (ownershipRow.ownership_status !== "HELD") {
 			return { kind: "STALE_HANDLE" };
 		}
-
 		if (ownershipRow.owner_token !== handle.ownerToken) {
 			return { kind: "STALE_HANDLE" };
 		}
-
 		if (bigintFromRow(ownershipRow.fence_token) !== handle.fenceToken) {
 			return { kind: "STALE_HANDLE" };
 		}
-
 		if (
 			ownershipRow.lease_until_epoch_ms !== null &&
 			lockEpochMs >= ownershipRow.lease_until_epoch_ms
 		) {
 			return { kind: "EXPIRED_HANDLE" };
 		}
-
 		// Ownership is still valid.  Now check whether run_state exists.
 		const existing = db
 			.prepare("SELECT 1 FROM run_state WHERE singleton = 1")
@@ -457,7 +451,6 @@ export function initializeStateUnderFence(
 				),
 			};
 		}
-
 		// Ownership valid, no state row — the INSERT condition failed
 		// for an unknown reason (should not happen since ownership matches).
 		return {
@@ -469,7 +462,6 @@ export function initializeStateUnderFence(
 		return { kind: "DB_FAILURE", cause: error };
 	}
 }
-
 export function commitState<S extends object>(
 	params: CommitStateParams<S>,
 ): CommitStateResult {
@@ -481,25 +473,20 @@ export function commitState<S extends object>(
 		nowEpochMs: _nowEpochMs,
 		nowIso: _nowIso,
 	} = params;
-
 	const expectedRevisionBigInt = BigInt(expectedRevision);
-
 	const jsonStr = JSON.stringify(nextState);
 	const digest = computeDigest(jsonStr);
-
 	try {
 		beginImmediate(db);
 	} catch (error) {
 		return { kind: "DB_FAILURE", cause: error };
 	}
-
 	// Capture clock AFTER lock acquisition — the wait for
 	// BEGIN IMMEDIATE (governed by busy_timeout) must not
 	// produce a stale lease check.  Use the provided lease
 	// clock if available, otherwise the real clock.
 	const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
 	const lockIso = new Date(lockEpochMs).toISOString();
-
 	try {
 		const row = db.prepare(COMMIT_STATE_SQL).get({
 			":schema_version": nextState.schemaVersion,
@@ -519,16 +506,13 @@ export function commitState<S extends object>(
 					committed_by_fence_token: number | bigint;
 			  }
 			| undefined;
-
 		if (row === undefined) {
 			rollback(db);
 			// Diagnose why the CAS failed.
 			const ownershipRow = db
-				.prepare(
-					`SELECT ownership_status, owner_token, fence_token,
+				.prepare(`SELECT ownership_status, owner_token, fence_token,
 					        lease_until_epoch_ms
-					 FROM run_ownership WHERE singleton = 1`,
-				)
+					 FROM run_ownership WHERE singleton = 1`)
 				.get() as
 				| {
 						ownership_status: string;
@@ -537,55 +521,49 @@ export function commitState<S extends object>(
 						lease_until_epoch_ms: number;
 				  }
 				| undefined;
-
 			if (ownershipRow === undefined) {
 				return {
 					kind: "DB_FAILURE",
 					cause: new DbIntegrityError("ownership row missing during commit"),
 				};
 			}
-
 			if (ownershipRow.ownership_status !== "HELD") {
 				return { kind: "STALE_HANDLE" };
 			}
-
 			if (ownershipRow.owner_token !== handle.ownerToken) {
 				return { kind: "STALE_HANDLE" };
 			}
-
 			if (bigintFromRow(ownershipRow.fence_token) !== handle.fenceToken) {
 				return { kind: "STALE_HANDLE" };
 			}
-
 			if (lockEpochMs >= ownershipRow.lease_until_epoch_ms) {
 				return { kind: "EXPIRED_HANDLE" };
 			}
-
 			// Ownership matches but revision doesn't.
 			const stateRow = db
 				.prepare("SELECT state_revision FROM run_state WHERE singleton = 1")
-				.get() as { state_revision: number | bigint } | undefined;
-
+				.get() as
+				| {
+						state_revision: number | bigint;
+				  }
+				| undefined;
 			if (
 				stateRow !== undefined &&
 				bigintFromRow(stateRow.state_revision) !== expectedRevisionBigInt
 			) {
 				return { kind: "REVISION_CONFLICT" };
 			}
-
 			return {
 				kind: "DB_FAILURE",
 				cause: new DbIntegrityError("state commit failed for unknown reason"),
 			};
 		}
-
 		try {
 			commit(db);
 		} catch (error) {
 			rollback(db);
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		return {
 			kind: "COMMITTED",
 			committed: {
@@ -605,17 +583,14 @@ export function commitState<S extends object>(
 		return { kind: "DB_FAILURE", cause: error };
 	}
 }
-
 function diagnoseClaimInitialDispatchUpdateFailure(
 	db: SqliteConnection,
 	handle: LockHandle,
 	lockEpochMs: number,
 ): ClaimInitialDispatchResult {
 	const ownershipRow = db
-		.prepare(
-			`SELECT ownership_status, owner_token, fence_token, lease_until_epoch_ms
-			 FROM run_ownership WHERE singleton = 1`,
-		)
+		.prepare(`SELECT ownership_status, owner_token, fence_token, lease_until_epoch_ms
+			 FROM run_ownership WHERE singleton = 1`)
 		.get() as
 		| {
 				ownership_status: string;
@@ -624,7 +599,6 @@ function diagnoseClaimInitialDispatchUpdateFailure(
 				lease_until_epoch_ms: number | null;
 		  }
 		| undefined;
-
 	if (ownershipRow === undefined) {
 		return {
 			kind: "DB_FAILURE",
@@ -648,10 +622,13 @@ function diagnoseClaimInitialDispatchUpdateFailure(
 	) {
 		return { kind: "EXPIRED_HANDLE" };
 	}
-
 	const stateRow = db
 		.prepare("SELECT state_revision FROM run_state WHERE singleton = 1")
-		.get() as { state_revision: number | bigint } | undefined;
+		.get() as
+		| {
+				state_revision: number | bigint;
+		  }
+		| undefined;
 	if (stateRow === undefined) {
 		return {
 			kind: "DB_FAILURE",
@@ -663,7 +640,6 @@ function diagnoseClaimInitialDispatchUpdateFailure(
 	if (bigintFromRow(stateRow.state_revision) !== 0n) {
 		return { kind: "REVISION_CONFLICT" };
 	}
-
 	return {
 		kind: "DB_FAILURE",
 		cause: new DbIntegrityError(
@@ -671,7 +647,6 @@ function diagnoseClaimInitialDispatchUpdateFailure(
 		),
 	};
 }
-
 /**
  * Atomically consume the one-time authorization to invoke a run's initial
  * phase. A crash after this commit is deliberately fail-closed: no successor
@@ -681,16 +656,13 @@ export function claimInitialDispatchUnderFence(
 	params: ClaimInitialDispatchParams,
 ): ClaimInitialDispatchResult {
 	const { db, handle } = params;
-
 	try {
 		beginImmediate(db);
 	} catch (error) {
 		return { kind: "DB_FAILURE", cause: error };
 	}
-
 	const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
 	const lockIso = new Date(lockEpochMs).toISOString();
-
 	try {
 		const current = readAuthoritativeState<object>(db);
 		if (current.state === null) {
@@ -710,9 +682,10 @@ export function claimInitialDispatchUnderFence(
 			rollback(db);
 			return { kind: "INITIAL_DISPATCH_NOT_PENDING" };
 		}
-
 		const rawStateRow = db.prepare(READ_RAW_STATE_JSON_SQL).get() as
-			| { state_json: string }
+			| {
+					state_json: string;
+			  }
 			| undefined;
 		if (rawStateRow === undefined) {
 			rollback(db);
@@ -723,7 +696,6 @@ export function claimInitialDispatchUnderFence(
 				),
 			};
 		}
-
 		const parsedState = JSON.parse(rawStateRow.state_json) as unknown;
 		if (
 			typeof parsedState !== "object" ||
@@ -745,7 +717,6 @@ export function claimInitialDispatchUnderFence(
 			return { kind: "INITIAL_DISPATCH_NOT_PENDING" };
 		}
 		stripAllPendingInitialDispatchMarkers(stateWithoutPendingInitialDispatch);
-
 		const nextStateJson = JSON.stringify(stateWithoutPendingInitialDispatch);
 		const nextStateDigest = computeDigest(nextStateJson);
 		const claimedRow = db.prepare(COMMIT_STATE_SQL).get({
@@ -759,12 +730,10 @@ export function claimInitialDispatchUnderFence(
 			":incarnation_id": handle.incarnationId,
 			":expected_revision": 0n,
 		}) as unknown | undefined;
-
 		if (claimedRow === undefined) {
 			rollback(db);
 			return diagnoseClaimInitialDispatchUpdateFailure(db, handle, lockEpochMs);
 		}
-
 		const claimed = readAuthoritativeState<object>(db);
 		if (claimed.state === null || claimed.digest === null) {
 			throw new DbIntegrityError(
@@ -776,14 +745,12 @@ export function claimInitialDispatchUnderFence(
 				"initial dispatch claim did not produce revision 1 without its marker",
 			);
 		}
-
 		try {
 			commit(db);
 		} catch (error) {
 			rollback(db);
 			return { kind: "DB_FAILURE", cause: error };
 		}
-
 		return {
 			kind: "CLAIMED",
 			committed: {
@@ -796,14 +763,12 @@ export function claimInitialDispatchUnderFence(
 		return { kind: "DB_FAILURE", cause: error };
 	}
 }
-
 export interface ReadStateResult<S extends object> {
 	readonly state: StateRecord<S> | null;
 	readonly digest: string | null;
 	/** Durable evidence that a new-run bootstrap has not committed a phase. */
 	readonly pendingInitialDispatch: boolean;
 }
-
 export function readAuthoritativeState<S extends object>(
 	db: SqliteConnection,
 ): ReadStateResult<S> {
@@ -821,11 +786,9 @@ export function readAuthoritativeState<S extends object>(
 				started_at_epoch_ms: number;
 		  }
 		| undefined;
-
 	if (row === undefined) {
 		return { state: null, digest: null, pendingInitialDispatch: false };
 	}
-
 	// Verify the stored digest matches the stored JSON.
 	// A corrupt state_json with a stale digest must not be
 	// silently accepted.
@@ -835,7 +798,6 @@ export function readAuthoritativeState<S extends object>(
 			`run_state digest mismatch: stored=${row.state_digest}, actual=${actualDigest}`,
 		);
 	}
-
 	const parsed = JSON.parse(row.state_json) as Record<string, unknown>;
 	const state: StateRecord<S> = {
 		schemaVersion: row.state_schema_version,
@@ -859,20 +821,17 @@ export function readAuthoritativeState<S extends object>(
 			? { terminalResult: parsed.terminalResult as TerminalDoneRecord }
 			: {}),
 	};
-
 	return {
 		state,
 		digest: row.state_digest,
 		pendingInitialDispatch: isPendingInitialDispatchV1(parsed),
 	};
 }
-
 // ---------------------------------------------------------------------------
 // state.json projection (private writer — only projectAuthoritativeStateFenced
 // may call this, after verifying ownership and re-reading the authoritative
 // record from SQLite inside a transaction).
 // ---------------------------------------------------------------------------
-
 function writeStateJsonProjection(
 	runDir: string,
 	state: StateRecord<object>,
@@ -907,11 +866,9 @@ function writeStateJsonProjection(
 	if (state.terminalResult !== undefined) {
 		projection.terminalResult = state.terminalResult;
 	}
-
 	const json = JSON.stringify(projection);
 	const tmpPath = path.join(runDir, "state.json.tmp");
 	const statePath = path.join(runDir, "state.json");
-
 	const temporaryFile = fs.openSync(tmpPath, "w", 0o600);
 	try {
 		fs.writeFileSync(temporaryFile, json, { encoding: "utf-8" });
@@ -921,10 +878,8 @@ function writeStateJsonProjection(
 	} finally {
 		fs.closeSync(temporaryFile);
 	}
-
 	fs.renameSync(tmpPath, statePath);
 	dependencies.onFaultPoint?.("AFTER_RENAME");
-
 	const directory = fs.openSync(runDir, fs.constants.O_RDONLY);
 	try {
 		dependencies.onFaultPoint?.("BEFORE_DIRECTORY_FSYNC");
@@ -933,11 +888,9 @@ function writeStateJsonProjection(
 		fs.closeSync(directory);
 	}
 }
-
 // ---------------------------------------------------------------------------
 // Fenced canonical projection — the ONLY public projection API
 // ---------------------------------------------------------------------------
-
 /** Project the authoritative `state.json` under fence.
  *
  *  Protocol (all inside BEGIN IMMEDIATE):
@@ -985,20 +938,16 @@ export function projectAuthoritativeStateFenced(
 			{ operation: "state_commit", cause: error },
 		);
 	}
-
 	// Clock captured AFTER lock acquisition — the wait for BEGIN IMMEDIATE
 	// (governed by busy_timeout) must not produce a stale clock reading.
 	// Use the provided lease clock if available, otherwise the real clock.
 	const nowEpochMs = (leaseClockEpochMs ?? Date.now)();
-
 	try {
 		// Step 1 — Verify ownership including lease expiration.
 		const ownershipRow = db
-			.prepare(
-				`SELECT ownership_status, incarnation_id, owner_token,
+			.prepare(`SELECT ownership_status, incarnation_id, owner_token,
 				        fence_token, lease_until_epoch_ms
-				 FROM run_ownership WHERE singleton = 1`,
-			)
+				 FROM run_ownership WHERE singleton = 1`)
 			.get() as
 			| {
 					ownership_status: string;
@@ -1008,7 +957,6 @@ export function projectAuthoritativeStateFenced(
 					lease_until_epoch_ms: number | null;
 			  }
 			| undefined;
-
 		if (ownershipRow === undefined) {
 			rollback(db);
 			throw new AuthorityLostError(
@@ -1019,7 +967,6 @@ export function projectAuthoritativeStateFenced(
 				},
 			);
 		}
-
 		if (ownershipRow.ownership_status !== "HELD") {
 			rollback(db);
 			throw new AuthorityLostError(
@@ -1030,7 +977,6 @@ export function projectAuthoritativeStateFenced(
 				},
 			);
 		}
-
 		if (ownershipRow.incarnation_id !== handle.incarnationId) {
 			rollback(db);
 			throw new AuthorityLostError(
@@ -1041,7 +987,6 @@ export function projectAuthoritativeStateFenced(
 				},
 			);
 		}
-
 		if (ownershipRow.owner_token !== handle.ownerToken) {
 			rollback(db);
 			throw new AuthorityLostError(
@@ -1052,7 +997,6 @@ export function projectAuthoritativeStateFenced(
 				},
 			);
 		}
-
 		const rowFence =
 			typeof ownershipRow.fence_token === "bigint"
 				? ownershipRow.fence_token
@@ -1067,7 +1011,6 @@ export function projectAuthoritativeStateFenced(
 				},
 			);
 		}
-
 		// Lease check — lease is expired at the exact instant now >= leaseUntil.
 		if (
 			ownershipRow.lease_until_epoch_ms === null ||
@@ -1082,7 +1025,6 @@ export function projectAuthoritativeStateFenced(
 				},
 			);
 		}
-
 		// Step 2 — Re-read the FULL authoritative state from SQLite.
 		// This is the content-authenticity guarantee: we never project a
 		// caller-supplied object; we project what SQLite actually holds.
@@ -1094,7 +1036,6 @@ export function projectAuthoritativeStateFenced(
 				{ operation: "state_commit" },
 			);
 		}
-
 		// Step 3 — Verify expected revision and digest against the re-read state.
 		if (readResult.state.stateRevision !== expectedRevision) {
 			rollback(db);
@@ -1106,7 +1047,6 @@ export function projectAuthoritativeStateFenced(
 				},
 			);
 		}
-
 		if ((readResult.digest ?? "") !== expectedDigest) {
 			rollback(db);
 			throw new PersistenceFailureError(
@@ -1114,7 +1054,6 @@ export function projectAuthoritativeStateFenced(
 				{ operation: "state_commit" },
 			);
 		}
-
 		// Step 4 — Write projection atomically using the re-read state.
 		writeStateJsonProjection(
 			runDir,
@@ -1122,7 +1061,6 @@ export function projectAuthoritativeStateFenced(
 			readResult.digest ?? expectedDigest,
 			dependencies,
 		);
-
 		// Step 6 — COMMIT.
 		commit(db);
 	} catch (error) {

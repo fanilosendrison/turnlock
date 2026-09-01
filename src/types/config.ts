@@ -1,7 +1,6 @@
 import type { ZodSchema } from "zod";
-import type { Phase } from "./phase";
-import type { LoggingPolicy, RetryPolicy, TimeoutPolicy } from "./policies";
-
+import type { Phase } from "./phase.js";
+import type { LoggingPolicy, RetryPolicy, TimeoutPolicy } from "./policies.js";
 export interface OrchestratorConfig<State extends object = object> {
 	readonly name: string;
 	readonly initial: string;
@@ -20,7 +19,6 @@ export interface OrchestratorConfig<State extends object = object> {
 	 */
 	readonly runDirRoot?: string;
 }
-
 export interface Clock {
 	nowWall(): Date;
 	nowWallIso(): string;

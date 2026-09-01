@@ -22,20 +22,17 @@ export type OrchestratorErrorKind =
 	| "mixed_ownership_protocol_detected"
 	| "indeterminate_phase_execution"
 	| "initial_dispatch_already_claimed";
-
 export interface OrchestratorErrorOptions {
 	readonly cause?: unknown;
 	readonly runId?: string;
 	readonly orchestratorName?: string;
 	readonly phase?: string;
 }
-
 export abstract class OrchestratorError extends Error {
 	abstract readonly kind: OrchestratorErrorKind;
 	runId?: string;
 	orchestratorName?: string;
 	phase?: string;
-
 	constructor(message: string, options?: OrchestratorErrorOptions) {
 		super(
 			message,
@@ -48,7 +45,6 @@ export abstract class OrchestratorError extends Error {
 		if (options?.phase !== undefined) this.phase = options.phase;
 	}
 }
-
 export function enrich<E extends OrchestratorError>(
 	err: E,
 	ctx: {

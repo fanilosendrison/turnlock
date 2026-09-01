@@ -1,12 +1,10 @@
-import { PROTOCOL_VERSION } from "../constants";
-
+import { PROTOCOL_VERSION } from "../constants.js";
 export type ProtocolAction =
 	| "DELEGATE"
 	| "REQUEST_EXTERNAL"
 	| "DONE"
 	| "ERROR"
 	| "ABORTED";
-
 export interface ParsedProtocolBlock {
 	readonly version: number;
 	readonly runId: string | null;
@@ -14,7 +12,6 @@ export interface ParsedProtocolBlock {
 	readonly action: ProtocolAction;
 	readonly fields: Record<string, string | number | boolean | null>;
 }
-
 export interface DelegateFields {
 	readonly runId: string;
 	readonly orchestrator: string;
@@ -22,7 +19,6 @@ export interface DelegateFields {
 	readonly kind: "prompt" | "batch";
 	readonly resumeCmd: string;
 }
-
 export interface RequestExternalFields {
 	readonly runId: string;
 	readonly orchestrator: string;
@@ -32,7 +28,6 @@ export interface RequestExternalFields {
 	readonly result: string;
 	readonly resumeCmd: string;
 }
-
 export interface DoneFields {
 	readonly runId: string;
 	readonly orchestrator: string;
@@ -41,7 +36,6 @@ export interface DoneFields {
 	readonly phasesExecuted: number;
 	readonly durationMs: number;
 }
-
 export interface ErrorFields {
 	readonly runId: string | null;
 	readonly orchestrator: string;
@@ -50,14 +44,12 @@ export interface ErrorFields {
 	readonly phase: string | null;
 	readonly phasesExecuted: number;
 }
-
 export interface AbortedFields {
 	readonly runId: string;
 	readonly orchestrator: string;
 	readonly signal: "SIGINT" | "SIGTERM";
 	readonly phase: string | null;
 }
-
 function serializeValue(value: string | number | boolean | null): string {
 	if (value === null) return "null";
 	if (typeof value === "boolean") return value ? "true" : "false";
@@ -67,7 +59,6 @@ function serializeValue(value: string | number | boolean | null): string {
 	}
 	return value;
 }
-
 /** Shared structure: header (version, run_id, orchestrator, action) + body + footer. */
 function buildBlock(
 	action: ProtocolAction,
@@ -88,7 +79,6 @@ function buildBlock(
 		"",
 	].join("\n");
 }
-
 function writeDelegate(fields: DelegateFields): string {
 	return buildBlock("DELEGATE", fields.runId, fields.orchestrator, [
 		`manifest: ${serializeValue(fields.manifest)}`,
@@ -96,7 +86,6 @@ function writeDelegate(fields: DelegateFields): string {
 		`resume_cmd: ${serializeValue(fields.resumeCmd)}`,
 	]);
 }
-
 function writeRequestExternal(fields: RequestExternalFields): string {
 	return buildBlock("REQUEST_EXTERNAL", fields.runId, fields.orchestrator, [
 		`request_id: ${serializeValue(fields.requestId)}`,
@@ -106,7 +95,6 @@ function writeRequestExternal(fields: RequestExternalFields): string {
 		`resume_cmd: ${serializeValue(fields.resumeCmd)}`,
 	]);
 }
-
 function writeDone(fields: DoneFields): string {
 	return buildBlock("DONE", fields.runId, fields.orchestrator, [
 		`output: ${serializeValue(fields.output)}`,
@@ -115,7 +103,6 @@ function writeDone(fields: DoneFields): string {
 		`duration_ms: ${fields.durationMs}`,
 	]);
 }
-
 function writeError(fields: ErrorFields): string {
 	return buildBlock("ERROR", fields.runId, fields.orchestrator, [
 		`error_kind: ${fields.errorKind}`,
@@ -124,14 +111,12 @@ function writeError(fields: ErrorFields): string {
 		`phases_executed: ${fields.phasesExecuted}`,
 	]);
 }
-
 function writeAborted(fields: AbortedFields): string {
 	return buildBlock("ABORTED", fields.runId, fields.orchestrator, [
 		`signal: ${fields.signal}`,
 		`phase: ${serializeValue(fields.phase)}`,
 	]);
 }
-
 export function writeProtocolBlock(
 	action: "DELEGATE",
 	fields: DelegateFields,
@@ -171,7 +156,6 @@ export function writeProtocolBlock(
 			return writeAborted(fields as AbortedFields);
 	}
 }
-
 function isValidAction(s: string): s is ProtocolAction {
 	return (
 		s === "DELEGATE" ||
@@ -181,11 +165,9 @@ function isValidAction(s: string): s is ProtocolAction {
 		s === "ABORTED"
 	);
 }
-
 function snakeToCamel(s: string): string {
 	return s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 }
-
 function parseValue(raw: string): string | number | boolean | null {
 	if (raw === "null") return null;
 	if (raw === "true") return true;
@@ -203,10 +185,10 @@ function parseValue(raw: string): string | number | boolean | null {
 	}
 	return raw;
 }
-
-function parseKeyValueLine(
-	line: string,
-): { key: string; value: string | number | boolean | null } | null {
+function parseKeyValueLine(line: string): {
+	key: string;
+	value: string | number | boolean | null;
+} | null {
 	const match = line.match(/^([a-z_][a-z0-9_]*): (.*)$/);
 	if (!match) return null;
 	const key = match[1];
@@ -214,7 +196,6 @@ function parseKeyValueLine(
 	if (key === undefined || rawValue === undefined) return null;
 	return { key, value: parseValue(rawValue) };
 }
-
 export function parseProtocolBlock(stdout: string): ParsedProtocolBlock | null {
 	const lines = stdout.split(/\r?\n/);
 	const startIdx = lines.findIndex((l) => l.trim() === "@@TURNLOCK@@");
@@ -223,7 +204,6 @@ export function parseProtocolBlock(stdout: string): ParsedProtocolBlock | null {
 		(l, i) => i > startIdx && l.trim() === "@@END@@",
 	);
 	if (endIdx === -1) return null;
-
 	const payloadLines = lines.slice(startIdx + 1, endIdx);
 	const parsed: Record<string, string | number | boolean | null> = {};
 	for (const line of payloadLines) {
@@ -232,13 +212,11 @@ export function parseProtocolBlock(stdout: string): ParsedProtocolBlock | null {
 		if (result === null) return null;
 		parsed[result.key] = result.value;
 	}
-
 	if (parsed.version !== PROTOCOL_VERSION) return null;
 	if (typeof parsed.orchestrator !== "string") return null;
 	if (typeof parsed.action !== "string" || !isValidAction(parsed.action))
 		return null;
 	if (parsed.run_id !== null && typeof parsed.run_id !== "string") return null;
-
 	const { version, run_id, orchestrator, action, ...rest } = parsed;
 	const fields: Record<string, string | number | boolean | null> = {};
 	for (const [k, v] of Object.entries(rest)) {

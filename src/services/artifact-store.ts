@@ -7,25 +7,22 @@
 //
 // Blob paths are derived from SHA-256 digest:
 //   RUN_DIR/artifacts/sha256/<hex[0:2]>/<hex[2:]>.json
-
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ArtifactIntegrityError } from "../errors/concrete";
+import { ArtifactIntegrityError } from "../errors/concrete.js";
 import type {
 	ArtifactKind,
 	ArtifactRef,
 	PreparedArtifact,
-} from "../types/artifacts";
+} from "../types/artifacts.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 function sha256Digest(bytes: Uint8Array): string {
 	return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
-
 function hexFromDigest(digest: string): string {
 	// digest is "sha256:3fc7f2...91"
 	const colonIdx = digest.indexOf(":");
@@ -33,18 +30,15 @@ function hexFromDigest(digest: string): string {
 		throw new ArtifactIntegrityError("invalid digest format");
 	return digest.slice(colonIdx + 1);
 }
-
 function artifactRelativePath(digest: string): string {
 	const hex = hexFromDigest(digest);
 	const prefix = hex.slice(0, 2);
 	const rest = hex.slice(2);
 	return path.join("artifacts", "sha256", prefix, `${rest}.json`);
 }
-
 // ---------------------------------------------------------------------------
 // Atomic install with integrity check on collision
 // ---------------------------------------------------------------------------
-
 function atomicInstallImmutable(
 	targetPath: string,
 	bytes: Uint8Array,
@@ -70,11 +64,9 @@ function atomicInstallImmutable(
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 		// File doesn't exist — proceed with install
 	}
-
 	// Create parent directories if needed
 	const parentDir = path.dirname(targetPath);
 	fs.mkdirSync(parentDir, { recursive: true });
-
 	// Write to a unique temp file, then link atomically
 	const tmpPath = `${targetPath}.tmp-${process.pid}-${cryptoRandomSuffix()}`;
 	const fd = fs.openSync(
@@ -88,7 +80,6 @@ function atomicInstallImmutable(
 	} finally {
 		fs.closeSync(fd);
 	}
-
 	try {
 		// Hard-link is atomic — fails with EEXIST if target already created
 		fs.linkSync(tmpPath, targetPath);
@@ -123,7 +114,6 @@ function atomicInstallImmutable(
 			/* best-effort */
 		}
 	}
-
 	// Sync parent directory to ensure durability
 	const dirFd = fs.openSync(parentDir, fs.constants.O_RDONLY);
 	try {
@@ -131,21 +121,17 @@ function atomicInstallImmutable(
 	} finally {
 		fs.closeSync(dirFd);
 	}
-
 	return "created";
 }
-
 function cryptoRandomSuffix(): string {
 	return createHash("sha256")
 		.update(String(Date.now()) + String(Math.random()))
 		.digest("hex")
 		.slice(0, 8);
 }
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
 /** Serialize a value as JSON, compute its digest, and produce an ArtifactRef
  *  and bytes ready for immutable installation.  No filesystem I/O. */
 export function prepareJsonArtifact(
@@ -157,7 +143,6 @@ export function prepareJsonArtifact(
 	const bytes = Buffer.from(json, "utf-8");
 	const digest = sha256Digest(bytes);
 	const relativePath = artifactRelativePath(digest);
-
 	const ref: ArtifactRef = {
 		kind,
 		digestAlgorithm: "sha256",
@@ -166,10 +151,8 @@ export function prepareJsonArtifact(
 		mediaType: "application/json",
 		sizeBytes: bytes.length,
 	};
-
 	return { ref, bytes };
 }
-
 /** Install a prepared artifact as an immutable blob under RUN_DIR.
  *
  *  - Creates parent directories as needed.
@@ -185,7 +168,6 @@ export function installPreparedArtifact(
 	const targetPath = path.join(runDir, artifact.ref.relativePath);
 	atomicInstallImmutable(targetPath, artifact.bytes);
 }
-
 /** Read an immutable blob and verify its integrity.
  *
  *  - Reads the file at runDir / ref.relativePath.
@@ -201,9 +183,7 @@ export function readAndVerifyArtifact(
 ): Uint8Array {
 	// Structural validation — path confinement, digest format, etc.
 	validateArtifactStructure(ref);
-
 	const targetPath = path.join(runDir, ref.relativePath);
-
 	let bytes: Buffer;
 	try {
 		bytes = fs.readFileSync(targetPath);
@@ -213,34 +193,28 @@ export function readAndVerifyArtifact(
 			{ cause: err },
 		);
 	}
-
 	if (bytes.length !== ref.sizeBytes) {
 		throw new ArtifactIntegrityError(
 			`artifact size mismatch: expected ${ref.sizeBytes} bytes, got ${bytes.length} at ${ref.relativePath}`,
 		);
 	}
-
 	const actualDigest = sha256Digest(bytes);
 	if (actualDigest !== ref.digest) {
 		throw new ArtifactIntegrityError(
 			`artifact digest mismatch: expected ${ref.digest}, got ${actualDigest} at ${ref.relativePath}`,
 		);
 	}
-
 	return bytes;
 }
-
 /** Given a digest string like "sha256:3fc7f2..." and a runDir, return the
  *  absolute filesystem path where the immutable blob would live.  Exported
  *  for use by tests and canonical projection. */
 export function artifactAbsolutePath(runDir: string, digest: string): string {
 	return path.join(runDir, artifactRelativePath(digest));
 }
-
 // ---------------------------------------------------------------------------
 // ArtifactRef validation
 // ---------------------------------------------------------------------------
-
 /** Validate that an ArtifactRef is structurally sound and confined.
  *
  *  Checks:
@@ -259,7 +233,6 @@ export function validateArtifactRef(
 ): void {
 	// Structural checks first.
 	validateArtifactStructure(ref);
-
 	// Kind must match the field-specific expectation.
 	if (ref.kind !== expectedKind) {
 		throw new ArtifactIntegrityError(
@@ -267,7 +240,6 @@ export function validateArtifactRef(
 		);
 	}
 }
-
 /** Validate the structural integrity of an ArtifactRef (digest format,
  *  path derivation, confinement, media type, size) WITHOUT checking the
  *  kind field.  Used by the store layer which doesn't know the expected
@@ -281,14 +253,12 @@ function validateArtifactStructure(ref: ArtifactRef): void {
 	) {
 		throw new ArtifactIntegrityError(`invalid artifact kind: ${ref.kind}`);
 	}
-
 	// Algorithm
 	if (ref.digestAlgorithm !== "sha256") {
 		throw new ArtifactIntegrityError(
 			`unsupported digest algorithm: ${ref.digestAlgorithm}`,
 		);
 	}
-
 	// Digest format: sha256:<64 hex chars>
 	const digestPattern = /^sha256:[0-9a-f]{64}$/;
 	if (!digestPattern.test(ref.digest)) {
@@ -296,7 +266,6 @@ function validateArtifactStructure(ref: ArtifactRef): void {
 			`artifact digest has invalid format: ${ref.digest.slice(0, 20)}...`,
 		);
 	}
-
 	// Digested path vs actual path
 	const expectedPath = artifactRelativePath(ref.digest);
 	if (ref.relativePath !== expectedPath) {
@@ -304,7 +273,6 @@ function validateArtifactStructure(ref: ArtifactRef): void {
 			`artifact relativePath does not match digest: expected ${expectedPath}, got ${ref.relativePath}`,
 		);
 	}
-
 	// Path confinement — must be relative, no traversal, under artifacts/sha256.
 	if (path.isAbsolute(ref.relativePath)) {
 		throw new ArtifactIntegrityError(
@@ -322,14 +290,12 @@ function validateArtifactStructure(ref: ArtifactRef): void {
 			`artifact relativePath must start with artifacts/sha256: ${ref.relativePath}`,
 		);
 	}
-
 	// Media type
 	if (ref.mediaType !== "application/json") {
 		throw new ArtifactIntegrityError(
 			`unsupported media type: ${ref.mediaType}`,
 		);
 	}
-
 	// Size
 	if (
 		typeof ref.sizeBytes !== "number" ||

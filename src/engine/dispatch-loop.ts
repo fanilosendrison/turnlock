@@ -1,13 +1,13 @@
-import { PhaseError, ProtocolError } from "../errors/concrete";
-import { clock } from "../services/clock";
-import type { StateFile } from "../services/state-io";
-import type { PhaseResult } from "../types/phase";
-import type { DispatchContext, LoadedResults } from "./context";
-import { handleDelegate } from "./delegate-handler";
-import { handleExternalRequest } from "./external-request-handler";
-import { buildPhaseIO, type PhaseIOGuards } from "./phase-io";
-import { refreshOwnershipFromContext } from "./state-commit";
-import { emitFatalError, handleDone, handleFail } from "./terminal-handlers";
+import { PhaseError, ProtocolError } from "../errors/concrete.js";
+import { clock } from "../services/clock.js";
+import type { StateFile } from "../services/state-io.js";
+import type { PhaseResult } from "../types/phase.js";
+import type { DispatchContext, LoadedResults } from "./context.js";
+import { handleDelegate } from "./delegate-handler.js";
+import { handleExternalRequest } from "./external-request-handler.js";
+import { buildPhaseIO, type PhaseIOGuards } from "./phase-io.js";
+import { refreshOwnershipFromContext } from "./state-commit.js";
+import { emitFatalError, handleDone, handleFail } from "./terminal-handlers.js";
 
 function deepFreeze<T>(obj: T): T {
 	if (obj === null || typeof obj !== "object") return obj;
@@ -23,9 +23,7 @@ function deepFreeze<T>(obj: T): T {
 	}
 	return Object.freeze(obj);
 }
-
 export type PhaseErrorHandler = (error: unknown) => Promise<boolean>;
-
 export async function runDispatchLoop<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
@@ -34,7 +32,6 @@ export async function runDispatchLoop<S extends object>(
 ): Promise<never> {
 	const currentPhase = state.currentPhase;
 	ctx.currentPhase = currentPhase;
-
 	const phaseFn = ctx.config.phases[currentPhase];
 	if (!phaseFn) {
 		throw new ProtocolError(`unknown phase: ${currentPhase}`, {
@@ -43,15 +40,12 @@ export async function runDispatchLoop<S extends object>(
 			phase: currentPhase,
 		});
 	}
-
 	refreshOwnershipFromContext(ctx);
-
 	const guards: PhaseIOGuards = {
 		committed: { value: false },
 		committedResult: { value: null },
 		consumedCount: { value: 0 },
 	};
-
 	const pendingAtEntry = state.pendingDelegation;
 	const pendingExternalAtEntry = state.pendingExternalRequest;
 	const pendingLabel = pendingAtEntry?.label ?? pendingExternalAtEntry?.label;
@@ -59,11 +53,9 @@ export async function runDispatchLoop<S extends object>(
 		pendingLabel !== undefined &&
 		loadedResults !== undefined &&
 		loadedResults.label === pendingLabel;
-
 	const frozenData = deepFreeze(
 		structuredClone(state.data as unknown as Record<string, unknown>),
 	) as unknown as S;
-
 	const io = buildPhaseIO<S>({
 		ctx,
 		currentPhase,
@@ -73,7 +65,6 @@ export async function runDispatchLoop<S extends object>(
 		usedLabelsAtEntry: state.usedLabels,
 		guards,
 	});
-
 	const attemptCount =
 		pendingAtEntry?.attempt !== undefined ? pendingAtEntry.attempt + 1 : 1;
 	ctx.logger.emit({
@@ -83,9 +74,7 @@ export async function runDispatchLoop<S extends object>(
 		attemptCount,
 		timestamp: clock.nowWallIso(),
 	});
-
 	const phaseStartMono = clock.nowMono();
-
 	let result: PhaseResult<S>;
 	try {
 		const returned = (await phaseFn(frozenData, io)) as PhaseResult<S>;
@@ -107,13 +96,11 @@ export async function runDispatchLoop<S extends object>(
 		await emitFatalError(ctx, state, currentPhase, err);
 		return undefined as never;
 	}
-
 	const phaseDurationMs = Math.round(clock.nowMono() - phaseStartMono);
 	const newAccumulatedDurationMs =
 		state.accumulatedDurationMs + phaseDurationMs;
 	ctx.accumulatedDurationMs = newAccumulatedDurationMs;
 	ctx.phasesExecuted = state.phasesExecuted + 1;
-
 	if (isResumePhase && pendingLabel !== undefined) {
 		if (guards.consumedCount.value !== 1) {
 			const subject =
@@ -137,8 +124,11 @@ export async function runDispatchLoop<S extends object>(
 			return undefined as never;
 		}
 	}
-
-	const resultKind = (result as { readonly kind?: unknown }).kind;
+	const resultKind = (
+		result as {
+			readonly kind?: unknown;
+		}
+	).kind;
 	if (
 		resultKind !== "delegate" &&
 		resultKind !== "external-request" &&
@@ -157,7 +147,6 @@ export async function runDispatchLoop<S extends object>(
 		);
 		return undefined as never;
 	}
-
 	ctx.logger.emit({
 		eventType: "phase_end",
 		runId: ctx.runId,
@@ -166,13 +155,17 @@ export async function runDispatchLoop<S extends object>(
 		resultKind,
 		timestamp: clock.nowWallIso(),
 	});
-
 	switch (resultKind) {
 		case "delegate":
 			await handleDelegate(
 				ctx,
 				state,
-				result as Extract<PhaseResult<S>, { readonly kind: "delegate" }>,
+				result as Extract<
+					PhaseResult<S>,
+					{
+						readonly kind: "delegate";
+					}
+				>,
 				newAccumulatedDurationMs,
 			);
 			return undefined as never;
@@ -182,7 +175,9 @@ export async function runDispatchLoop<S extends object>(
 				state,
 				result as Extract<
 					PhaseResult<S>,
-					{ readonly kind: "external-request" }
+					{
+						readonly kind: "external-request";
+					}
 				>,
 				newAccumulatedDurationMs,
 			);
@@ -191,7 +186,12 @@ export async function runDispatchLoop<S extends object>(
 			await handleDone(
 				ctx,
 				state,
-				result as Extract<PhaseResult<S>, { readonly kind: "done" }>,
+				result as Extract<
+					PhaseResult<S>,
+					{
+						readonly kind: "done";
+					}
+				>,
 				newAccumulatedDurationMs,
 			);
 			return undefined as never;
@@ -199,7 +199,12 @@ export async function runDispatchLoop<S extends object>(
 			await handleFail(
 				ctx,
 				state,
-				result as Extract<PhaseResult<S>, { readonly kind: "fail" }>,
+				result as Extract<
+					PhaseResult<S>,
+					{
+						readonly kind: "fail";
+					}
+				>,
 				newAccumulatedDurationMs,
 			);
 			return undefined as never;

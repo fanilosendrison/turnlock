@@ -1,14 +1,11 @@
 import * as fs from "node:fs";
-import type { OrchestratorEvent, OrchestratorLogger } from "../types/events";
-import type { LoggingPolicy } from "../types/policies";
-
+import type { OrchestratorEvent, OrchestratorLogger } from "../types/events.js";
+import type { LoggingPolicy } from "../types/policies.js";
 export interface InternalLogger extends OrchestratorLogger {
 	enableDiskEmit(eventsNdjsonPath: string): void;
 	disableDiskEmit(): void;
 }
-
 export type { LoggingPolicy, OrchestratorEvent, OrchestratorLogger };
-
 export function createLogger(
 	policy: LoggingPolicy | undefined,
 ): InternalLogger {
@@ -19,17 +16,14 @@ export function createLogger(
 			disableDiskEmit: () => {},
 		};
 	}
-
 	const custom = policy?.logger;
 	const stderrEmit: (ev: OrchestratorEvent) => void = custom
 		? (ev) => custom.emit(ev)
 		: (ev) => {
 				process.stderr.write(`${JSON.stringify(ev)}\n`);
 			};
-
 	const persistEnabled = policy?.persistEventLog !== false;
 	let diskPath: string | null = null;
-
 	function emit(ev: OrchestratorEvent): void {
 		try {
 			stderrEmit(ev);
@@ -46,15 +40,12 @@ export function createLogger(
 			}
 		}
 	}
-
 	function enableDiskEmit(eventsNdjsonPath: string): void {
 		if (!persistEnabled) return;
 		diskPath = eventsNdjsonPath;
 	}
-
 	function disableDiskEmit(): void {
 		diskPath = null;
 	}
-
 	return { emit, enableDiskEmit, disableDiskEmit };
 }

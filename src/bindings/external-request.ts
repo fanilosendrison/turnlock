@@ -1,9 +1,8 @@
 import * as path from "node:path";
-import { EXTERNAL_REQUEST_MANIFEST_VERSION } from "../constants";
-import { isJsonValue } from "../services/json-value";
-import { writeProtocolBlock } from "../services/protocol";
-import type { ExternalRequest, JsonValue } from "../types/external-request";
-
+import { EXTERNAL_REQUEST_MANIFEST_VERSION } from "../constants.js";
+import { isJsonValue } from "../services/json-value.js";
+import { writeProtocolBlock } from "../services/protocol.js";
+import type { ExternalRequest, JsonValue } from "../types/external-request.js";
 export interface ExternalRequestContext {
 	readonly runId: string;
 	readonly orchestratorName: string;
@@ -13,7 +12,6 @@ export interface ExternalRequestContext {
 	readonly emittedAtEpochMs: number;
 	readonly runDir: string;
 }
-
 export interface ExternalRequestManifest {
 	readonly manifestVersion: typeof EXTERNAL_REQUEST_MANIFEST_VERSION;
 	readonly kind: "external-request";
@@ -30,7 +28,6 @@ export interface ExternalRequestManifest {
 	readonly emittedAtEpochMs: number;
 	readonly resultPath: string;
 }
-
 function buildManifest(
 	request: ExternalRequest,
 	context: ExternalRequestContext,
@@ -56,7 +53,6 @@ function buildManifest(
 		),
 	};
 }
-
 export function isExternalRequestManifest(
 	value: unknown,
 ): value is ExternalRequestManifest {
@@ -83,7 +79,6 @@ export function isExternalRequestManifest(
 		typeof manifest.resultPath === "string"
 	);
 }
-
 function buildProtocolBlock(
 	manifest: ExternalRequestManifest,
 	manifestPath: string,
@@ -99,7 +94,6 @@ function buildProtocolBlock(
 		resumeCmd,
 	});
 }
-
 export const externalRequestBinding = {
 	buildManifest,
 	buildProtocolBlock,

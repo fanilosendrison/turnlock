@@ -1,9 +1,13 @@
 import type { ZodError, ZodSchema } from "zod";
-
 export type ValidationResult<T> =
-	| { readonly ok: true; readonly data: T }
-	| { readonly ok: false; readonly error: ZodError };
-
+	| {
+			readonly ok: true;
+			readonly data: T;
+	  }
+	| {
+			readonly ok: false;
+			readonly error: ZodError;
+	  };
 export function validateResult<T>(
 	rawJson: unknown,
 	schema: ZodSchema<T>,
@@ -12,10 +16,8 @@ export function validateResult<T>(
 	if (result.success) return { ok: true, data: result.data };
 	return { ok: false, error: result.error };
 }
-
 const MAX_SUMMARY_LENGTH = 200;
 const ELLIPSIS = "…";
-
 export function summarizeZodError(err: ZodError): string {
 	const parts: string[] = [];
 	for (const issue of err.issues) {

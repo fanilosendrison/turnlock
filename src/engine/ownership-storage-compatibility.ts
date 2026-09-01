@@ -19,14 +19,12 @@
 // inter-version lock.  Turnlock does not support a legacy process starting
 // concurrently with migration.  The deployment is responsible for the
 // exclusive upgrade window (see the upgrade guide).
-
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
 	LegacyLockMigrationBlockedError,
 	MixedOwnershipProtocolError,
-} from "../errors/concrete";
-
+} from "../errors/concrete.js";
 export interface CompatibilityInput {
 	readonly runDir: string;
 	readonly sqliteDatabaseExists: boolean;
@@ -34,7 +32,6 @@ export interface CompatibilityInput {
 	readonly runId: string;
 	readonly orchestratorName: string;
 }
-
 /**
  * Assert that the RUN_DIR does not contain an incompatible mix of legacy
  * file-lock and SQLite ownership artifacts.
@@ -54,7 +51,6 @@ export function assertOwnershipStorageCompatibility(
 ): void {
 	const lockPath = path.join(input.runDir, ".lock");
 	const lockExists = fs.existsSync(lockPath);
-
 	if (!input.sqliteDatabaseExists && lockExists) {
 		throw new LegacyLockMigrationBlockedError(
 			"Legacy ownership lock (.lock) exists; exclusive migration to SQLite cannot be established.",
@@ -64,7 +60,6 @@ export function assertOwnershipStorageCompatibility(
 			},
 		);
 	}
-
 	if (input.sqliteDatabaseExists && lockExists) {
 		throw new MixedOwnershipProtocolError(
 			"SQLite ownership storage (turnlock.sqlite3) and legacy lock (.lock) coexist — deployment or downgrade contract violated. No new authority granted.",
@@ -74,7 +69,6 @@ export function assertOwnershipStorageCompatibility(
 			},
 		);
 	}
-
 	// sqliteDbExists && !lockExists  → normal SQLite protocol
 	// !sqliteDbExists && !lockExists → legacy migration potentially allowed
 	//

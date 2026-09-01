@@ -86,7 +86,7 @@ Do NOT remove `state.json` or any other file.
 Launch the SQLite-capable Turnlock binary with `--resume`:
 
 ```bash
-bun pipeline.ts --run-id <runId> --resume
+node pipeline.js --run-id <runId> --resume
 ```
 
 ### 7. Verify SQLite establishment
