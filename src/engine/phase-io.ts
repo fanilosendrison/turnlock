@@ -154,8 +154,7 @@ export function buildPhaseIO<S extends object>(args: {
 			}
 			guardSingleConsume(pd.label, "delegation");
 			if (
-				!loadedResults ||
-				loadedResults.kind !== "prompt" ||
+				loadedResults?.kind !== "prompt" ||
 				loadedResults.label !== pd.label
 			) {
 				throw new DelegationMissingResultError(
@@ -197,11 +196,7 @@ export function buildPhaseIO<S extends object>(args: {
 				);
 			}
 			guardSingleConsume(pd.label, "delegation");
-			if (
-				!loadedResults ||
-				loadedResults.kind !== "batch" ||
-				loadedResults.label !== pd.label
-			) {
+			if (loadedResults?.kind !== "batch" || loadedResults.label !== pd.label) {
 				throw new DelegationMissingResultError(
 					`result files missing for ${pd.label}`,
 					errorContext(),
@@ -241,8 +236,7 @@ export function buildPhaseIO<S extends object>(args: {
 			const pending = assertPendingExternal();
 			guardSingleConsume(pending.label, "external resolution");
 			if (
-				!loadedResults ||
-				loadedResults.kind !== "external-request" ||
+				loadedResults?.kind !== "external-request" ||
 				loadedResults.label !== pending.label
 			) {
 				throw new ExternalResolutionMissingError(
