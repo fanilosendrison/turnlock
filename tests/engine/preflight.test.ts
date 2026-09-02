@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
+import { STATE_SCHEMA_VERSION } from "../../src/constants.js";
 import { validateConfig } from "../../src/engine/preflight.js";
 import { InvalidConfigError } from "../../src/errors/concrete.js";
+import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
+import { bootstrapNewRunAtomic } from "../../src/persistence/sqlite/run-bootstrap.js";
+import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
 import type { OrchestratorConfig } from "../../src/types/config.js";
 import {
 	buildEntrypointSource,
@@ -96,10 +100,57 @@ await runOrchestrator({
 });
 `),
 		);
-		// A pre-existing foreign RUN_DIR must survive the rejected preflight:
-		// an invalid retention policy must never trigger destructive effects.
-		const decoyRunDir = join(workspace.runDirRoot, "decoy-orch", "old-run");
+		// A pre-existing foreign RUN_DIR in the SAME orchestrator namespace
+		// must survive the rejected preflight: an invalid retention policy must
+		// never trigger destructive cleanup effects.  The decoy is a genuine
+		// retention-deletable candidate (real SQLite authority with an
+		// expired HELD lease) aged far beyond any retention threshold, so a
+		// cleanup executed in spite of the invalid config would really
+		// claim and delete it.
+		const decoyRunDir = join(
+			workspace.runDirRoot,
+			"invalid-retention",
+			"01HX0000000000000000000001",
+		);
 		mkdirSync(decoyRunDir, { recursive: true });
+		const decoyDb = openRunDatabase({
+			driver: nodeSqliteDriver,
+			dbPath: join(decoyRunDir, "turnlock.sqlite3"),
+			busyTimeoutMs: 2000,
+		});
+		const decoyNow = Date.now();
+		const decoyIso = new Date(decoyNow).toISOString();
+		const decoyBootstrap = bootstrapNewRunAtomic({
+			db: decoyDb.connection,
+			runId: "01HX0000000000000000000001",
+			orchestratorName: "invalid-retention",
+			nowEpochMs: decoyNow,
+			nowIso: decoyIso,
+			leaseDurationMs: 30 * 60 * 1000,
+			initialState: {
+				schemaVersion: STATE_SCHEMA_VERSION,
+				runId: "01HX0000000000000000000001",
+				orchestratorName: "invalid-retention",
+				startedAt: decoyIso,
+				startedAtEpochMs: decoyNow,
+				lastTransitionAt: decoyIso,
+				lastTransitionAtEpochMs: decoyNow,
+				currentPhase: "p1",
+				phasesExecuted: 0,
+				accumulatedDurationMs: 0,
+				data: {},
+				usedLabels: [],
+			},
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: 5000,
+		});
+		decoyDb.connection.exec(
+			`UPDATE run_ownership SET lease_until_epoch_ms = ${Date.now() - 1000} WHERE singleton = 1`,
+		);
+		decoyDb.close();
+		assert.strictEqual(decoyBootstrap.kind, "BOOTSTRAPPED");
+		const old = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000);
+		utimesSync(decoyRunDir, old, old);
 		try {
 			const result = await workspace.runEntrypoint(entrypoint, [
 				"--run-id",
@@ -123,7 +174,7 @@ await runOrchestrator({
 			assert.strictEqual(
 				existsSync(decoyRunDir),
 				true,
-				"invalid retentionDays must not delete unrelated RUN_DIRs",
+				"invalid retentionDays must not delete RUN_DIRs of its own orchestrator namespace",
 			);
 		} finally {
 			workspace.cleanup();
