@@ -451,37 +451,36 @@ describe("retention cleanup safety", () => {
 	test("G | deletion failure after rename: RETIRING persists, resume rejected, sweep retries", () => {
 		const root = makeTempDir();
 		try {
-			const runDirRoot = join(root, "runs");
-			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
-			bootstrapForeignRun(runBDir, RUN_B);
-			expireLease(runBDir);
-			// A non-empty read-only child makes recursive deletion fail —
-			// sorted before turnlock.sqlite3 so the DB survives intact.
-			const stickyDir = join(runBDir, "0-sticky", "deep");
-			mkdirSync(stickyDir, { recursive: true });
-			writeFileSync(join(stickyDir, "file.txt"), "x");
-			chmodSync(join(runBDir, "0-sticky"), 0o555);
-			ageDir(runBDir, 100);
-			// Claim + rename succeed; the recursive delete fails.
-			const deletedFirst = cleanupOldRuns(
-				root,
-				ORCHESTRATOR_NAME,
-				7,
-				RUN_A,
-				productionRetirement,
-				runDirRoot,
-			);
-			assert.strictEqual(deletedFirst, 0);
-			assert.strictEqual(existsSync(runBDir), false);
-			const retiredRoot = join(dirname(runBDir), RETIRED_DIR_NAME);
-			const retiredEntries = readdirSync(retiredRoot);
-			assert.strictEqual(retiredEntries.length, 1);
-			const retiredPath = join(retiredRoot, retiredEntries[0] ?? "");
-			assert.strictEqual(existsSync(retiredPath), true);
-			// The retired DB stays RETIRING and refuses new ownership.
+			const runDir = join(root, "runs", ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runDir, RUN_B);
+			expireLease(runDir);
+			ageDir(runDir, 100);
+			// 1. Claim + atomic rename succeed (production primitives).
+			const claim = claimB(runDir);
+			assert.strictEqual(claim.kind, "CLAIMED");
+			if (claim.kind !== "CLAIMED") throw new Error("setup");
+			const rename = renameRunDirectoryToRetired({
+				driver: nodeSqliteDriver,
+				runDir,
+				runId: RUN_B,
+				retirementToken: claim.retirementToken,
+				databaseIdentity: claim.databaseIdentity,
+			});
+			assert.strictEqual(rename.kind, "RENAMED");
+			if (rename.kind !== "RENAMED") throw new Error("setup");
+			assert.strictEqual(existsSync(runDir), false);
+			// 2. Make the RETIRED directory undeletable (deterministic rm
+			//    failure — no reliance on readdir order or partial rm): the
+			//    recursive delete fails on every child.
+			chmodSync(rename.retiredPath, 0o555);
+			const deletion = deleteRetiredRunDirectory(rename.retiredPath);
+			assert.strictEqual(deletion.kind, "FAILED");
+			assert.strictEqual(existsSync(rename.retiredPath), true);
+			chmodSync(rename.retiredPath, 0o755);
+			// 3. The retired DB stays RETIRING and refuses new ownership.
 			const checkDb = openRunDatabase({
 				driver: nodeSqliteDriver,
-				dbPath: join(retiredPath, "turnlock.sqlite3"),
+				dbPath: join(rename.retiredPath, "turnlock.sqlite3"),
 				busyTimeoutMs: 2000,
 			});
 			try {
@@ -492,20 +491,19 @@ describe("retention cleanup safety", () => {
 			} finally {
 				checkDb.close();
 			}
-			const takeover = acquireB(retiredPath);
+			const takeover = acquireB(rename.retiredPath);
 			assert.strictEqual(takeover.kind, "RUN_RETIRING");
-			// Unblock the deletion and retry — the sweep completes it.
-			chmodSync(join(retiredPath, "0-sticky"), 0o755);
+			// 4. A future cleanup sweep completes the deletion.
 			const deletedRetry = cleanupOldRuns(
 				root,
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
 				productionRetirement,
-				runDirRoot,
+				join(root, "runs"),
 			);
 			assert.strictEqual(deletedRetry, 1);
-			assert.strictEqual(existsSync(retiredPath), false);
+			assert.strictEqual(existsSync(rename.retiredPath), false);
 		} finally {
 			cleanupTempDir(root);
 		}
