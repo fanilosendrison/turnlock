@@ -112,6 +112,12 @@ describe("error-classifier acceptance (T-EC-01..14)", () => {
 	test("T-EC-14 | TypeError → unknown", () => {
 		assert.strictEqual(classify(new TypeError("x")), "unknown");
 	});
+	test("unrecognized orchestrator error kind → unknown", () => {
+		const error = Object.assign(new Error("future kind"), {
+			kind: "future_kind",
+		});
+		assert.strictEqual(classify(error), "unknown");
+	});
 });
 describe("error-classifier properties (P-EC-a/b)", () => {
 	test("P-EC-a | pure over 50 iterations", () => {
