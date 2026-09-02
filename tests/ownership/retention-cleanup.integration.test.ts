@@ -653,10 +653,9 @@ describe("retention cleanup safety", () => {
 		}
 	});
 
-	test(
-		"RED: new incarnation created at the canonical path during the deletion window must not be destroyed",
-		{ skip: "RED on current HEAD — proof recorded in the commit message; unskipped by the filesystem retirement protocol" },
-		() => {
+	test("RED: new incarnation created at the canonical path during the deletion window must not be destroyed", {
+		skip: "RED on current HEAD — proof recorded in the commit message; unskipped by the filesystem retirement protocol",
+	}, () => {
 		const root = makeTempDir();
 		try {
 			const runDirRoot = join(root, "runs");
@@ -722,10 +721,9 @@ describe("retention cleanup safety", () => {
 		}
 	});
 
-	test(
-		"RED: canonical pathname replaced after claim must not be renamed/deleted",
-		{ skip: "RED on current HEAD — proof recorded in the commit message; unskipped by the filesystem retirement protocol" },
-		() => {
+	test("RED: canonical pathname replaced after claim must not be renamed/deleted", {
+		skip: "RED on current HEAD — proof recorded in the commit message; unskipped by the filesystem retirement protocol",
+	}, () => {
 		const root = makeTempDir();
 		try {
 			const runDirRoot = join(root, "runs");
