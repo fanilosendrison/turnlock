@@ -24,8 +24,8 @@ describe("resolveRunDir (T-RD-01..03, T-RD-09..12)", () => {
 	});
 	test("T-RD-02 | cwd with spaces", () => {
 		assert.strictEqual(
-			resolveRunDir("/my repo", "foo", "01H"),
-			join("/my repo", DEFAULT_ROOT, "foo", "01H"),
+			resolveRunDir("/my repo", "workflow", "01H"),
+			join("/my repo", DEFAULT_ROOT, "workflow", "01H"),
 		);
 	});
 	test("T-RD-03 | empty cwd → InvalidConfigError", () => {

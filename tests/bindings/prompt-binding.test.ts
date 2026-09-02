@@ -27,16 +27,19 @@ function makeContext(
 const baseRequest: PromptDelegationRequest = {
 	kind: "prompt",
 	worker: "senior-reviewer-file",
-	prompt: "Review src/foo.ts",
-	label: "review-foo",
+	prompt: "Review src/component.ts",
+	label: "review-component",
 };
 describe("PromptBinding.buildManifest (T-PRM-01..03)", () => {
 	test("T-PRM-01 | full prompt manifest", () => {
 		const m = promptBinding.buildManifest(baseRequest, makeContext());
 		assert.strictEqual(m.kind, "prompt");
 		assert.strictEqual(m.worker, "senior-reviewer-file");
-		assert.strictEqual(m.prompt, "Review src/foo.ts");
-		assert.strictEqual(m.resultPath, `${RUN_DIR}/results/review-foo-0.json`);
+		assert.strictEqual(m.prompt, "Review src/component.ts");
+		assert.strictEqual(
+			m.resultPath,
+			`${RUN_DIR}/results/review-component-0.json`,
+		);
 		assert.strictEqual(m.jobs, undefined);
 	});
 	test("T-PRM-02 | long prompt preserved", () => {
@@ -52,7 +55,10 @@ describe("PromptBinding.buildManifest (T-PRM-01..03)", () => {
 			baseRequest,
 			makeContext({ attempt: 1 }),
 		);
-		assert.strictEqual(m.resultPath, `${RUN_DIR}/results/review-foo-1.json`);
+		assert.strictEqual(
+			m.resultPath,
+			`${RUN_DIR}/results/review-component-1.json`,
+		);
 	});
 });
 describe("PromptBinding.buildProtocolBlock (T-PRM-04..05)", () => {
@@ -60,7 +66,7 @@ describe("PromptBinding.buildProtocolBlock (T-PRM-04..05)", () => {
 		const m = promptBinding.buildManifest(baseRequest, makeContext());
 		const b = promptBinding.buildProtocolBlock(
 			m,
-			"/tmp/delegations/review-foo-0.json",
+			"/tmp/delegations/review-component-0.json",
 			"cmd",
 		);
 		assert.ok(b.includes("kind: prompt"));
@@ -86,7 +92,7 @@ describe("PromptBinding properties (P-PRM-a/b)", () => {
 			);
 			assert.strictEqual(
 				m.resultPath,
-				`${RUN_DIR}/results/review-foo-${attempt}.json`,
+				`${RUN_DIR}/results/review-component-${attempt}.json`,
 			);
 		}
 	});
