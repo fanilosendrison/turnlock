@@ -14,8 +14,8 @@ import { STATE_SCHEMA_VERSION } from "../../src/constants.js";
 import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
 import { bootstrapNewRunAtomic } from "../../src/persistence/sqlite/run-bootstrap.js";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
-import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 import { spawnNode } from "../helpers/node-subprocess.js";
+import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 const ORCHESTRATOR_NAME = "retention-race-orch";
 const RUN_ID = "01HX000000000000000000000B";
@@ -93,12 +93,7 @@ describe("retention cleanup vs takeover race", () => {
 		for (let round = 0; round < ROUNDS; round++) {
 			const root = makeTempDir();
 			try {
-				const runDir = join(
-					root,
-					"runs",
-					ORCHESTRATOR_NAME,
-					RUN_ID,
-				);
+				const runDir = join(root, "runs", ORCHESTRATOR_NAME, RUN_ID);
 				seedExpiredForeignRun(runDir);
 				const env = {
 					...process.env,
@@ -111,15 +106,11 @@ describe("retention cleanup vs takeover race", () => {
 					spawnWorker(workerScript, ["--cleanup"], env),
 					spawnWorker(workerScript, ["--resume"], env),
 				]);
-				const cleanupReport = JSON.parse(
-					cleanupProc.stdout.trim(),
-				) as {
+				const cleanupReport = JSON.parse(cleanupProc.stdout.trim()) as {
 					claim: string;
 					deleted: boolean;
 				};
-				const resumeReport = JSON.parse(
-					resumeProc.stdout.trim(),
-				) as {
+				const resumeReport = JSON.parse(resumeProc.stdout.trim()) as {
 					result: string;
 				};
 				const dirExists = existsSync(runDir);
