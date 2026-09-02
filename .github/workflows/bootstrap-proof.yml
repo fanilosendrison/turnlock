@@ -69,5 +69,8 @@ jobs:
       - name: Full test suite
         run: pnpm test
 
+      - name: Validate published package surface
+        run: pnpm run test:node-package
+
       - name: Build and inspect release tarball
         run: pnpm pack --pack-destination "$RUNNER_TEMP"
