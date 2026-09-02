@@ -1,5 +1,6 @@
 import type { OrchestratorError } from "../errors/base.js";
 import type { RetryPolicy } from "../types/policies.js";
+import { isOrchestratorError } from "./error-classifier.js";
 
 export {
 	DEFAULT_BACKOFF_BASE_MS,
@@ -31,17 +32,6 @@ export type RetryDecision =
 			readonly delayMs: number;
 			readonly reason: RetryDecisionReason;
 	  };
-function isOrchestratorError(err: unknown): err is OrchestratorError {
-	return (
-		err instanceof Error &&
-		"kind" in err &&
-		typeof (
-			err as {
-				kind: unknown;
-			}
-		).kind === "string"
-	);
-}
 function computeBackoff(attempt: number, policy: RetryPolicy): number {
 	const raw = policy.backoffBaseMs * 2 ** attempt;
 	return Math.min(raw, policy.maxBackoffMs);

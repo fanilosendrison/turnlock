@@ -44,7 +44,7 @@ interface Classification {
 	readonly allPresent: boolean;
 	readonly allParseable: boolean;
 	readonly anyMalformed: boolean;
-	readonly loadedData: unknown | readonly unknown[] | null;
+	readonly loadedData: unknown;
 }
 function classifyResultFiles(
 	runDir: string,
@@ -224,7 +224,7 @@ async function enterDispatchLoopWithResults<S extends object>(
 	ctx: DispatchContext<S>,
 	state: StateFile<S>,
 	pd: PendingDelegationRecord,
-	loadedData: unknown | readonly unknown[] | null,
+	loadedData: unknown,
 ): Promise<never> {
 	const jobCount = pd.jobIds?.length ?? 1;
 	const filesLoaded = Array.isArray(loadedData) ? loadedData.length : 1;
@@ -247,7 +247,7 @@ async function enterDispatchLoopWithResults<S extends object>(
 		{
 			label: pd.label,
 			kind: pd.kind,
-			data: loadedData as unknown | readonly unknown[],
+			data: loadedData,
 		},
 		async (error) => {
 			if (!(error instanceof DelegationSchemaError)) return false;

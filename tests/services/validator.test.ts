@@ -7,31 +7,31 @@ import {
 	validateResult,
 } from "../../src/services/validator.js";
 
-const schema = z.object({ foo: z.string(), bar: z.number() });
+const schema = z.object({ name: z.string(), count: z.number() });
 describe("validateResult success (T-VA-01..02)", () => {
 	test("T-VA-01 | valid object", () => {
-		const r = validateResult({ foo: "a", bar: 1 }, schema);
+		const r = validateResult({ name: "a", count: 1 }, schema);
 		assert.strictEqual(r.ok, true);
-		if (r.ok) assert.deepStrictEqual(r.data, { foo: "a", bar: 1 });
+		if (r.ok) assert.deepStrictEqual(r.data, { name: "a", count: 1 });
 	});
 	test("T-VA-02 | valid edge values", () => {
-		const r = validateResult({ foo: "", bar: 0 }, schema);
+		const r = validateResult({ name: "", count: 0 }, schema);
 		assert.strictEqual(r.ok, true);
 	});
 });
 describe("validateResult failures (T-VA-03..07)", () => {
-	test("T-VA-03 | wrong type foo", () => {
-		const r = validateResult({ foo: 1, bar: 1 }, schema);
+	test("T-VA-03 | wrong type for name", () => {
+		const r = validateResult({ name: 1, count: 1 }, schema);
 		assert.strictEqual(r.ok, false);
 		if (!r.ok) {
 			assert.strictEqual(
-				r.error.issues.some((i) => i.path.includes("foo")),
+				r.error.issues.some((i) => i.path.includes("name")),
 				true,
 			);
 		}
 	});
-	test("T-VA-04 | missing bar", () => {
-		const r = validateResult({ foo: "a" }, schema);
+	test("T-VA-04 | missing count", () => {
+		const r = validateResult({ name: "a" }, schema);
 		assert.strictEqual(r.ok, false);
 	});
 	test("T-VA-05 | null input", () => {
@@ -49,11 +49,11 @@ describe("validateResult failures (T-VA-03..07)", () => {
 });
 describe("summarizeZodError (T-VA-08..10)", () => {
 	test("T-VA-08 | single field path+code ≤ 200", () => {
-		const r = validateResult({ foo: 1, bar: 1 }, schema);
+		const r = validateResult({ name: 1, count: 1 }, schema);
 		if (!r.ok) {
 			const summary = summarizeZodError(r.error);
 			assert.ok(summary.length <= 200);
-			assert.ok(summary.includes("foo"));
+			assert.ok(summary.includes("name"));
 		}
 	});
 	test("T-VA-09 | many fields truncated with ellipsis", () => {
@@ -79,7 +79,7 @@ describe("summarizeZodError (T-VA-08..10)", () => {
 });
 describe("validator properties (P-VA-a..c)", () => {
 	test("P-VA-a | validateResult pure", () => {
-		const input = { foo: "x", bar: 2 };
+		const input = { name: "x", count: 2 };
 		const a = validateResult(input, schema);
 		const b = validateResult(input, schema);
 		assert.deepStrictEqual(a, b);
@@ -98,7 +98,7 @@ describe("validator properties (P-VA-a..c)", () => {
 		}
 	});
 	test("P-VA-c | ok ⇒ data re-validates", () => {
-		const r = validateResult({ foo: "a", bar: 1 }, schema);
+		const r = validateResult({ name: "a", count: 1 }, schema);
 		if (r.ok) {
 			const again = schema.safeParse(r.data);
 			assert.strictEqual(again.success, true);

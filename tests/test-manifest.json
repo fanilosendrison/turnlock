@@ -1,6 +1,6 @@
 {
 	"version": 1,
-	"expectedFiles": 46,
+	"expectedFiles": 47,
 	"testFiles": [
 		"tests/bindings/batch-binding.test.ts",
 		"tests/bindings/external-request-binding.test.ts",
@@ -21,6 +21,7 @@
 		"tests/engine/orchestrator-projection-crash.test.ts",
 		"tests/engine/ownership-storage-compatibility.test.ts",
 		"tests/engine/phase-io.test.ts",
+		"tests/engine/preflight.test.ts",
 		"tests/engine/projection-fencing.test.ts",
 		"tests/engine/state-commit.test.ts",
 		"tests/observability/events-ndjson.test.ts",

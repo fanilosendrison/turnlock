@@ -60,7 +60,7 @@ export function buildMidRunState<S extends object>(
 		currentPhase: "b",
 		phasesExecuted: 2,
 		accumulatedDurationMs: 1234,
-		usedLabels: ["foo"],
+		usedLabels: ["review"],
 		...overrides,
 	});
 }

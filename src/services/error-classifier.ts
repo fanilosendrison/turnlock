@@ -1,8 +1,9 @@
 import type { OrchestratorError } from "../errors/base.js";
 import { AbortedError, PhaseError } from "../errors/concrete.js";
 export type ErrorCategory = "transient" | "permanent" | "abort" | "unknown";
-function isOrchestratorError(err: Error): err is OrchestratorError {
+export function isOrchestratorError(err: unknown): err is OrchestratorError {
 	return (
+		err instanceof Error &&
 		"kind" in err &&
 		typeof (
 			err as {
@@ -12,7 +13,6 @@ function isOrchestratorError(err: Error): err is OrchestratorError {
 	);
 }
 export function classify(err: unknown): ErrorCategory {
-	if (!(err instanceof Error)) return "unknown";
 	if (!isOrchestratorError(err)) return "unknown";
 	switch (err.kind) {
 		case "delegation_timeout":
@@ -50,4 +50,5 @@ export function classify(err: unknown): ErrorCategory {
 		case "initial_dispatch_already_claimed":
 			return "permanent";
 	}
+	return "unknown";
 }
