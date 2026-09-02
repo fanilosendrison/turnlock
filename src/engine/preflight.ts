@@ -53,6 +53,9 @@ export function validateConfig<S extends object>(
 				`phase name invalid (kebab-case required): ${key}`,
 			);
 		}
+		if (typeof config.phases[key] !== "function") {
+			throw new InvalidConfigError(`phase "${key}" must be a function`);
+		}
 	}
 	if (
 		typeof config.initial !== "string" ||
