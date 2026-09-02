@@ -1,6 +1,6 @@
 {
 	"version": 1,
-	"expectedFiles": 48,
+	"expectedFiles": 49,
 	"testFiles": [
 		"tests/bindings/batch-binding.test.ts",
 		"tests/bindings/external-request-binding.test.ts",
@@ -28,6 +28,7 @@
 		"tests/observability/events-taxonomy.test.ts",
 		"tests/ownership/ownership-contention.integration.test.ts",
 		"tests/ownership/retention-cleanup.integration.test.ts",
+		"tests/ownership/retention-race.integration.test.ts",
 		"tests/persistence/bootstrap-atomicity.test.ts",
 		"tests/persistence/bootstrap-commit-failure.test.ts",
 		"tests/persistence/bootstrap-crash.integration.test.ts",

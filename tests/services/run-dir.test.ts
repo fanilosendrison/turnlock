@@ -4,18 +4,24 @@ import { join } from "node:path";
 // NIB-T §7 — run-dir (T-RD-01..12, P-RD-a/b)
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { InvalidConfigError } from "../../src/errors/concrete.js";
+import type { RunRetentionClaimResult } from "../../src/persistence/sqlite/retention-claim.js";
 import {
 	cleanupOldRuns,
-	type RunDirRetentionProtection,
+	type RunDirRetentionClaim,
 	resolveRunDir,
 } from "../../src/services/run-dir.js";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 const DEFAULT_ROOT = join(".turnlock", "runs");
 // Pure filesystem tests: the candidate directories contain no SQLite
-// database, so there is nothing to protect and the policy allows deletion.
-const neverProtected: RunDirRetentionProtection = {
-	isRunProtected: () => false,
+// database, so the claim delegate is a test double that always authorizes
+// deletion (the durable-claim behavior itself is covered by the
+// retention-cleanup integration tests).
+const alwaysClaimed: RunDirRetentionClaim = {
+	claimRunForDeletion: (): RunRetentionClaimResult => ({
+		kind: "CLAIMED",
+		fenceToken: 1n,
+	}),
 };
 // Env var must not leak across tests — cleared before every test in this file.
 beforeEach(() => {
@@ -90,7 +96,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			const current = join(base, "current");
 			mkdirSync(current);
 			touch(current, 100);
-			cleanupOldRuns(dir, "orch", 7, "current", neverProtected);
+			cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed);
 			assert.strictEqual(existsSync(current), true);
 		} finally {
 			cleanupTempDir(dir);
@@ -104,7 +110,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			const old = join(base, "old-run");
 			mkdirSync(old);
 			touch(old, 10);
-			cleanupOldRuns(dir, "orch", 7, "current", neverProtected);
+			cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed);
 			assert.strictEqual(existsSync(old), false);
 		} finally {
 			cleanupTempDir(dir);
@@ -120,7 +126,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			// Use 6.999 days to avoid race between touch's Date.now() and
 			// cleanupOldRuns's Date.now() which can shift the threshold by a few ms.
 			touch(edge, 6.999);
-			cleanupOldRuns(dir, "orch", 7, "current", neverProtected);
+			cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed);
 			assert.strictEqual(existsSync(edge), true);
 		} finally {
 			cleanupTempDir(dir);
@@ -136,7 +142,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 				mkdirSync(d);
 				touch(d, 20);
 			}
-			const count = cleanupOldRuns(dir, "orch", 7, "current", neverProtected);
+			const count = cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed);
 			assert.strictEqual(count, 3);
 		} finally {
 			cleanupTempDir(dir);
@@ -148,7 +154,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			const other = join(dir, DEFAULT_ROOT, "other", "run-x");
 			mkdirSync(other, { recursive: true });
 			touch(other, 100);
-			cleanupOldRuns(dir, "orch", 7, "current", neverProtected);
+			cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed);
 			assert.strictEqual(existsSync(other), true);
 		} finally {
 			cleanupTempDir(dir);
@@ -164,45 +170,36 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			mkdirSync(old);
 			touch(old, 10);
 			// Default root dir must NOT be touched (it doesn't exist here).
-			cleanupOldRuns(dir, "orch", 7, "current", neverProtected, customRoot);
+			cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed, customRoot);
 			assert.strictEqual(existsSync(old), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-RD-15 | protection policy keeps an old directory", () => {
+	test("T-RD-15 | claim delegate decides deletion — LIVE_OWNER keeps the directory", () => {
 		const dir = makeTempDir();
 		try {
 			const base = join(dir, DEFAULT_ROOT, "orch");
 			mkdirSync(base, { recursive: true });
-			const old = join(base, "protected-old");
+			const old = join(base, "live-owner");
 			mkdirSync(old);
 			touch(old, 20);
-			const seen: Array<{ runId: string; nowEpochMs: number }> = [];
-			const before = Date.now();
+			const seen: Array<{ runId: string }> = [];
 			const count = cleanupOldRuns(dir, "orch", 7, "current", {
-				isRunProtected: (_runDir, runId, nowEpochMs) => {
-					seen.push({ runId, nowEpochMs });
-					return runId === "protected-old";
+				claimRunForDeletion: (_runDir, runId) => {
+					seen.push({ runId });
+					return { kind: "LIVE_OWNER", leaseUntilEpochMs: Date.now() + 1000 };
 				},
 			});
-			const after = Date.now();
 			assert.strictEqual(existsSync(old), true);
 			assert.strictEqual(count, 0);
-			// The policy must receive the directory name and the single
-			// cleanup-pass time boundary (no independent clock readings).
-			assert.strictEqual(seen.length, 1);
-			assert.strictEqual(seen[0]?.runId, "protected-old");
-			assert.ok(seen[0] !== undefined);
-			assert.ok(
-				seen[0].nowEpochMs >= before && seen[0].nowEpochMs <= after,
-				`protection time boundary must come from the cleanup pass: ${seen[0].nowEpochMs}`,
-			);
+			// The delegate must receive the candidate directory name.
+			assert.deepStrictEqual(seen, [{ runId: "live-owner" }]);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-RD-16 | protection policy failure fails closed (directory kept)", () => {
+	test("T-RD-16 | claim delegate failure fails closed (directory kept)", () => {
 		const dir = makeTempDir();
 		try {
 			const base = join(dir, DEFAULT_ROOT, "orch");
@@ -211,12 +208,71 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			mkdirSync(old);
 			touch(old, 20);
 			const count = cleanupOldRuns(dir, "orch", 7, "current", {
-				isRunProtected: () => {
-					throw new Error("protection unavailable");
+				claimRunForDeletion: () => {
+					throw new Error("claim unavailable");
 				},
 			});
 			assert.strictEqual(existsSync(old), true);
 			assert.strictEqual(count, 0);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+	test("T-RD-17 | UNKNOWN claim result keeps the directory", () => {
+		const dir = makeTempDir();
+		try {
+			const base = join(dir, DEFAULT_ROOT, "orch");
+			mkdirSync(base, { recursive: true });
+			const old = join(base, "unknown-old");
+			mkdirSync(old);
+			touch(old, 20);
+			const count = cleanupOldRuns(dir, "orch", 7, "current", {
+				claimRunForDeletion: () => ({
+					kind: "UNKNOWN",
+					reason: "no sqlite authority",
+				}),
+			});
+			assert.strictEqual(existsSync(old), true);
+			assert.strictEqual(count, 0);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+	test("T-RD-18 | ALREADY_RETIRING claim result authorizes deletion", () => {
+		const dir = makeTempDir();
+		try {
+			const base = join(dir, DEFAULT_ROOT, "orch");
+			mkdirSync(base, { recursive: true });
+			const old = join(base, "already-retiring");
+			mkdirSync(old);
+			touch(old, 20);
+			const count = cleanupOldRuns(dir, "orch", 7, "current", {
+				claimRunForDeletion: () => ({ kind: "ALREADY_RETIRING" }),
+			});
+			assert.strictEqual(existsSync(old), false);
+			assert.strictEqual(count, 1);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+	test("T-RD-19 | current run is never presented to the claim delegate", () => {
+		const dir = makeTempDir();
+		try {
+			const base = join(dir, DEFAULT_ROOT, "orch");
+			mkdirSync(base, { recursive: true });
+			const current = join(base, "current");
+			mkdirSync(current);
+			touch(current, 100);
+			let claimed = 0;
+			const count = cleanupOldRuns(dir, "orch", 7, "current", {
+				claimRunForDeletion: () => {
+					claimed++;
+					return { kind: "CLAIMED", fenceToken: 1n };
+				},
+			});
+			assert.strictEqual(claimed, 0);
+			assert.strictEqual(count, 0);
+			assert.strictEqual(existsSync(current), true);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -232,7 +288,7 @@ describe("run-dir properties (P-RD-a/b)", () => {
 				const current = join(base, `c${i}`);
 				mkdirSync(current);
 				touch(current, 100);
-				cleanupOldRuns(dir, "orch", 7, `c${i}`, neverProtected);
+				cleanupOldRuns(dir, "orch", 7, `c${i}`, alwaysClaimed);
 				assert.strictEqual(existsSync(current), true);
 			}
 		} finally {
