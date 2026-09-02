@@ -434,10 +434,17 @@ export function acquireOwnershipDirectInTransaction(
 ): AcquireOwnershipDirectInTransactionResult {
 	// Retention eligibility — the same write lock serializes this check
 	// against a concurrent retention retirement claim.  A RETIRING run
-	// can never publish ownership again.
+	// can never publish ownership again, and an unreadable/incoherent
+	// retention state is an integrity failure (fail closed).
 	ensureRetentionRowInTransaction(db);
-	if (readRetentionStatus(db) === RETENTION_STATUS_RETIRING) {
+	const retentionStatus = readRetentionStatus(db);
+	if (retentionStatus === RETENTION_STATUS_RETIRING) {
 		return { kind: "RUN_RETIRING" };
+	}
+	if (retentionStatus === null) {
+		throw new DbIntegrityError(
+			"retention state missing or unrecognized — acquisition refused",
+		);
 	}
 	// Read current ownership state.
 	const row = db
@@ -588,11 +595,22 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 		// transaction that would publish the ownership.  This is what
 		// serializes acquisition against a concurrent retention retirement
 		// claim: once RETIRING is committed, no LockHandle can ever be
-		// published for this run again.
+		// published for this run again.  A missing or unrecognized
+		// retention state is an integrity failure (fail closed).
 		ensureRetentionRowInTransaction(db);
-		if (readRetentionStatus(db) === RETENTION_STATUS_RETIRING) {
+		const retentionStatus = readRetentionStatus(db);
+		if (retentionStatus === RETENTION_STATUS_RETIRING) {
 			rollback(db);
 			return { kind: "RUN_RETIRING" };
+		}
+		if (retentionStatus === null) {
+			rollback(db);
+			return {
+				kind: "DB_FAILURE",
+				cause: new DbIntegrityError(
+					"retention state missing or unrecognized — acquisition refused",
+				),
+			};
 		}
 		// Active-owner check AFTER lock acquisition with fresh clock.
 		// The pre-lock predecessor observation may be stale; the

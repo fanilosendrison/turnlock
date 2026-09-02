@@ -1,14 +1,15 @@
 // Retention race multiprocess worker — spawned by the retention cleanup
 // race test.  Two modes:
-//   --cleanup : attempt the durable retirement claim; on CLAIMED /
-//               ALREADY_RETIRING, perform the deletion.
-//   --resume  : attempt a real ownership takeover.
+//   --cleanup : run the full filesystem retirement flow (claim → verify →
+//               rename → delete).
+//   --resume  : attempt a real ownership takeover on the canonical DB.
 // Prints a single JSON report line per process.
-import { rmSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { nodeSqliteDriver } from "../../../src/persistence/sqlite/node-sqlite-driver.js";
 import { acquireOwnership } from "../../../src/persistence/sqlite/ownership.js";
-import { claimRunForRetentionDeletion } from "../../../src/persistence/sqlite/retention-claim.js";
 import { openRunDatabase } from "../../../src/persistence/sqlite/run-database.js";
+import { retireRunDirectory } from "../../../src/services/run-retirement.js";
 
 const DB_PATH = process.env.TL_DB_PATH;
 const RUN_ID = process.env.TL_RUN_ID;
@@ -26,25 +27,18 @@ if (!DB_PATH || !RUN_ID || !ORCHESTRATOR_NAME || !RUN_DIR) {
 }
 
 if (MODE === "cleanup") {
-	const claim = claimRunForRetentionDeletion({
+	const outcome = retireRunDirectory({
 		driver: nodeSqliteDriver,
-		dbPath: DB_PATH,
+		runDir: RUN_DIR,
 		runId: RUN_ID,
-		busyTimeoutMs: 500,
-		contentionDeadlineMs: 10000,
 	});
-	if (claim.kind === "CLAIMED" || claim.kind === "ALREADY_RETIRING") {
-		let deleted = false;
-		try {
-			rmSync(RUN_DIR, { recursive: true, force: true });
-			deleted = true;
-		} catch {
-			// deletion failure — RETIRING stays committed
-		}
-		out({ mode: MODE, claim: claim.kind, deleted });
-	} else {
-		out({ mode: MODE, claim: claim.kind, deleted: false });
-	}
+	out({
+		mode: MODE,
+		outcome: outcome.kind,
+		reason: outcome.kind === "KEPT" ? outcome.reason : undefined,
+		canonicalExists: existsSync(RUN_DIR),
+		retiredExists: existsSync(join(join(RUN_DIR, ".."), ".retired")),
+	});
 } else {
 	try {
 		const runDb = openRunDatabase({

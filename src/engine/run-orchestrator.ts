@@ -19,7 +19,6 @@ import {
 	acquireOwnership,
 	releaseOwnership,
 } from "../persistence/sqlite/ownership.js";
-import { createRunRetentionClaim } from "../persistence/sqlite/retention-claim.js";
 import {
 	bootstrapNewRunAtomic,
 	type CommittedState,
@@ -37,6 +36,7 @@ import { clock } from "../services/clock.js";
 import { createLogger } from "../services/logger.js";
 import { cleanupOldRuns, resolveRunDir } from "../services/run-dir.js";
 import { generateRunId } from "../services/run-id.js";
+import { buildRunRetirement } from "../services/run-retirement.js";
 import {
 	migrateV3ToV4,
 	readStateSnapshot,
@@ -430,15 +430,18 @@ async function runInitialMode<S extends object>(
 		try {
 			// Retention cleanup is destructive: a candidate RUN_DIR is
 			// deleted only after a durable, irreversible retirement claim
-			// committed in the run's own SQLite authority (serialized
-			// against every ownership acquisition).  A live or ambiguous
-			// run is never deleted.
+			// committed in the run's own SQLite authority, followed by an
+			// atomic rename of the canonical pathname into the
+			// retirement-specific `.retired` area.  Recursive deletion
+			// operates exclusively on the renamed path, so a new
+			// incarnation can never share physical deletion scope with a
+			// retired one.
 			cleanupOldRuns(
 				cwd,
 				config.name,
 				config.retentionDays ?? 7,
 				runId,
-				createRunRetentionClaim(nodeSqliteDriver),
+				buildRunRetirement(nodeSqliteDriver),
 				config.runDirRoot,
 			);
 		} catch {

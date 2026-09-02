@@ -1,27 +1,30 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 // NIB-T §7 — run-dir (T-RD-01..12, P-RD-a/b)
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { InvalidConfigError } from "../../src/errors/concrete.js";
-import type { RunRetentionClaimResult } from "../../src/persistence/sqlite/retention-claim.js";
 import {
 	cleanupOldRuns,
-	type RunDirRetentionClaim,
+	type RunDirRetirement,
 	resolveRunDir,
 } from "../../src/services/run-dir.js";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 const DEFAULT_ROOT = join(".turnlock", "runs");
 // Pure filesystem tests: the candidate directories contain no SQLite
-// database, so the claim delegate is a test double that always authorizes
-// deletion (the durable-claim behavior itself is covered by the
-// retention-cleanup integration tests).
-const alwaysClaimed: RunDirRetentionClaim = {
-	claimRunForDeletion: (): RunRetentionClaimResult => ({
-		kind: "CLAIMED",
-		fenceToken: 1n,
-	}),
+// database, so the retirement delegate is a test double that performs the
+// physical deletion and reports DELETED (the durable claim + rename
+// behavior itself is covered by the retention-cleanup integration tests).
+function deleteForReal(runDir: string): void {
+	rmSync(runDir, { recursive: true, force: true });
+}
+const alwaysDeleted: RunDirRetirement = {
+	retireRunDirectory: (runDir) => {
+		deleteForReal(runDir);
+		return { kind: "DELETED" };
+	},
+	sweepRetiredDirectories: () => 0,
 };
 // Env var must not leak across tests — cleared before every test in this file.
 beforeEach(() => {
@@ -96,7 +99,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			const current = join(base, "current");
 			mkdirSync(current);
 			touch(current, 100);
-			cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed);
+			cleanupOldRuns(dir, "orch", 7, "current", alwaysDeleted);
 			assert.strictEqual(existsSync(current), true);
 		} finally {
 			cleanupTempDir(dir);
@@ -110,7 +113,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			const old = join(base, "old-run");
 			mkdirSync(old);
 			touch(old, 10);
-			cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed);
+			cleanupOldRuns(dir, "orch", 7, "current", alwaysDeleted);
 			assert.strictEqual(existsSync(old), false);
 		} finally {
 			cleanupTempDir(dir);
@@ -126,7 +129,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			// Use 6.999 days to avoid race between touch's Date.now() and
 			// cleanupOldRuns's Date.now() which can shift the threshold by a few ms.
 			touch(edge, 6.999);
-			cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed);
+			cleanupOldRuns(dir, "orch", 7, "current", alwaysDeleted);
 			assert.strictEqual(existsSync(edge), true);
 		} finally {
 			cleanupTempDir(dir);
@@ -142,7 +145,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 				mkdirSync(d);
 				touch(d, 20);
 			}
-			const count = cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed);
+			const count = cleanupOldRuns(dir, "orch", 7, "current", alwaysDeleted);
 			assert.strictEqual(count, 3);
 		} finally {
 			cleanupTempDir(dir);
@@ -154,7 +157,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			const other = join(dir, DEFAULT_ROOT, "other", "run-x");
 			mkdirSync(other, { recursive: true });
 			touch(other, 100);
-			cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed);
+			cleanupOldRuns(dir, "orch", 7, "current", alwaysDeleted);
 			assert.strictEqual(existsSync(other), true);
 		} finally {
 			cleanupTempDir(dir);
@@ -170,13 +173,13 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			mkdirSync(old);
 			touch(old, 10);
 			// Default root dir must NOT be touched (it doesn't exist here).
-			cleanupOldRuns(dir, "orch", 7, "current", alwaysClaimed, customRoot);
+			cleanupOldRuns(dir, "orch", 7, "current", alwaysDeleted, customRoot);
 			assert.strictEqual(existsSync(old), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-RD-15 | claim delegate decides deletion — LIVE_OWNER keeps the directory", () => {
+	test("T-RD-15 | retirement delegate decides deletion — KEPT keeps the directory", () => {
 		const dir = makeTempDir();
 		try {
 			const base = join(dir, DEFAULT_ROOT, "orch");
@@ -186,10 +189,11 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			touch(old, 20);
 			const seen: Array<{ runId: string }> = [];
 			const count = cleanupOldRuns(dir, "orch", 7, "current", {
-				claimRunForDeletion: (_runDir, runId) => {
+				retireRunDirectory: (_runDir, runId) => {
 					seen.push({ runId });
-					return { kind: "LIVE_OWNER", leaseUntilEpochMs: Date.now() + 1000 };
+					return { kind: "KEPT", reason: "LIVE_OWNER" };
 				},
+				sweepRetiredDirectories: () => 0,
 			});
 			assert.strictEqual(existsSync(old), true);
 			assert.strictEqual(count, 0);
@@ -199,7 +203,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-RD-16 | claim delegate failure fails closed (directory kept)", () => {
+	test("T-RD-16 | retirement delegate failure fails closed (directory kept)", () => {
 		const dir = makeTempDir();
 		try {
 			const base = join(dir, DEFAULT_ROOT, "orch");
@@ -208,9 +212,10 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			mkdirSync(old);
 			touch(old, 20);
 			const count = cleanupOldRuns(dir, "orch", 7, "current", {
-				claimRunForDeletion: () => {
-					throw new Error("claim unavailable");
+				retireRunDirectory: () => {
+					throw new Error("retirement unavailable");
 				},
+				sweepRetiredDirectories: () => 0,
 			});
 			assert.strictEqual(existsSync(old), true);
 			assert.strictEqual(count, 0);
@@ -218,7 +223,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-RD-17 | UNKNOWN claim result keeps the directory", () => {
+	test("T-RD-17 | KEPT (unknown) retirement outcome keeps the directory", () => {
 		const dir = makeTempDir();
 		try {
 			const base = join(dir, DEFAULT_ROOT, "orch");
@@ -227,10 +232,8 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			mkdirSync(old);
 			touch(old, 20);
 			const count = cleanupOldRuns(dir, "orch", 7, "current", {
-				claimRunForDeletion: () => ({
-					kind: "UNKNOWN",
-					reason: "no sqlite authority",
-				}),
+				retireRunDirectory: () => ({ kind: "KEPT", reason: "UNKNOWN" }),
+				sweepRetiredDirectories: () => 0,
 			});
 			assert.strictEqual(existsSync(old), true);
 			assert.strictEqual(count, 0);
@@ -238,7 +241,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-RD-18 | ALREADY_RETIRING claim result authorizes deletion", () => {
+	test("T-RD-18 | DELETED retirement outcome counts and removes the directory", () => {
 		const dir = makeTempDir();
 		try {
 			const base = join(dir, DEFAULT_ROOT, "orch");
@@ -247,7 +250,11 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			mkdirSync(old);
 			touch(old, 20);
 			const count = cleanupOldRuns(dir, "orch", 7, "current", {
-				claimRunForDeletion: () => ({ kind: "ALREADY_RETIRING" }),
+				retireRunDirectory: (runDir) => {
+					deleteForReal(runDir);
+					return { kind: "DELETED" };
+				},
+				sweepRetiredDirectories: () => 0,
 			});
 			assert.strictEqual(existsSync(old), false);
 			assert.strictEqual(count, 1);
@@ -255,7 +262,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			cleanupTempDir(dir);
 		}
 	});
-	test("T-RD-19 | current run is never presented to the claim delegate", () => {
+	test("T-RD-19 | current run is never presented to the retirement delegate", () => {
 		const dir = makeTempDir();
 		try {
 			const base = join(dir, DEFAULT_ROOT, "orch");
@@ -263,16 +270,78 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			const current = join(base, "current");
 			mkdirSync(current);
 			touch(current, 100);
-			let claimed = 0;
+			let retirements = 0;
 			const count = cleanupOldRuns(dir, "orch", 7, "current", {
-				claimRunForDeletion: () => {
-					claimed++;
-					return { kind: "CLAIMED", fenceToken: 1n };
+				retireRunDirectory: (runDir) => {
+					retirements++;
+					deleteForReal(runDir);
+					return { kind: "DELETED" };
 				},
+				sweepRetiredDirectories: () => 0,
 			});
-			assert.strictEqual(claimed, 0);
+			assert.strictEqual(retirements, 0);
 			assert.strictEqual(count, 0);
 			assert.strictEqual(existsSync(current), true);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+	test("T-RD-20 | .retired area is swept with the retired root and never treated as a candidate", () => {
+		const dir = makeTempDir();
+		try {
+			const base = join(dir, DEFAULT_ROOT, "orch");
+			const retiredRoot = join(base, ".retired");
+			mkdirSync(retiredRoot, { recursive: true });
+			const retiredEntry = join(retiredRoot, "stale-entry");
+			mkdirSync(retiredEntry);
+			touch(retiredEntry, 100);
+			const oldCandidate = join(base, "old-run");
+			mkdirSync(oldCandidate);
+			touch(oldCandidate, 20);
+			const sweptRoots: string[] = [];
+			let candidateRetirements = 0;
+			const count = cleanupOldRuns(dir, "orch", 7, "current", {
+				retireRunDirectory: (runDir) => {
+					candidateRetirements++;
+					deleteForReal(runDir);
+					return { kind: "DELETED" };
+				},
+				sweepRetiredDirectories: (retiredRootPath) => {
+					sweptRoots.push(retiredRootPath);
+					return 2;
+				},
+			});
+			// The .retired directory itself was never a run candidate.
+			assert.strictEqual(candidateRetirements, 1);
+			// The sweep received the retired root and its count was added.
+			assert.deepStrictEqual(sweptRoots, [retiredRoot]);
+			assert.strictEqual(count, 3);
+			assert.strictEqual(existsSync(oldCandidate), false);
+			// The sweep delegate owns .retired deletion semantics.
+			assert.strictEqual(existsSync(retiredEntry), true);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+	test("T-RD-21 | sweep delegate failure is best-effort (candidates unaffected)", () => {
+		const dir = makeTempDir();
+		try {
+			const base = join(dir, DEFAULT_ROOT, "orch");
+			mkdirSync(base, { recursive: true });
+			const old = join(base, "old-run");
+			mkdirSync(old);
+			touch(old, 20);
+			const count = cleanupOldRuns(dir, "orch", 7, "current", {
+				retireRunDirectory: (runDir) => {
+					deleteForReal(runDir);
+					return { kind: "DELETED" };
+				},
+				sweepRetiredDirectories: () => {
+					throw new Error("sweep unavailable");
+				},
+			});
+			assert.strictEqual(count, 1);
+			assert.strictEqual(existsSync(old), false);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -288,7 +357,7 @@ describe("run-dir properties (P-RD-a/b)", () => {
 				const current = join(base, `c${i}`);
 				mkdirSync(current);
 				touch(current, 100);
-				cleanupOldRuns(dir, "orch", 7, `c${i}`, alwaysClaimed);
+				cleanupOldRuns(dir, "orch", 7, `c${i}`, alwaysDeleted);
 				assert.strictEqual(existsSync(current), true);
 			}
 		} finally {

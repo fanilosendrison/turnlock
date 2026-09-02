@@ -91,9 +91,18 @@ describe("run-database", () => {
 			exec: (sql) => {
 				executed.push(sql);
 			},
-			prepare: () => ({
+			prepare: (sql: string) => ({
 				run: () => ({ changes: 1 }),
-				get: <T>() => ({ schema_version: CURRENT_SCHEMA_VERSION }) as T,
+				get: <T>() => {
+					if (sql.includes("run_retention")) {
+						return {
+							retention_status: "ACTIVE",
+							retirement_token: null,
+							retirement_claimed_at_epoch_ms: null,
+						} as T;
+					}
+					return { schema_version: CURRENT_SCHEMA_VERSION } as T;
+				},
 				all: <T>() => [] as T[],
 			}),
 			close: () => {

@@ -1,7 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { InvalidConfigError } from "../errors/concrete.js";
-import type { RunRetentionClaimResult } from "../persistence/sqlite/retention-claim.js";
+import {
+	RETIRED_DIR_NAME,
+	type RunRetirementOutcome,
+} from "./run-retirement.js";
 
 const DEFAULT_RUN_DIR_ROOT = path.join(".turnlock", "runs");
 const RUN_DIR_ROOT_ENV_VAR = "TURNLOCK_RUN_DIR_ROOT";
@@ -15,25 +18,40 @@ function resolveRunDirRoot(cwd: string, configRoot?: string): string {
 				: DEFAULT_RUN_DIR_ROOT;
 	return path.isAbsolute(root) ? root : path.join(cwd, root);
 }
-/** Durable deletion authorization for retention candidates.
+/** Filesystem retirement delegate for retention candidates.
  *
  *  `cleanupOldRuns` is destructive; it never deletes on a read-only
- *  observation.  A caller must supply a claim delegate that atomically
- *  obtains a durable, irreversible deletion authorization in the same
- *  authority that publishes ownership (see `claimRunForRetentionDeletion`).
- *  Deletion is only performed for CLAIMED / ALREADY_RETIRING; every other
- *  result — or a throwing delegate — keeps the directory (fail-closed). */
-export interface RunDirRetentionClaim {
+ *  observation.  The delegate must perform the durable, irreversible
+ *  retirement claim in the run's own SQLite authority and only then move
+ *  the canonical pathname atomically into the retirement-specific area
+ *  before any recursive deletion (see `run-retirement.ts`).
+ *
+ *  Deletion happens exclusively through:
+ *    - `retireRunDirectory`: claim → identity verify → atomic rename →
+ *      delete retired path;
+ *    - `sweepRetiredDirectories`: finish/retry deletion of already-retired
+ *      entries (crash recovery).
+ *
+ *  Any delegate failure throws, and the cleanup treats it fail-closed
+ *  (candidate kept). */
+export interface RunDirRetirement {
 	/**
-	 * Atomically claim the candidate RUN_DIR for retention deletion.
+	 * Atomically retire a candidate RUN_DIR.
 	 *
 	 * @param runDir absolute path of the candidate directory
 	 * @param runId the directory name (the run identifier)
 	 */
-	readonly claimRunForDeletion: (
+	readonly retireRunDirectory: (
 		runDir: string,
 		runId: string,
-	) => RunRetentionClaimResult;
+	) => RunRetirementOutcome;
+	/**
+	 * Sweep the `.retired` area of one orchestrator namespace, finishing
+	 * or retrying deletions of already-retired incarnations.
+	 *
+	 * @param retiredRoot absolute path of the `.retired` directory
+	 */
+	readonly sweepRetiredDirectories: (retiredRoot: string) => number;
 }
 export function resolveRunDir(
 	cwd: string,
@@ -49,7 +67,7 @@ export function cleanupOldRuns(
 	orchestratorName: string,
 	retentionDays: number,
 	currentRunId: string,
-	claim: RunDirRetentionClaim,
+	retirement: RunDirRetirement,
 	runDirRoot?: string,
 ): number {
 	const baseDir = path.join(
@@ -62,6 +80,8 @@ export function cleanupOldRuns(
 	let deleted = 0;
 	const entries = fs.readdirSync(baseDir, { withFileTypes: true });
 	for (const entry of entries) {
+		// The retirement area is never a run candidate.
+		if (entry.name === RETIRED_DIR_NAME) continue;
 		if (!entry.isDirectory()) continue;
 		if (entry.name === currentRunId) continue;
 		const runDir = path.join(baseDir, entry.name);
@@ -72,31 +92,25 @@ export function cleanupOldRuns(
 			continue;
 		}
 		if (stat.mtimeMs < thresholdEpoch) {
-			// Destructive permission is a durable, atomically-coordinated
-			// claim — never a read-then-delete observation.
-			let claimResult: RunRetentionClaimResult;
+			let outcome: RunRetirementOutcome;
 			try {
-				claimResult = claim.claimRunForDeletion(runDir, entry.name);
+				outcome = retirement.retireRunDirectory(runDir, entry.name);
 			} catch {
-				// A claim failure is an ambiguous state — fail closed and
-				// keep the directory rather than delete it.
+				// A retirement failure is an ambiguous state — fail closed
+				// and keep the directory rather than delete it.
 				continue;
 			}
-			if (
-				claimResult.kind !== "CLAIMED" &&
-				claimResult.kind !== "ALREADY_RETIRING"
-			) {
-				continue;
-			}
-			try {
-				fs.rmSync(runDir, { recursive: true, force: true });
-				deleted++;
-			} catch {
-				// The retirement claim stays committed (irreversible): the
-				// run remains non-resumable and a future cleanup retries
-				// the deletion.  Never reactivate a partially deleted run.
-			}
+			if (outcome.kind === "DELETED") deleted++;
 		}
+	}
+	// Crash recovery: finish deletions of incarnations that already
+	// crossed the irreversible retirement frontier (renamed but not yet
+	// deleted, or partially deleted).
+	const retiredRoot = path.join(baseDir, RETIRED_DIR_NAME);
+	try {
+		deleted += retirement.sweepRetiredDirectories(retiredRoot);
+	} catch {
+		// best-effort — the sweep retries on the next cleanup
 	}
 	return deleted;
 }

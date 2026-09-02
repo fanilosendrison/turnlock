@@ -107,8 +107,9 @@ describe("retention cleanup vs takeover race", () => {
 					spawnWorker(workerScript, ["--resume"], env),
 				]);
 				const cleanupReport = JSON.parse(cleanupProc.stdout.trim()) as {
-					claim: string;
-					deleted: boolean;
+					outcome: string;
+					reason?: string;
+					canonicalExists: boolean;
 				};
 				const resumeReport = JSON.parse(resumeProc.stdout.trim()) as {
 					result: string;
@@ -122,22 +123,23 @@ describe("retention cleanup vs takeover race", () => {
 				);
 				// Exactly one side wins.
 				const resumeWon = resumeReport.result === "ACQUIRED";
-				const cleanupWon = cleanupReport.claim === "CLAIMED";
+				const cleanupWon = cleanupReport.outcome === "DELETED";
 				assert.ok(
 					resumeWon !== cleanupWon,
-					`round ${round}: exactly one side must win — resume=${resumeReport.result} cleanup=${cleanupReport.claim}`,
+					`round ${round}: exactly one side must win — resume=${resumeReport.result} cleanup=${JSON.stringify(cleanupReport)}`,
 				);
 				if (cleanupWon) {
-					assert.strictEqual(cleanupReport.deleted, true);
 					assert.ok(
 						!dirExists,
-						`round ${round}: cleanup won, directory must be deleted`,
+						`round ${round}: cleanup won, canonical path must be vacated`,
 					);
+					assert.strictEqual(cleanupReport.canonicalExists, false);
 				} else {
 					assert.ok(
 						dirExists,
 						`round ${round}: resume won, directory must survive: ${JSON.stringify({ cleanupReport, resumeReport })}`,
 					);
+					assert.strictEqual(cleanupReport.outcome, "KEPT");
 				}
 			} finally {
 				cleanupTempDir(root);

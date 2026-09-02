@@ -4,7 +4,12 @@
 // authoritative persistence operations that replace the file-based lock and
 // state.json direct writes (once TL-F-001 is fully implemented).
 
+import { DbIntegrityError } from "./errors.js";
 import { beginImmediate, commit, rollback } from "./ownership.js";
+import {
+	RETENTION_STATUS_RETIRING,
+	readRetentionRow,
+} from "./retention-state.js";
 import { CURRENT_SCHEMA_VERSION, SCHEMA_DDL } from "./schema.js";
 import type { SqliteConnection, SqliteDriver } from "./sqlite-driver.js";
 export interface RunDatabaseConfig {
@@ -35,8 +40,11 @@ function configurePragmas(db: SqliteConnection, busyTimeoutMs: number): void {
  *      retention row;
  *    - version 1              → v1→v2 migration: create the retention row
  *      as ACTIVE (v1 databases could not be RETIRING) and bump the version;
- *    - version 2              → ensure the ACTIVE retention row exists
- *      (INSERT OR IGNORE — a RETIRING row is never replaced);
+ *    - version 2              → VALIDATE the existing retention row: it
+ *      must exist with a recognized status, and a RETIRING row must carry
+ *      a retirement token and claim timestamp.  A v2 database with a
+ *      missing or incoherent security row is an integrity failure — the
+ *      open fails closed, never silently recreating ACTIVE;
  *    - anything else          → fail closed.
  *
  *  Every existing v1 database therefore migrates safely to ACTIVE
@@ -69,9 +77,33 @@ function initializeSchema(db: SqliteConnection): void {
 				"UPDATE schema_metadata SET schema_version = ? WHERE singleton = 1",
 			).run(CURRENT_SCHEMA_VERSION);
 		} else if (existing.schema_version === CURRENT_SCHEMA_VERSION) {
-			db.prepare(`INSERT OR IGNORE INTO run_retention
-				 (singleton, retention_status)
-				 VALUES (1, 'ACTIVE')`).run();
+			// v2: the retention security row is part of the schema contract.
+			// A missing row must never be silently rebuilt as ACTIVE — that
+			// would resurrect deletion eligibility in the permissive
+			// direction.
+			const retention = readRetentionRow(db);
+			if (retention === null) {
+				rollback(db);
+				throw new DbIntegrityError(
+					"schema v2 run_retention row missing — database integrity failure",
+				);
+			}
+			if (retention.retentionStatus === null) {
+				rollback(db);
+				throw new DbIntegrityError(
+					"schema v2 run_retention status unrecognized — database integrity failure",
+				);
+			}
+			if (
+				retention.retentionStatus === RETENTION_STATUS_RETIRING &&
+				(retention.retirementToken === null ||
+					retention.retirementClaimedAtEpochMs === null)
+			) {
+				rollback(db);
+				throw new DbIntegrityError(
+					"schema v2 RETIRING row lacks retirement token/timestamp — database integrity failure",
+				);
+			}
 		} else {
 			rollback(db);
 			throw new Error(

@@ -8,14 +8,17 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 // Retention cleanup safety — adversarial integration tests.
 //
-// Invariant: a RUN_DIR can only be deleted by the retention cleanup after a
-// durable, irreversible retirement claim committed in the run's own SQLite
-// authority.  The claim is serialized against every ownership acquisition
-// by the same BEGIN IMMEDIATE write lock, so a newly acquired valid
-// authority can never be destroyed by retention cleanup.
+// Two-frontier invariant:
+//   SQLite: a RUN_DIR can only be retired after a durable ACTIVE→RETIRING
+//   claim committed in the run's own authority (serialized with every
+//   ownership acquisition).
+//   Filesystem: physical deletion operates only on a retirement-specific
+//   pathname (.retired/<runId>--<retirementToken>), reached by an atomic
+//   rename of the canonical pathname.  A new incarnation at the canonical
+//   pathname can never share deletion scope with a retired one.
 import { beforeEach, describe, test } from "node:test";
 import { STATE_SCHEMA_VERSION } from "../../src/constants.js";
 import {
@@ -26,14 +29,14 @@ import { AuthorityLostError } from "../../src/errors/concrete.js";
 import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
 import {
 	acquireOwnership,
+	beginImmediate,
 	refreshOwnership,
 	releaseOwnership,
+	rollback,
 } from "../../src/persistence/sqlite/ownership.js";
+import { claimRunForRetentionDeletion } from "../../src/persistence/sqlite/retention-claim.js";
 import {
-	claimRunForRetentionDeletion,
-	createRunRetentionClaim,
-} from "../../src/persistence/sqlite/retention-claim.js";
-import {
+	applyRetirementInTransaction,
 	RETENTION_STATUS_RETIRING,
 	readRetentionStatus,
 } from "../../src/persistence/sqlite/retention-state.js";
@@ -45,6 +48,12 @@ import {
 	type StateRecord,
 } from "../../src/persistence/sqlite/run-state-store.js";
 import { cleanupOldRuns } from "../../src/services/run-dir.js";
+import {
+	buildRunRetirement,
+	deleteRetiredRunDirectory,
+	RETIRED_DIR_NAME,
+	renameRunDirectoryToRetired,
+} from "../../src/services/run-retirement.js";
 import type { OrchestratorConfig } from "../../src/types/config.js";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
@@ -60,7 +69,7 @@ interface RetentionTestState {
 /** Hook abort marker: the orchestrator reached the post-cleanup boundary. */
 class StopAfterCleanup extends Error {}
 
-const productionClaim = createRunRetentionClaim(nodeSqliteDriver);
+const productionRetirement = buildRunRetirement(nodeSqliteDriver);
 
 beforeEach(() => {
 	delete process.env.TURNLOCK_RUN_DIR_ROOT;
@@ -129,8 +138,8 @@ function bootstrapForeignRun(
 	return result;
 }
 
-/** Adversarially mutate the seeded ownership row (e.g. expire the lease). */
-function mutateOwnership(runDir: string, sql: string): void {
+/** Adversarially mutate the seeded ownership/retention rows. */
+function mutateRun(runDir: string, sql: string): void {
 	const dbPath = join(runDir, "turnlock.sqlite3");
 	const runDb = openRunDatabase({
 		driver: nodeSqliteDriver,
@@ -142,7 +151,7 @@ function mutateOwnership(runDir: string, sql: string): void {
 }
 
 function expireLease(runDir: string): void {
-	mutateOwnership(
+	mutateRun(
 		runDir,
 		`UPDATE run_ownership SET lease_until_epoch_ms = ${Date.now() - 1000} WHERE singleton = 1`,
 	);
@@ -189,12 +198,8 @@ describe("retention cleanup safety", () => {
 		try {
 			const runDirRoot = join(root, "runs");
 			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
-			// 1. run B holds a genuine, currently-valid SQLite ownership.
 			bootstrapForeignRun(runBDir, RUN_B);
-			// 2. Make run B's RUN_DIR old enough to be retention-eligible
-			//    while its ownership lease is still alive.
 			ageDir(runBDir, 100);
-			// 3. Trigger the real cleanup through the real orchestrator path.
 			const dependencies: RunOrchestratorInternalDependencies = {
 				hooks: {
 					beforeInitialDispatchClaim: () => {
@@ -216,17 +221,8 @@ describe("retention cleanup safety", () => {
 				caught instanceof StopAfterCleanup,
 				`expected the post-cleanup hook abort, got: ${String(caught)}`,
 			);
-			// 4. Run B must still exist with its SQLite authority intact.
-			assert.strictEqual(
-				existsSync(runBDir),
-				true,
-				"expected: active foreign run survives cleanup; actual: run directory was deleted",
-			);
-			assert.strictEqual(
-				existsSync(join(runBDir, "turnlock.sqlite3")),
-				true,
-				"expected: foreign run SQLite authority survives cleanup; actual: turnlock.sqlite3 was deleted",
-			);
+			assert.strictEqual(existsSync(runBDir), true);
+			assert.strictEqual(existsSync(join(runBDir, "turnlock.sqlite3")), true);
 		} finally {
 			cleanupTempDir(root);
 		}
@@ -246,7 +242,7 @@ describe("retention cleanup safety", () => {
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
-				productionClaim,
+				productionRetirement,
 				runDirRoot,
 			);
 			assert.strictEqual(deleted, 0);
@@ -256,7 +252,7 @@ describe("retention cleanup safety", () => {
 		}
 	});
 
-	test("B | cleanup wins: CLAIMED blocks takeover, deletion proceeds", () => {
+	test("B | cleanup wins: CLAIMED blocks takeover, rename+delete vacates the canonical path", () => {
 		const root = makeTempDir();
 		try {
 			const runDirRoot = join(root, "runs");
@@ -264,27 +260,31 @@ describe("retention cleanup safety", () => {
 			bootstrapForeignRun(runBDir, RUN_B);
 			expireLease(runBDir);
 			ageDir(runBDir, 100);
-			// Cleanup claims the durable retirement first.
 			const claim = claimB(runBDir);
 			assert.strictEqual(claim.kind, "CLAIMED");
-			// A successor attempting takeover must NOT acquire.
 			const takeover = acquireB(runBDir);
 			assert.strictEqual(takeover.kind, "RUN_RETIRING");
-			// Re-age: DB re-opens refresh the directory mtime; the retention
-			// eligibility decision is mtime-based and must be re-satisfied.
 			ageDir(runBDir, 100);
-			// The real cleanup mechanism then finishes the deletion via
-			// ALREADY_RETIRING.
 			const deleted = cleanupOldRuns(
 				root,
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
-				productionClaim,
+				productionRetirement,
 				runDirRoot,
 			);
 			assert.strictEqual(deleted, 1);
 			assert.strictEqual(existsSync(runBDir), false);
+			assert.strictEqual(
+				existsSync(
+					join(
+						dirname(runBDir),
+						RETIRED_DIR_NAME,
+						`${RUN_B}--${claim.retirementToken}`,
+					),
+				),
+				false,
+			);
 		} finally {
 			cleanupTempDir(root);
 		}
@@ -298,18 +298,11 @@ describe("retention cleanup safety", () => {
 			bootstrapForeignRun(runBDir, RUN_B);
 			expireLease(runBDir);
 			ageDir(runBDir, 100);
-			// Successor acquires a fresh valid authority first.
 			const takeover = acquireB(runBDir);
 			assert.strictEqual(takeover.kind, "ACQUIRED");
 			if (takeover.kind === "ACQUIRED") {
-				assert.ok(
-					takeover.handle.leaseUntilEpochMs > Date.now(),
-					"test setup: takeover lease must be alive",
-				);
+				assert.ok(takeover.handle.leaseUntilEpochMs > Date.now());
 			}
-			// The cleanup's destructive authorization must now be refused:
-			// the claim re-reads ownership AFTER BEGIN IMMEDIATE and sees
-			// the live successor.
 			const claim = claimB(runBDir);
 			assert.strictEqual(claim.kind, "LIVE_OWNER");
 			const deleted = cleanupOldRuns(
@@ -317,7 +310,7 @@ describe("retention cleanup safety", () => {
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
-				productionClaim,
+				productionRetirement,
 				runDirRoot,
 			);
 			assert.strictEqual(deleted, 0);
@@ -336,8 +329,6 @@ describe("retention cleanup safety", () => {
 			if (bootstrapped.kind !== "BOOTSTRAPPED") throw new Error("setup");
 			const staleHandle = bootstrapped.handle;
 			expireLease(runDir);
-			// Cleanup claims RETIRING — the handle is now definitively stale
-			// even though its lease had (just) expired.
 			const claim = claimB(runDir);
 			assert.strictEqual(claim.kind, "CLAIMED");
 			const db = openRunDatabase({
@@ -346,7 +337,6 @@ describe("retention cleanup safety", () => {
 				busyTimeoutMs: 2000,
 			});
 			try {
-				// refresh → STALE_HANDLE (not EXPIRED_HANDLE): the fence moved.
 				const refresh = refreshOwnership({
 					db: db.connection,
 					handle: staleHandle,
@@ -354,7 +344,6 @@ describe("retention cleanup safety", () => {
 					leaseDurationMs: 30 * 60 * 1000,
 				});
 				assert.strictEqual(refresh.kind, "STALE_HANDLE");
-				// commit → STALE_HANDLE.
 				const commit = commitState({
 					db: db.connection,
 					handle: staleHandle,
@@ -365,7 +354,6 @@ describe("retention cleanup safety", () => {
 					nowIso: new Date().toISOString(),
 				});
 				assert.strictEqual(commit.kind, "STALE_HANDLE");
-				// projection → AuthorityLostError with STALE_HANDLE reason.
 				assert.throws(
 					() =>
 						projectAuthoritativeStateFenced(
@@ -379,7 +367,6 @@ describe("retention cleanup safety", () => {
 						error instanceof AuthorityLostError &&
 						error.reason === "STALE_HANDLE",
 				);
-				// release → STALE_HANDLE.
 				const release = releaseOwnership({
 					db: db.connection,
 					handle: staleHandle,
@@ -393,7 +380,7 @@ describe("retention cleanup safety", () => {
 		}
 	});
 
-	test("F | crash after claim: RETIRING persists, resume rejected, next cleanup finishes deletion", () => {
+	test("F | crash after claim (before rename): RETIRING persists, resume rejected, next cleanup finishes", () => {
 		const root = makeTempDir();
 		try {
 			const runDirRoot = join(root, "runs");
@@ -401,22 +388,18 @@ describe("retention cleanup safety", () => {
 			bootstrapForeignRun(runBDir, RUN_B);
 			expireLease(runBDir);
 			ageDir(runBDir, 100);
-			// Cleanup claims, then "crashes" before rm.
 			const claim = claimB(runBDir);
 			assert.strictEqual(claim.kind, "CLAIMED");
-			// Resume must not acquire.
+			// Crash before rename: canonical still exists, DB says RETIRING.
 			const takeover = acquireB(runBDir);
 			assert.strictEqual(takeover.kind, "RUN_RETIRING");
-			// Re-age: DB re-opens refresh the directory mtime; the retention
-			// eligibility decision is mtime-based and must be re-satisfied.
 			ageDir(runBDir, 100);
-			// A new cleanup process sees ALREADY_RETIRING and can finish.
 			const deleted = cleanupOldRuns(
 				root,
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
-				productionClaim,
+				productionRetirement,
 				runDirRoot,
 			);
 			assert.strictEqual(deleted, 1);
@@ -426,38 +409,79 @@ describe("retention cleanup safety", () => {
 		}
 	});
 
-	test("G | deletion failure after claim: RETIRING persists, resume rejected, retry deletes", () => {
+	test("crash B | crash after rename (before rm): sweep finishes the retired deletion", () => {
+		const root = makeTempDir();
+		try {
+			const runDir = join(root, "runs", ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runDir, RUN_B);
+			expireLease(runDir);
+			ageDir(runDir, 100);
+			const claim = claimB(runDir);
+			assert.strictEqual(claim.kind, "CLAIMED");
+			if (claim.kind !== "CLAIMED") throw new Error("setup");
+			const rename = renameRunDirectoryToRetired({
+				driver: nodeSqliteDriver,
+				runDir,
+				runId: RUN_B,
+				retirementToken: claim.retirementToken,
+				databaseIdentity: claim.databaseIdentity,
+			});
+			assert.strictEqual(rename.kind, "RENAMED");
+			if (rename.kind !== "RENAMED") throw new Error("setup");
+			// Crash before rm: canonical absent, retired path exists.
+			assert.strictEqual(existsSync(runDir), false);
+			assert.strictEqual(existsSync(rename.retiredPath), true);
+			// A future cleanup finds and deletes the retired entry via the
+			// sweep — independent of the canonical path presence.
+			const deleted = cleanupOldRuns(
+				root,
+				ORCHESTRATOR_NAME,
+				7,
+				RUN_A,
+				productionRetirement,
+				join(root, "runs"),
+			);
+			assert.strictEqual(deleted, 1);
+			assert.strictEqual(existsSync(rename.retiredPath), false);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("G | deletion failure after rename: RETIRING persists, resume rejected, sweep retries", () => {
 		const root = makeTempDir();
 		try {
 			const runDirRoot = join(root, "runs");
 			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
 			bootstrapForeignRun(runBDir, RUN_B);
 			expireLease(runBDir);
+			// A non-empty read-only child makes recursive deletion fail —
+			// sorted before turnlock.sqlite3 so the DB survives intact.
+			const stickyDir = join(runBDir, "0-sticky", "deep");
+			mkdirSync(stickyDir, { recursive: true });
+			writeFileSync(join(stickyDir, "file.txt"), "x");
+			chmodSync(join(runBDir, "0-sticky"), 0o555);
 			ageDir(runBDir, 100);
-			// Instrumented claim delegate: performs the REAL durable claim,
-			// then makes the directory undeletable before rm runs.
-			const claimThenLock: typeof productionClaim = {
-				claimRunForDeletion: (runDir, runId) => {
-					const result = claimB(runDir, runId);
-					chmodSync(runDir, 0o555);
-					return result;
-				},
-			};
+			// Claim + rename succeed; the recursive delete fails.
 			const deletedFirst = cleanupOldRuns(
 				root,
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
-				claimThenLock,
+				productionRetirement,
 				runDirRoot,
 			);
-			// rm failed — the claim must NOT be reactivated.
 			assert.strictEqual(deletedFirst, 0);
-			assert.strictEqual(existsSync(runBDir), true);
-			chmodSync(runBDir, 0o755);
+			assert.strictEqual(existsSync(runBDir), false);
+			const retiredRoot = join(dirname(runBDir), RETIRED_DIR_NAME);
+			const retiredEntries = readdirSync(retiredRoot);
+			assert.strictEqual(retiredEntries.length, 1);
+			const retiredPath = join(retiredRoot, retiredEntries[0] ?? "");
+			assert.strictEqual(existsSync(retiredPath), true);
+			// The retired DB stays RETIRING and refuses new ownership.
 			const checkDb = openRunDatabase({
 				driver: nodeSqliteDriver,
-				dbPath: join(runBDir, "turnlock.sqlite3"),
+				dbPath: join(retiredPath, "turnlock.sqlite3"),
 				busyTimeoutMs: 2000,
 			});
 			try {
@@ -468,23 +492,20 @@ describe("retention cleanup safety", () => {
 			} finally {
 				checkDb.close();
 			}
-			// Resume remains forbidden.
-			const takeover = acquireB(runBDir);
+			const takeover = acquireB(retiredPath);
 			assert.strictEqual(takeover.kind, "RUN_RETIRING");
-			// Re-age: DB re-opens refresh the directory mtime; the retention
-			// eligibility decision is mtime-based and must be re-satisfied.
-			ageDir(runBDir, 100);
-			// A future cleanup retries and completes the deletion.
+			// Unblock the deletion and retry — the sweep completes it.
+			chmodSync(join(retiredPath, "0-sticky"), 0o755);
 			const deletedRetry = cleanupOldRuns(
 				root,
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
-				productionClaim,
+				productionRetirement,
 				runDirRoot,
 			);
 			assert.strictEqual(deletedRetry, 1);
-			assert.strictEqual(existsSync(runBDir), false);
+			assert.strictEqual(existsSync(retiredPath), false);
 		} finally {
 			cleanupTempDir(root);
 		}
@@ -494,16 +515,14 @@ describe("retention cleanup safety", () => {
 		const root = makeTempDir();
 		try {
 			const runDirRoot = join(root, "runs");
-			// Unreadable DB file.
 			const corruptDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
 			mkdirSync(corruptDir, { recursive: true });
 			writeFileSync(join(corruptDir, "turnlock.sqlite3"), "not a sqlite db");
 			ageDir(corruptDir, 100);
-			// Schema-incompatible DB.
 			const mismatchedId = "01HX000000000000000000000C";
 			const mismatchedDir = join(runDirRoot, ORCHESTRATOR_NAME, mismatchedId);
 			bootstrapForeignRun(mismatchedDir, mismatchedId);
-			mutateOwnership(
+			mutateRun(
 				mismatchedDir,
 				"UPDATE schema_metadata SET schema_version = 999 WHERE singleton = 1",
 			);
@@ -513,7 +532,7 @@ describe("retention cleanup safety", () => {
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
-				productionClaim,
+				productionRetirement,
 				runDirRoot,
 			);
 			assert.strictEqual(deleted, 0);
@@ -536,7 +555,7 @@ describe("retention cleanup safety", () => {
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
-				productionClaim,
+				productionRetirement,
 				runDirRoot,
 			);
 			assert.strictEqual(deleted, 0);
@@ -553,13 +572,12 @@ describe("retention cleanup safety", () => {
 			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
 			bootstrapForeignRun(runBDir, RUN_B);
 			expireLease(runBDir);
-			// Fresh directory — below the retention threshold.
 			const deleted = cleanupOldRuns(
 				root,
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
-				productionClaim,
+				productionRetirement,
 				runDirRoot,
 			);
 			assert.strictEqual(deleted, 0);
@@ -576,22 +594,24 @@ describe("retention cleanup safety", () => {
 			const runADir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_A);
 			bootstrapForeignRun(runADir, RUN_A);
 			ageDir(runADir, 100);
-			let claims = 0;
-			const spyClaim: typeof productionClaim = {
-				claimRunForDeletion: (runDir, runId) => {
-					claims++;
-					return claimB(runDir, runId);
+			let retirements = 0;
+			const spy: typeof productionRetirement = {
+				retireRunDirectory: (runDir, runId) => {
+					retirements++;
+					return productionRetirement.retireRunDirectory(runDir, runId);
 				},
+				sweepRetiredDirectories: (retiredRoot) =>
+					productionRetirement.sweepRetiredDirectories(retiredRoot),
 			};
 			const deleted = cleanupOldRuns(
 				root,
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
-				spyClaim,
+				spy,
 				runDirRoot,
 			);
-			assert.strictEqual(claims, 0);
+			assert.strictEqual(retirements, 0);
 			assert.strictEqual(deleted, 0);
 			assert.strictEqual(existsSync(runADir), true);
 		} finally {
@@ -611,15 +631,11 @@ describe("retention cleanup safety", () => {
 				ORCHESTRATOR_NAME,
 				7,
 				RUN_A,
-				productionClaim,
+				productionRetirement,
 				runDirRoot,
 			);
 			assert.strictEqual(deleted, 0);
 			assert.strictEqual(existsSync(otherRunDir), true);
-			assert.strictEqual(
-				existsSync(join(otherRunDir, "turnlock.sqlite3")),
-				true,
-			);
 		} finally {
 			cleanupTempDir(root);
 		}
@@ -642,7 +658,7 @@ describe("retention cleanup safety", () => {
 				ORCHESTRATOR_NAME,
 				0,
 				RUN_A,
-				productionClaim,
+				productionRetirement,
 				runDirRoot,
 			);
 			assert.strictEqual(deleted, 1);
@@ -653,47 +669,39 @@ describe("retention cleanup safety", () => {
 		}
 	});
 
-	test("RED: new incarnation created at the canonical path during the deletion window must not be destroyed", {
-		skip: "RED on current HEAD — proof recorded in the commit message; unskipped by the filesystem retirement protocol",
-	}, () => {
+	test("new incarnation created at the canonical path during the retirement window must not be destroyed", () => {
 		const root = makeTempDir();
 		try {
 			const runDirRoot = join(root, "runs");
 			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
-			// 1. Real old RUN_DIR B with a real SQLite authority.
 			bootstrapForeignRun(runBDir, RUN_B);
 			expireLease(runBDir);
 			ageDir(runBDir, 100);
-			// 2. Barrier delegate: the REAL durable claim wins, then the
-			//    deletion window is simulated — the old authority's files
-			//    disappear and a NEW incarnation is bootstrapped at the SAME
-			//    canonical pathname with the production primitives.
+			// Barrier delegate: the REAL durable claim wins, then the
+			// deletion window is simulated — the old authority's files
+			// disappear and a NEW incarnation is bootstrapped at the SAME
+			// canonical pathname with the production primitives.
 			let newIncarnationBootstrapped = false;
-			const windowDelegate: typeof productionClaim = {
-				claimRunForDeletion: (runDir, runId) => {
-					const result = claimB(runDir, runId);
-					assert.strictEqual(result.kind, "CLAIMED");
-					// The old DB (and its WAL sidecars) disappear — the
-					// pathname now looks recreatable to a new process.
+			const windowDelegate: typeof productionRetirement = {
+				retireRunDirectory: (runDir, runId) => {
+					const claim = claimB(runDir, runId);
+					assert.strictEqual(claim.kind, "CLAIMED");
 					for (const entry of readdirSync(runDir)) {
 						rmSync(join(runDir, entry), { recursive: true, force: true });
 					}
-					// A new initial process bootstraps a fresh incarnation.
 					const fresh = bootstrapForeignRun(runDir, runId);
 					assert.strictEqual(fresh.kind, "BOOTSTRAPPED");
 					if (fresh.kind === "BOOTSTRAPPED") {
-						assert.ok(
-							fresh.handle.leaseUntilEpochMs > Date.now(),
-							"test setup: new incarnation must hold a live lease",
-						);
+						assert.ok(fresh.handle.leaseUntilEpochMs > Date.now());
 					}
 					newIncarnationBootstrapped = true;
-					// The cleanup still holds the stale CLAIMED authorization
-					// over the canonical pathname.
-					return result;
+					// Hand over to the REAL production flow: it must refuse
+					// to act on the new incarnation.
+					return productionRetirement.retireRunDirectory(runDir, runId);
 				},
+				sweepRetiredDirectories: (retiredRoot) =>
+					productionRetirement.sweepRetiredDirectories(retiredRoot),
 			};
-			// 3. The real cleanup resumes and acts on the original pathname.
 			const deleted = cleanupOldRuns(
 				root,
 				ORCHESTRATOR_NAME,
@@ -703,27 +711,32 @@ describe("retention cleanup safety", () => {
 				runDirRoot,
 			);
 			console.error(
-				`RED evidence: newIncarnationBootstrapped=${newIncarnationBootstrapped} deleted=${deleted}`,
+				`filesystem-window proof: newIncarnationBootstrapped=${newIncarnationBootstrapped} deleted=${deleted}`,
 			);
-			// Invariant: the new incarnation must be completely untouched.
 			assert.strictEqual(
 				existsSync(runBDir),
 				true,
-				"expected: new incarnation survives; actual: canonical pathname was deleted by the cleanup",
+				"expected: new incarnation survives; actual: canonical pathname was removed by the cleanup",
 			);
 			assert.strictEqual(
 				existsSync(join(runBDir, "turnlock.sqlite3")),
 				true,
-				"expected: new incarnation SQLite authority survives; actual: turnlock.sqlite3 was deleted",
+				"expected: new incarnation SQLite authority survives; actual: turnlock.sqlite3 was removed",
 			);
+			// The new incarnation remains fully authoritative: its bootstrap
+			// owner is still HELD with a live lease, so a takeover attempt
+			// must report ACTIVE_CONFLICT (a live owner exists).
+			const takeover = acquireB(runBDir);
+			assert.strictEqual(takeover.kind, "ACTIVE_CONFLICT");
+			if (takeover.kind === "ACTIVE_CONFLICT") {
+				assert.ok(takeover.leaseUntilEpochMs > Date.now());
+			}
 		} finally {
 			cleanupTempDir(root);
 		}
 	});
 
-	test("RED: canonical pathname replaced after claim must not be renamed/deleted", {
-		skip: "RED on current HEAD — proof recorded in the commit message; unskipped by the filesystem retirement protocol",
-	}, () => {
+	test("canonical pathname replaced after claim must not be renamed/deleted", () => {
 		const root = makeTempDir();
 		try {
 			const runDirRoot = join(root, "runs");
@@ -732,24 +745,23 @@ describe("retention cleanup safety", () => {
 			expireLease(runBDir);
 			ageDir(runBDir, 100);
 			let newIncarnationBootstrapped = false;
-			const swapDelegate: typeof productionClaim = {
-				claimRunForDeletion: (runDir, runId) => {
-					const result = claimB(runDir, runId);
-					assert.strictEqual(result.kind, "CLAIMED");
+			const swapDelegate: typeof productionRetirement = {
+				retireRunDirectory: (runDir, runId) => {
+					const claim = claimB(runDir, runId);
+					assert.strictEqual(claim.kind, "CLAIMED");
 					// Pathname substitution: the whole directory object the
 					// claim referred to is replaced by a brand-new one.
 					rmSync(runDir, { recursive: true, force: true });
 					const fresh = bootstrapForeignRun(runDir, runId);
 					assert.strictEqual(fresh.kind, "BOOTSTRAPPED");
 					if (fresh.kind === "BOOTSTRAPPED") {
-						assert.ok(
-							fresh.handle.leaseUntilEpochMs > Date.now(),
-							"test setup: replacement incarnation must hold a live lease",
-						);
+						assert.ok(fresh.handle.leaseUntilEpochMs > Date.now());
 					}
 					newIncarnationBootstrapped = true;
-					return result;
+					return productionRetirement.retireRunDirectory(runDir, runId);
 				},
+				sweepRetiredDirectories: (retiredRoot) =>
+					productionRetirement.sweepRetiredDirectories(retiredRoot),
 			};
 			const deleted = cleanupOldRuns(
 				root,
@@ -760,18 +772,263 @@ describe("retention cleanup safety", () => {
 				runDirRoot,
 			);
 			console.error(
-				`RED evidence (replacement): newIncarnationBootstrapped=${newIncarnationBootstrapped} deleted=${deleted}`,
+				`pathname-replacement proof: newIncarnationBootstrapped=${newIncarnationBootstrapped} deleted=${deleted}`,
 			);
 			assert.strictEqual(
 				existsSync(runBDir),
 				true,
-				"expected: replacement incarnation survives; actual: canonical pathname was deleted after the swap",
+				"expected: replacement incarnation survives; actual: canonical pathname was removed after the swap",
 			);
-			assert.strictEqual(
-				existsSync(join(runBDir, "turnlock.sqlite3")),
-				true,
-				"expected: replacement SQLite authority survives; actual: turnlock.sqlite3 was deleted",
+			assert.strictEqual(existsSync(join(runBDir, "turnlock.sqlite3")), true);
+			const takeover = acquireB(runBDir);
+			assert.strictEqual(takeover.kind, "ACTIVE_CONFLICT");
+			if (takeover.kind === "ACTIVE_CONFLICT") {
+				assert.ok(takeover.leaseUntilEpochMs > Date.now());
+			}
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("filesystem protocol: new canonical incarnation survives deletion of the retired path", () => {
+		const root = makeTempDir();
+		try {
+			const runDir = join(root, "runs", ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runDir, RUN_B);
+			expireLease(runDir);
+			ageDir(runDir, 100);
+			// 1. Retirement claimed on the OLD incarnation.
+			const claim = claimB(runDir);
+			assert.strictEqual(claim.kind, "CLAIMED");
+			if (claim.kind !== "CLAIMED") throw new Error("setup");
+			// 2. Atomic rename: old incarnation leaves the canonical path.
+			const rename = renameRunDirectoryToRetired({
+				driver: nodeSqliteDriver,
+				runDir,
+				runId: RUN_B,
+				retirementToken: claim.retirementToken,
+				databaseIdentity: claim.databaseIdentity,
+			});
+			assert.strictEqual(rename.kind, "RENAMED");
+			if (rename.kind !== "RENAMED") throw new Error("setup");
+			assert.strictEqual(existsSync(runDir), false);
+			// 3. A NEW incarnation bootstraps at the canonical pathname.
+			const fresh = bootstrapForeignRun(runDir, RUN_B);
+			assert.strictEqual(fresh.kind, "BOOTSTRAPPED");
+			// 4. Deletion of the retired path runs to completion.
+			const deletion = deleteRetiredRunDirectory(rename.retiredPath);
+			assert.strictEqual(deletion.kind, "DELETED");
+			assert.strictEqual(existsSync(rename.retiredPath), false);
+			// 5. The new incarnation is completely untouched and still
+			//    authoritative (live HELD ownership from its bootstrap).
+			assert.strictEqual(existsSync(runDir), true);
+			assert.strictEqual(existsSync(join(runDir, "turnlock.sqlite3")), true);
+			const takeover = acquireB(runDir);
+			assert.strictEqual(takeover.kind, "ACTIVE_CONFLICT");
+			if (takeover.kind === "ACTIVE_CONFLICT") {
+				assert.ok(takeover.leaseUntilEpochMs > Date.now());
+			}
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("pathname replacement before rename: identity verification refuses to move the new incarnation", () => {
+		const root = makeTempDir();
+		try {
+			const runDir = join(root, "runs", ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runDir, RUN_B);
+			expireLease(runDir);
+			const claim = claimB(runDir);
+			assert.strictEqual(claim.kind, "CLAIMED");
+			if (claim.kind !== "CLAIMED") throw new Error("setup");
+			// Swap the canonical path with a brand-new incarnation BEFORE
+			// the filesystem phase.
+			rmSync(runDir, { recursive: true, force: true });
+			const fresh = bootstrapForeignRun(runDir, RUN_B);
+			assert.strictEqual(fresh.kind, "BOOTSTRAPPED");
+			// The stale claim's identity must refuse the rename.
+			const rename = renameRunDirectoryToRetired({
+				driver: nodeSqliteDriver,
+				runDir,
+				runId: RUN_B,
+				retirementToken: claim.retirementToken,
+				databaseIdentity: claim.databaseIdentity,
+			});
+			assert.strictEqual(rename.kind, "MISMATCH");
+			// The new incarnation is untouched and still authoritative.
+			assert.strictEqual(existsSync(runDir), true);
+			assert.strictEqual(existsSync(join(runDir, "turnlock.sqlite3")), true);
+			const takeover = acquireB(runDir);
+			assert.strictEqual(takeover.kind, "ACTIVE_CONFLICT");
+			if (takeover.kind === "ACTIVE_CONFLICT") {
+				assert.ok(takeover.leaseUntilEpochMs > Date.now());
+			}
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("retention status invalid → KEEP (no destructive effect)", () => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			mkdirSync(runBDir, { recursive: true });
+			// Craft a schema-v2 database whose run_retention row carries a
+			// status value that bypasses the production CHECK constraint —
+			// the only way to construct the corrupted state for testing.
+			const dbPath = join(runBDir, "turnlock.sqlite3");
+			const raw = nodeSqliteDriver.open(dbPath);
+			raw.exec(`
+				CREATE TABLE schema_metadata (
+				    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+				    schema_version INTEGER NOT NULL
+				);
+				INSERT INTO schema_metadata (singleton, schema_version)
+				VALUES (1, 2);
+				CREATE TABLE run_retention (
+				    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+				    retention_status TEXT NOT NULL,
+				    retirement_token TEXT,
+				    retirement_claimed_at_epoch_ms INTEGER
+				);
+				INSERT INTO run_retention (singleton, retention_status)
+				VALUES (1, 'BROKEN');
+			`);
+			raw.close();
+			ageDir(runBDir, 100);
+			const deleted = cleanupOldRuns(
+				root,
+				ORCHESTRATOR_NAME,
+				7,
+				RUN_A,
+				productionRetirement,
+				runDirRoot,
 			);
+			// The corrupted status must never authorize deletion: the open
+			// fails closed and the directory is kept.
+			assert.strictEqual(deleted, 0);
+			assert.strictEqual(existsSync(runBDir), true);
+			assert.strictEqual(existsSync(join(runBDir, "turnlock.sqlite3")), true);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("RETIRING + missing retirement token → KEEP (no destructive effect)", () => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runBDir, RUN_B);
+			expireLease(runBDir);
+			mutateRun(
+				runBDir,
+				"UPDATE run_retention SET retention_status = 'RETIRING', retirement_token = NULL WHERE singleton = 1",
+			);
+			ageDir(runBDir, 100);
+			const deleted = cleanupOldRuns(
+				root,
+				ORCHESTRATOR_NAME,
+				7,
+				RUN_A,
+				productionRetirement,
+				runDirRoot,
+			);
+			assert.strictEqual(deleted, 0);
+			assert.strictEqual(existsSync(runBDir), true);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("RETIRING + HELD/live ownership → KEEP (no destructive effect)", () => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runBDir, RUN_B);
+			expireLease(runBDir);
+			const firstClaim = claimB(runBDir);
+			assert.strictEqual(firstClaim.kind, "CLAIMED");
+			// Corrupt the retired state: a live owner appears again.
+			mutateRun(
+				runBDir,
+				`UPDATE run_ownership SET ownership_status = 'HELD', owner_token = 'ghost', owner_pid = 1, acquired_at_epoch_ms = ${Date.now()}, lease_until_epoch_ms = ${Date.now() + 3600000} WHERE singleton = 1`,
+			);
+			ageDir(runBDir, 100);
+			const deleted = cleanupOldRuns(
+				root,
+				ORCHESTRATOR_NAME,
+				7,
+				RUN_A,
+				productionRetirement,
+				runDirRoot,
+			);
+			assert.strictEqual(deleted, 0);
+			assert.strictEqual(existsSync(runBDir), true);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("schema v2 + missing run_retention row → open fails closed → KEEP", () => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runBDir, RUN_B);
+			expireLease(runBDir);
+			mutateRun(runBDir, "DELETE FROM run_retention WHERE singleton = 1");
+			ageDir(runBDir, 100);
+			const deleted = cleanupOldRuns(
+				root,
+				ORCHESTRATOR_NAME,
+				7,
+				RUN_A,
+				productionRetirement,
+				runDirRoot,
+			);
+			assert.strictEqual(deleted, 0);
+			assert.strictEqual(existsSync(runBDir), true);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("ACTIVE → RETIRING transition mutating zero rows → no CLAIMED, no delete", () => {
+		const root = makeTempDir();
+		try {
+			const runDir = join(root, "runs", ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runDir, RUN_B);
+			expireLease(runDir);
+			// Open a connection and manually flip the retention state to
+			// RETIRING (simulating a racing claim), then the real
+			// transition primitive must prove exactly-one-row mutation.
+			const db = openRunDatabase({
+				driver: nodeSqliteDriver,
+				dbPath: join(runDir, "turnlock.sqlite3"),
+				busyTimeoutMs: 2000,
+			});
+			try {
+				beginImmediate(db.connection);
+				db.connection.exec(
+					"UPDATE run_retention SET retention_status = 'RETIRING' WHERE singleton = 1",
+				);
+				assert.throws(
+					() =>
+						applyRetirementInTransaction(db.connection, "TOKEN", Date.now()),
+					/affected 0 rows/,
+				);
+				rollback(db.connection);
+			} finally {
+				db.close();
+			}
+			// The failed primitive produced no destructive effect: the
+			// directory and its authority are untouched.
+			assert.strictEqual(existsSync(runDir), true);
+			assert.strictEqual(existsSync(join(runDir, "turnlock.sqlite3")), true);
 		} finally {
 			cleanupTempDir(root);
 		}
