@@ -4,10 +4,19 @@ import { join } from "node:path";
 // NIB-T §7 — run-dir (T-RD-01..12, P-RD-a/b)
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { InvalidConfigError } from "../../src/errors/concrete.js";
-import { cleanupOldRuns, resolveRunDir } from "../../src/services/run-dir.js";
+import {
+	cleanupOldRuns,
+	type RunDirRetentionProtection,
+	resolveRunDir,
+} from "../../src/services/run-dir.js";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
 const DEFAULT_ROOT = join(".turnlock", "runs");
+// Pure filesystem tests: the candidate directories contain no SQLite
+// database, so there is nothing to protect and the policy allows deletion.
+const neverProtected: RunDirRetentionProtection = {
+	isRunProtected: () => false,
+};
 // Env var must not leak across tests — cleared before every test in this file.
 beforeEach(() => {
 	delete process.env.TURNLOCK_RUN_DIR_ROOT;
@@ -81,7 +90,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			const current = join(base, "current");
 			mkdirSync(current);
 			touch(current, 100);
-			cleanupOldRuns(dir, "orch", 7, "current");
+			cleanupOldRuns(dir, "orch", 7, "current", neverProtected);
 			assert.strictEqual(existsSync(current), true);
 		} finally {
 			cleanupTempDir(dir);
@@ -95,7 +104,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			const old = join(base, "old-run");
 			mkdirSync(old);
 			touch(old, 10);
-			cleanupOldRuns(dir, "orch", 7, "current");
+			cleanupOldRuns(dir, "orch", 7, "current", neverProtected);
 			assert.strictEqual(existsSync(old), false);
 		} finally {
 			cleanupTempDir(dir);
@@ -111,7 +120,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			// Use 6.999 days to avoid race between touch's Date.now() and
 			// cleanupOldRuns's Date.now() which can shift the threshold by a few ms.
 			touch(edge, 6.999);
-			cleanupOldRuns(dir, "orch", 7, "current");
+			cleanupOldRuns(dir, "orch", 7, "current", neverProtected);
 			assert.strictEqual(existsSync(edge), true);
 		} finally {
 			cleanupTempDir(dir);
@@ -127,7 +136,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 				mkdirSync(d);
 				touch(d, 20);
 			}
-			const count = cleanupOldRuns(dir, "orch", 7, "current");
+			const count = cleanupOldRuns(dir, "orch", 7, "current", neverProtected);
 			assert.strictEqual(count, 3);
 		} finally {
 			cleanupTempDir(dir);
@@ -139,7 +148,7 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			const other = join(dir, DEFAULT_ROOT, "other", "run-x");
 			mkdirSync(other, { recursive: true });
 			touch(other, 100);
-			cleanupOldRuns(dir, "orch", 7, "current");
+			cleanupOldRuns(dir, "orch", 7, "current", neverProtected);
 			assert.strictEqual(existsSync(other), true);
 		} finally {
 			cleanupTempDir(dir);
@@ -155,8 +164,59 @@ describe("cleanupOldRuns (T-RD-04..08)", () => {
 			mkdirSync(old);
 			touch(old, 10);
 			// Default root dir must NOT be touched (it doesn't exist here).
-			cleanupOldRuns(dir, "orch", 7, "current", customRoot);
+			cleanupOldRuns(dir, "orch", 7, "current", neverProtected, customRoot);
 			assert.strictEqual(existsSync(old), false);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+	test("T-RD-15 | protection policy keeps an old directory", () => {
+		const dir = makeTempDir();
+		try {
+			const base = join(dir, DEFAULT_ROOT, "orch");
+			mkdirSync(base, { recursive: true });
+			const old = join(base, "protected-old");
+			mkdirSync(old);
+			touch(old, 20);
+			const seen: Array<{ runId: string; nowEpochMs: number }> = [];
+			const before = Date.now();
+			const count = cleanupOldRuns(dir, "orch", 7, "current", {
+				isRunProtected: (_runDir, runId, nowEpochMs) => {
+					seen.push({ runId, nowEpochMs });
+					return runId === "protected-old";
+				},
+			});
+			const after = Date.now();
+			assert.strictEqual(existsSync(old), true);
+			assert.strictEqual(count, 0);
+			// The policy must receive the directory name and the single
+			// cleanup-pass time boundary (no independent clock readings).
+			assert.strictEqual(seen.length, 1);
+			assert.strictEqual(seen[0]?.runId, "protected-old");
+			assert.ok(seen[0] !== undefined);
+			assert.ok(
+				seen[0].nowEpochMs >= before && seen[0].nowEpochMs <= after,
+				`protection time boundary must come from the cleanup pass: ${seen[0].nowEpochMs}`,
+			);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+	test("T-RD-16 | protection policy failure fails closed (directory kept)", () => {
+		const dir = makeTempDir();
+		try {
+			const base = join(dir, DEFAULT_ROOT, "orch");
+			mkdirSync(base, { recursive: true });
+			const old = join(base, "ambiguous-old");
+			mkdirSync(old);
+			touch(old, 20);
+			const count = cleanupOldRuns(dir, "orch", 7, "current", {
+				isRunProtected: () => {
+					throw new Error("protection unavailable");
+				},
+			});
+			assert.strictEqual(existsSync(old), true);
+			assert.strictEqual(count, 0);
 		} finally {
 			cleanupTempDir(dir);
 		}
@@ -172,7 +232,7 @@ describe("run-dir properties (P-RD-a/b)", () => {
 				const current = join(base, `c${i}`);
 				mkdirSync(current);
 				touch(current, 100);
-				cleanupOldRuns(dir, "orch", 7, `c${i}`);
+				cleanupOldRuns(dir, "orch", 7, `c${i}`, neverProtected);
 				assert.strictEqual(existsSync(current), true);
 			}
 		} finally {

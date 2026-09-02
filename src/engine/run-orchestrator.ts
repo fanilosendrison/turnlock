@@ -4,6 +4,7 @@ import {
 	PENDING_INITIAL_DISPATCH_STATE_FIELD,
 	PENDING_INITIAL_DISPATCH_VERSION,
 	PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD,
+	RUN_DB_FILENAME,
 	STATE_SCHEMA_VERSION,
 } from "../constants.js";
 import {
@@ -24,6 +25,7 @@ import {
 	migrateLegacyRunAtomic,
 } from "../persistence/sqlite/run-bootstrap.js";
 import { openRunDatabase } from "../persistence/sqlite/run-database.js";
+import { createRunRetentionProtection } from "../persistence/sqlite/run-liveness.js";
 import {
 	commitState,
 	type ProjectionInternalDependencies,
@@ -57,7 +59,7 @@ import {
 import { installSignalHandlers } from "./signal-handlers.js";
 import { claimInitialDispatchWithProjection } from "./state-commit.js";
 
-const DB_FILENAME = "turnlock.sqlite3";
+const DB_FILENAME = RUN_DB_FILENAME;
 export interface RunOrchestratorInternalHooks {
 	afterBootstrapResult?(): void;
 	beforeInitialProjection?(): void;
@@ -413,11 +415,16 @@ async function runInitialMode<S extends object>(
 		});
 		installSignalHandlers(ctx);
 		try {
+			// Retention cleanup is destructive: it must run under the
+			// production protection policy so that a foreign RUN_DIR whose
+			// SQLite ownership is still HELD with a live lease is never
+			// deleted, regardless of its age.
 			cleanupOldRuns(
 				cwd,
 				config.name,
 				config.retentionDays ?? 7,
 				runId,
+				createRunRetentionProtection(nodeSqliteDriver),
 				config.runDirRoot,
 			);
 		} catch {

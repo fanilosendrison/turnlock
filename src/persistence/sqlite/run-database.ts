@@ -56,3 +56,33 @@ export function openRunDatabase(config: RunDatabaseConfig): RunDatabase {
 		close: () => db.close(),
 	};
 }
+/** Open an existing run database read-only for inspection.
+ *
+ *  Unlike `openRunDatabase`, this NEVER creates the file, NEVER runs
+ *  `SCHEMA_DDL`, and NEVER changes `journal_mode`/`synchronous` — it must
+ *  not modify a database that may still be the live authority of another
+ *  process.  Only the connection-scoped `busy_timeout` pragma is applied.
+ *
+ *  Schema validation is the caller's responsibility (see `run-liveness.ts`).
+ *  Throws when the driver has no read-only support or the file cannot be
+ *  opened — callers treat that as an unknown state and fail closed. */
+export function openRunDatabaseReadOnly(
+	config: RunDatabaseConfig,
+): RunDatabase {
+	if (config.driver.openReadOnly === undefined) {
+		throw new Error(
+			"SQLite driver does not support read-only open — cannot inspect run authority",
+		);
+	}
+	const db = config.driver.openReadOnly(config.dbPath);
+	try {
+		db.exec(`PRAGMA busy_timeout = ${config.busyTimeoutMs}`);
+	} catch (error) {
+		db.close();
+		throw error;
+	}
+	return {
+		connection: db,
+		close: () => db.close(),
+	};
+}

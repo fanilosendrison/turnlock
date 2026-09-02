@@ -67,7 +67,53 @@ function bigintFromRow(value: unknown): bigint {
 	if (typeof value === "number") return BigInt(value);
 	throw new DbIntegrityError(`expected bigint, got ${typeof value}`);
 }
-function readPredecessor(db: SqliteConnection): OwnershipPredecessor | null {
+/** The single definition of a live ownership lease.
+ *
+ *  A lease is alive only while the ownership status is HELD, a lease
+ *  deadline exists, and the time boundary is strictly before the deadline.
+ *  The lease is expired at the exact instant `nowEpochMs >= leaseUntil`.
+ *  Every liveness decision (CAS acquisition, fenced projection, retention
+ *  cleanup) must use this helper so no two definitions of "lease vivante"
+ *  can drift apart. */
+export function isLiveLease(params: {
+	readonly status: string;
+	readonly leaseUntilEpochMs: number | null;
+	readonly nowEpochMs: number;
+}): boolean {
+	return (
+		params.status === "HELD" &&
+		params.leaseUntilEpochMs !== null &&
+		params.nowEpochMs < params.leaseUntilEpochMs
+	);
+}
+/** Live-lease decision for a full ownership predecessor snapshot.
+ *
+ *  Type predicate: on `true` the predecessor is HELD with a non-null,
+ *  not-yet-expired lease, so `leaseUntilEpochMs` is usable directly. */
+export function isOwnershipLive(
+	predecessor: OwnershipPredecessor | null,
+	nowEpochMs: number,
+): predecessor is OwnershipPredecessor & {
+	readonly status: "HELD";
+	readonly leaseUntilEpochMs: number;
+} {
+	return (
+		predecessor !== null &&
+		isLiveLease({
+			status: predecessor.status,
+			leaseUntilEpochMs: predecessor.leaseUntilEpochMs,
+			nowEpochMs,
+		})
+	);
+}
+/** Read the ownership singleton row without any transaction or mutation.
+ *
+ *  Read-only observation — the row is never authority on its own, but it is
+ *  exactly the input the CAS acquisition path observes before BEGIN
+ *  IMMEDIATE, and the input the retention cleanup uses for liveness. */
+export function readOwnershipPredecessor(
+	db: SqliteConnection,
+): OwnershipPredecessor | null {
 	const row = db
 		.prepare(`SELECT incarnation_id, ownership_status, owner_token,
 			        fence_token, lease_until_epoch_ms
@@ -382,9 +428,11 @@ export function acquireOwnershipDirectInTransaction(
 	}
 	// Active owner check.
 	if (
-		row.ownership_status === "HELD" &&
-		row.lease_until_epoch_ms !== null &&
-		nowEpochMs < row.lease_until_epoch_ms
+		isLiveLease({
+			status: row.ownership_status,
+			leaseUntilEpochMs: row.lease_until_epoch_ms,
+			nowEpochMs,
+		})
 	) {
 		return null; // ACTIVE_CONFLICT
 	}
@@ -451,7 +499,7 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 	);
 	ensureOwnershipRow(db, incarnationId);
 	// Observe predecessor (outside transaction — observation is not authority).
-	const predecessor = readPredecessor(db);
+	const predecessor = readOwnershipPredecessor(db);
 	if (predecessor === null) {
 		return {
 			kind: "DB_FAILURE",
@@ -461,21 +509,19 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 	// Active owner check — advisory heuristic only.  Uses the real clock,
 	// not the caller-supplied timestamp, to avoid false ACTIVE_CONFLICT
 	// when the caller's clock was captured before a potential wait.
-	if (predecessor.status === "HELD" && predecessor.leaseUntilEpochMs !== null) {
-		if (Date.now() < predecessor.leaseUntilEpochMs) {
-			const ownerRow = db
-				.prepare("SELECT owner_pid FROM run_ownership WHERE singleton = 1")
-				.get() as
-				| {
-						owner_pid: number;
-				  }
-				| undefined;
-			return {
-				kind: "ACTIVE_CONFLICT",
-				ownerPid: ownerRow?.owner_pid ?? 0,
-				leaseUntilEpochMs: predecessor.leaseUntilEpochMs,
-			};
-		}
+	if (isOwnershipLive(predecessor, Date.now())) {
+		const ownerRow = db
+			.prepare("SELECT owner_pid FROM run_ownership WHERE singleton = 1")
+			.get() as
+			| {
+					owner_pid: number;
+			  }
+			| undefined;
+		return {
+			kind: "ACTIVE_CONFLICT",
+			ownerPid: ownerRow?.owner_pid ?? 0,
+			leaseUntilEpochMs: predecessor.leaseUntilEpochMs,
+		};
 	}
 	const ownerToken = generateRunId();
 	const ownerPid = process.pid;
@@ -483,7 +529,7 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 	const maxAttempts = 10;
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
 		if (performance.now() > deadlineMs) break;
-		const currentPredecessor = readPredecessor(db);
+		const currentPredecessor = readOwnershipPredecessor(db);
 		if (currentPredecessor === null) {
 			return {
 				kind: "DB_FAILURE",
@@ -505,11 +551,7 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 		// Active-owner check AFTER lock acquisition with fresh clock.
 		// The pre-lock predecessor observation may be stale; the
 		// authoritative decision uses lockEpochMs captured above.
-		if (
-			currentPredecessor.status === "HELD" &&
-			currentPredecessor.leaseUntilEpochMs !== null &&
-			lockEpochMs < currentPredecessor.leaseUntilEpochMs
-		) {
+		if (isOwnershipLive(currentPredecessor, lockEpochMs)) {
 			rollback(db);
 			const ownerRow = db
 				.prepare("SELECT owner_pid FROM run_ownership WHERE singleton = 1")
@@ -562,7 +604,7 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 		};
 	}
 	// Deadline exhausted.  Distinguish CAS miss from busy timeout.
-	const finalPredecessor = readPredecessor(db);
+	const finalPredecessor = readOwnershipPredecessor(db);
 	if (
 		finalPredecessor !== null &&
 		finalPredecessor.fenceToken !== predecessor.fenceToken
@@ -637,7 +679,7 @@ export function refreshOwnership(
 		if (row === undefined) {
 			rollback(db);
 			// Distinguish stale from expired.
-			const current = readPredecessor(db);
+			const current = readOwnershipPredecessor(db);
 			if (current === null) {
 				return {
 					kind: "DB_FAILURE",

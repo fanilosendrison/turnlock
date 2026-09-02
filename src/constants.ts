@@ -41,3 +41,5 @@ export const DEFAULT_TIMEOUT_MS = 600000;
 export const DEFAULT_RETENTION_DAYS = 7;
 export const DEFAULT_IDLE_LEASE_MS = 30 * 60 * 1000;
 export const MANIFEST_VERSION = 2 as const;
+/** Filename of the per-run SQLite authority, one per RUN_DIR. */
+export const RUN_DB_FILENAME = "turnlock.sqlite3" as const;
