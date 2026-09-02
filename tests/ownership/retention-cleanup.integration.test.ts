@@ -3,6 +3,8 @@ import {
 	chmodSync,
 	existsSync,
 	mkdirSync,
+	readdirSync,
+	rmSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -646,6 +648,132 @@ describe("retention cleanup safety", () => {
 			assert.strictEqual(deleted, 1);
 			assert.strictEqual(existsSync(oldRunDir), false);
 			assert.strictEqual(existsSync(currentDir), true);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test(
+		"RED: new incarnation created at the canonical path during the deletion window must not be destroyed",
+		{ skip: "RED on current HEAD — proof recorded in the commit message; unskipped by the filesystem retirement protocol" },
+		() => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			// 1. Real old RUN_DIR B with a real SQLite authority.
+			bootstrapForeignRun(runBDir, RUN_B);
+			expireLease(runBDir);
+			ageDir(runBDir, 100);
+			// 2. Barrier delegate: the REAL durable claim wins, then the
+			//    deletion window is simulated — the old authority's files
+			//    disappear and a NEW incarnation is bootstrapped at the SAME
+			//    canonical pathname with the production primitives.
+			let newIncarnationBootstrapped = false;
+			const windowDelegate: typeof productionClaim = {
+				claimRunForDeletion: (runDir, runId) => {
+					const result = claimB(runDir, runId);
+					assert.strictEqual(result.kind, "CLAIMED");
+					// The old DB (and its WAL sidecars) disappear — the
+					// pathname now looks recreatable to a new process.
+					for (const entry of readdirSync(runDir)) {
+						rmSync(join(runDir, entry), { recursive: true, force: true });
+					}
+					// A new initial process bootstraps a fresh incarnation.
+					const fresh = bootstrapForeignRun(runDir, runId);
+					assert.strictEqual(fresh.kind, "BOOTSTRAPPED");
+					if (fresh.kind === "BOOTSTRAPPED") {
+						assert.ok(
+							fresh.handle.leaseUntilEpochMs > Date.now(),
+							"test setup: new incarnation must hold a live lease",
+						);
+					}
+					newIncarnationBootstrapped = true;
+					// The cleanup still holds the stale CLAIMED authorization
+					// over the canonical pathname.
+					return result;
+				},
+			};
+			// 3. The real cleanup resumes and acts on the original pathname.
+			const deleted = cleanupOldRuns(
+				root,
+				ORCHESTRATOR_NAME,
+				7,
+				RUN_A,
+				windowDelegate,
+				runDirRoot,
+			);
+			console.error(
+				`RED evidence: newIncarnationBootstrapped=${newIncarnationBootstrapped} deleted=${deleted}`,
+			);
+			// Invariant: the new incarnation must be completely untouched.
+			assert.strictEqual(
+				existsSync(runBDir),
+				true,
+				"expected: new incarnation survives; actual: canonical pathname was deleted by the cleanup",
+			);
+			assert.strictEqual(
+				existsSync(join(runBDir, "turnlock.sqlite3")),
+				true,
+				"expected: new incarnation SQLite authority survives; actual: turnlock.sqlite3 was deleted",
+			);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test(
+		"RED: canonical pathname replaced after claim must not be renamed/deleted",
+		{ skip: "RED on current HEAD — proof recorded in the commit message; unskipped by the filesystem retirement protocol" },
+		() => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runBDir, RUN_B);
+			expireLease(runBDir);
+			ageDir(runBDir, 100);
+			let newIncarnationBootstrapped = false;
+			const swapDelegate: typeof productionClaim = {
+				claimRunForDeletion: (runDir, runId) => {
+					const result = claimB(runDir, runId);
+					assert.strictEqual(result.kind, "CLAIMED");
+					// Pathname substitution: the whole directory object the
+					// claim referred to is replaced by a brand-new one.
+					rmSync(runDir, { recursive: true, force: true });
+					const fresh = bootstrapForeignRun(runDir, runId);
+					assert.strictEqual(fresh.kind, "BOOTSTRAPPED");
+					if (fresh.kind === "BOOTSTRAPPED") {
+						assert.ok(
+							fresh.handle.leaseUntilEpochMs > Date.now(),
+							"test setup: replacement incarnation must hold a live lease",
+						);
+					}
+					newIncarnationBootstrapped = true;
+					return result;
+				},
+			};
+			const deleted = cleanupOldRuns(
+				root,
+				ORCHESTRATOR_NAME,
+				7,
+				RUN_A,
+				swapDelegate,
+				runDirRoot,
+			);
+			console.error(
+				`RED evidence (replacement): newIncarnationBootstrapped=${newIncarnationBootstrapped} deleted=${deleted}`,
+			);
+			assert.strictEqual(
+				existsSync(runBDir),
+				true,
+				"expected: replacement incarnation survives; actual: canonical pathname was deleted after the swap",
+			);
+			assert.strictEqual(
+				existsSync(join(runBDir, "turnlock.sqlite3")),
+				true,
+				"expected: replacement SQLite authority survives; actual: turnlock.sqlite3 was deleted",
+			);
 		} finally {
 			cleanupTempDir(root);
 		}
