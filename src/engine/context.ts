@@ -19,7 +19,8 @@ export interface DispatchContext<S extends object> {
 export interface LoadedResults {
 	readonly label: string;
 	readonly kind: "prompt" | "batch" | "external-request";
-	readonly data: unknown | readonly unknown[];
+	/** Parsed result value; batch results are ordered arrays of job results. */
+	readonly data: unknown;
 }
 export class TestExitSignal {
 	readonly __turnlockExit = true;
