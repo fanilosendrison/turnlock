@@ -13,9 +13,16 @@ import {
 	runOrchestratorInternal,
 } from "../../src/engine/run-orchestrator.js";
 import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
+import {
+	acquireOwnership,
+	type AcquireResult,
+} from "../../src/persistence/sqlite/ownership.js";
 import { bootstrapNewRunAtomic } from "../../src/persistence/sqlite/run-bootstrap.js";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
-import { createRunRetentionProtection } from "../../src/persistence/sqlite/run-liveness.js";
+import {
+	createRunRetentionProtection,
+	readRunRetentionLiveness,
+} from "../../src/persistence/sqlite/run-liveness.js";
 import { cleanupOldRuns } from "../../src/services/run-dir.js";
 import type { OrchestratorConfig } from "../../src/types/config.js";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
@@ -395,6 +402,114 @@ describe("retention cleanup safety", () => {
 			assert.strictEqual(deleted, 1);
 			assert.strictEqual(existsSync(oldLegacyDir), false);
 			assert.strictEqual(existsSync(currentDir), true);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test(
+		"TOCTOU: takeover between the DELETABLE decision and deletion must not destroy a newly acquired authority",
+		{ skip: "RED on current HEAD — proof recorded in the commit message; unskipped by the durable-retirement-claim fix" },
+		() => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			// 1. run B: real Turnlock DB, ownership HELD with an expired lease.
+			bootstrapForeignRun(runBDir, RUN_B);
+			mutateOwnership(
+				runBDir,
+				`UPDATE run_ownership SET lease_until_epoch_ms = ${Date.now() - 1000} WHERE singleton = 1`,
+			);
+			// 2. RUN_DIR old enough to be retention-eligible.  Aged LAST —
+			//    any later file creation inside the directory (e.g. WAL
+			//    sidecar files from the successor connection) would refresh
+			//    its mtime and silently void eligibility.
+			// Connection used by the concurrent successor (resume process).
+			const successorDb = openRunDatabase({
+				driver: nodeSqliteDriver,
+				dbPath: join(runBDir, "turnlock.sqlite3"),
+				busyTimeoutMs: 2000,
+			});
+			ageDir(runBDir, 100);
+			let takeoverResult: AcquireResult | undefined;
+			// 3. Instrumented protection reproducing the race: the cleanup
+			//    observes the initial state, the successor acquires, and the
+			//    cleanup still returns the stale decision.
+			const instrumentedProtection = {
+				isRunProtected: (
+					runDir: string,
+					runId: string,
+					nowEpochMs: number,
+				): boolean => {
+					try {
+						// a. Real observation of the initial state: HELD + expired
+						//    lease => the cleanup would decide DELETABLE.
+						const observed = readRunRetentionLiveness({
+							driver: nodeSqliteDriver,
+							runDir,
+							runId,
+							nowEpochMs,
+						});
+						assert.strictEqual(
+							observed.kind,
+							"DELETABLE",
+							"test setup: initial state must be retention-deletable",
+						);
+						// b. Real takeover with the production acquisition primitive,
+						//    BEFORE the cleanup receives its deletion authorization.
+						const now = Date.now();
+						takeoverResult = acquireOwnership({
+							db: successorDb.connection,
+							runId: RUN_B,
+							orchestratorName: ORCHESTRATOR_NAME,
+							nowEpochMs: now,
+							nowIso: new Date(now).toISOString(),
+							leaseDurationMs: 30 * 60 * 1000,
+							contentionDeadlineMs: 5000,
+						});
+						// c/d. The successor must genuinely win: ACQUIRED with a
+						//      live lease and a fresh fence token.
+						assert.strictEqual(takeoverResult?.kind, "ACQUIRED");
+						if (takeoverResult?.kind === "ACQUIRED") {
+							assert.ok(
+								takeoverResult.handle.leaseUntilEpochMs > Date.now(),
+								"test setup: takeover lease must be alive",
+							);
+						}
+					} catch (error) {
+						console.error("TOCTOU callback error:", error);
+						throw error;
+					}
+					// e. Return the stale, pre-takeover decision.
+					return false;
+				},
+			};
+			// 4. Real cleanup mechanism resumes after the instrumented gap.
+			const deleted = cleanupOldRuns(
+				root,
+				ORCHESTRATOR_NAME,
+				7,
+				RUN_A,
+				instrumentedProtection,
+				runDirRoot,
+			);
+			successorDb.close();
+			console.error(
+				`TOCTOU proof: takeover=${JSON.stringify(takeoverResult, (_k, v) => (typeof v === "bigint" ? `${v}n` : v))} deleted=${deleted}`,
+			);
+			// Invariant: a freshly acquired valid authority must never be
+			// destroyed by retention cleanup.
+			assert.strictEqual(
+				existsSync(runBDir),
+				true,
+				"expected: newly acquired authority survives cleanup; actual: run directory was deleted after the takeover",
+			);
+			assert.strictEqual(
+				existsSync(join(runBDir, "turnlock.sqlite3")),
+				true,
+				"expected: SQLite authority survives cleanup; actual: turnlock.sqlite3 was deleted",
+			);
 		} finally {
 			cleanupTempDir(root);
 		}
