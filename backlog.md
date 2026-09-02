@@ -2,36 +2,4 @@
 
 Items triaged by loop-clean. Resolved items archived in `backlog.archive.md`.
 
-## 2026-04-22 discovery session
-
-- [ ] [major] `src/engine/run-orchestrator.ts:57-97` — validateConfig() checks phase keys (kebab-case, non-empty, initial in keys) but never checks that phase *values* are functions. Passing `phases: { p1: null as any }` or `phases: { p1: "string" as any }` clears validateConfig, creates RUN_DIR + lock + state.json + emits orchestrator_start, then crashes in dispatch-loop with `TypeError: phases.p1 is not a function`. Structurally verifiable at config time, belongs before any I/O per fail-closed discipline (I-4). Fix: inside the existing `for (const key of phaseKeys)` loop, add `if (typeof config.phases[key] !== "function") throw new InvalidConfigError(\`phase "${key}" must be a function\`)`. Add unit tests rejecting `{ p1: null }`, `{ p1: "str" }`, `{ p1: 42 }`. (correctness / fail-closed)
-
-## 2026-04-23 loop-clean iter-0
-
-- [ ] [nit] `src/engine/context.ts:22` — LoadedResults.data type `unknown | readonly unknown[]` is redundant because `readonly unknown[]` is a subtype of `unknown`. Union provides no additional type-level information. Either narrow to a discriminated shape or use `unknown` with a JSDoc comment documenting the array variant. (typing / senior-review)
-
-## 2026-04-20 external review
-
-- [ ] [major] `tests/properties/properties.test.ts:19-23` — 30 tests P-01..P-30 all execute the same body (`await runOrchestrator(config)`) with zero assertion. Placeholders masquerading as property coverage, inflating the 490-tests count with ~30 no-signal tests. Each P-XX must assert the distinct property it claims from NIB-T-TURNLOCK §26. (cheat-detection / tests)
-- [ ] [major] `src/services/state-io.ts:168-169` — writeStateAtomic() uses writeFileSync + renameSync without fsync on the file fd before rename and without fsync on the parent directory after rename. Atomic rename protects logical atomicity but not durability under crash: on commit-reordering filesystems, rename may persist before tmp contents, leading to truncated/empty state.json on kernel panic. Critical for "snapshot-authoritative" guarantee (I-1). Fix: openSync(tmp, "wx") → writeSync → fsyncSync(fd) → closeSync → renameSync → openSync(dir) → fsyncSync(dirFd) → closeSync. (durability / correctness)
-- [ ] [minor] `src/engine/dispatch-loop.ts:25-38` — deepFreeze() recurses without cycle protection. Stack overflow on user state with cyclic references (e.g., `const s = { self: null }; s.self = s`). `Object.isFrozen` short-circuit only protects on second pass, not within the first cycle. Fix: thread a WeakSet of visited objects. (adversarial-input / correctness)
-- [ ] [nit] `src/services/lock.ts:12,37,74-84` — LockFile.ownerPid is stored and surfaced in the RunLockedError message but never used for a `process.kill(pid, 0)` liveness check. Field is semantically dead: carries no actionable signal beyond the error string. Either wire it to allow immediate override on dead process, or drop it and rely solely on lease expiry. (dead-code-semantic)
-
-## 2026-04-20 loop-clean iter-0
-
-- [ ] [minor] `src/services/error-classifier.ts` — classify() missing explicit exhaustive default return after switch. Fragile if OrchestratorErrorKind extended. (correctness)
-- [ ] [minor] `src/services/state-io.ts:131` — readState() mutates parsedObj.data after Zod parse instead of reconstructing immutably. (correctness)
-- [ ] [info] `src/services/run-dir.ts:42` — cleanupOldRuns() uses fs.rmSync instead of trash. Acceptable for ephemeral run dir cleanup. (hygiene)
-- [ ] [info] `src/engine/context.ts:30` — IS_TEST module-level IIFE is immutable constant, not mutable singleton. Acceptable. (hygiene)
-- [ ] [info] `src/services/logger.ts:36` — createLogger() silent catch in stderrEmit is intentional exception to I-4 for logger resilience. (correctness)
-- [ ] [info] `src/services/lock.ts:62` — acquireLock() silent override on corrupted lock file lacks explanatory comment. (hygiene)
-- [ ] [info] `src/engine/dispatch-loop.ts:685` — handleDone() JSON.stringify edge case for non-serializable values already handled per NIB-M-STATE-IO section 6. (correctness)
-- [ ] [info] spec-drift: RetryDecision — code uses discriminated union (retry: true | false) vs spec boolean. Code is stricter than spec. Reconcile spec to match code. (spec-drift)
-- [ ] [info] spec-drift: 11 generic type false positives from spec-drift tooling (DelegationBinding, Phase, PhaseIO, PhaseResult, StateFile, ValidationResult, DispatchContext). Tooling limitation, not real drift. (spec-drift-tooling)
-
-## 2026-04-23 loop-clean audit iter-0
-
-- [ ] [notable] `src/engine/handle-resume.ts:108-192` + `src/engine/dispatch-handlers.ts:33-119` — executeResumeRetry and executeRetryBranch are 80% identical (read manifest, increment attempt, reconstruct, write state, emit event, protocol block, release lock, exit). Extract shared retryAndDelegate helper in engine/shared.ts. (duplication)
-- [ ] [minor] `src/services/retry-resolver.ts:35-41` + `src/services/error-classifier.ts:6-8` — isOrchestratorError type guard duplicated. Export from error-classifier.ts and import in retry-resolver.ts. (duplication)
-- [ ] [minor] `src/engine/dispatch-handlers.ts` — 511 lines, exceeds 400-line project guideline. Extracting the retry branch (also fixes the duplication above) would bring it under threshold. (file-size)
-- [ ] [minor] `tests/` — 30 abbreviation findings from coding-standards scanner (foo, val, etc. in test fixtures). Semantically valid test placeholders but flagged by naming rules. Consider adding scanner exceptions for test directories or renaming to descriptive values. (naming / tests)
+No open items.
