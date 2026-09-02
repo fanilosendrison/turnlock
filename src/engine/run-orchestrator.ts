@@ -19,13 +19,13 @@ import {
 	acquireOwnership,
 	releaseOwnership,
 } from "../persistence/sqlite/ownership.js";
+import { createRunRetentionClaim } from "../persistence/sqlite/retention-claim.js";
 import {
 	bootstrapNewRunAtomic,
 	type CommittedState,
 	migrateLegacyRunAtomic,
 } from "../persistence/sqlite/run-bootstrap.js";
 import { openRunDatabase } from "../persistence/sqlite/run-database.js";
-import { createRunRetentionProtection } from "../persistence/sqlite/run-liveness.js";
 import {
 	commitState,
 	type ProjectionInternalDependencies,
@@ -138,6 +138,13 @@ function seedLegacyStateToSqlite<S extends object>(
 				runId,
 				orchestratorName: state.orchestratorName,
 			});
+		}
+		if (migrateResult.kind === "RUN_RETIRING") {
+			runDb.close();
+			throw new ProtocolError(
+				"Run is retired by retention cleanup — no new ownership may be acquired",
+				{ runId, orchestratorName: state.orchestratorName },
+			);
 		}
 		if (migrateResult.kind === "INCOMPLETE_EXISTING_BOOTSTRAP") {
 			runDb.close();
@@ -344,6 +351,12 @@ async function runInitialMode<S extends object>(
 				orchestratorName: config.name,
 			});
 		}
+		if (bootstrapResult.kind === "RUN_RETIRING") {
+			throw new ProtocolError(
+				"Run is retired by retention cleanup — no new ownership may be acquired",
+				{ runId, orchestratorName: config.name },
+			);
+		}
 		throw new ProtocolError(
 			`Failed to bootstrap run: ${bootstrapResult.kind}`,
 			{ runId, orchestratorName: config.name },
@@ -415,16 +428,17 @@ async function runInitialMode<S extends object>(
 		});
 		installSignalHandlers(ctx);
 		try {
-			// Retention cleanup is destructive: it must run under the
-			// production protection policy so that a foreign RUN_DIR whose
-			// SQLite ownership is still HELD with a live lease is never
-			// deleted, regardless of its age.
+			// Retention cleanup is destructive: a candidate RUN_DIR is
+			// deleted only after a durable, irreversible retirement claim
+			// committed in the run's own SQLite authority (serialized
+			// against every ownership acquisition).  A live or ambiguous
+			// run is never deleted.
 			cleanupOldRuns(
 				cwd,
 				config.name,
 				config.retentionDays ?? 7,
 				runId,
-				createRunRetentionProtection(nodeSqliteDriver),
+				createRunRetentionClaim(nodeSqliteDriver),
 				config.runDirRoot,
 			);
 		} catch {
@@ -606,6 +620,13 @@ async function runResumeMode<S extends object>(
 					logger,
 				);
 				doExit(2);
+			}
+			if (acquireResult.kind === "RUN_RETIRING") {
+				runDb.close();
+				throw new ProtocolError(
+					"Run is retired by retention cleanup — no new ownership may be acquired",
+					{ runId, orchestratorName: config.name },
+				);
 			}
 			if (acquireResult.kind !== "ACQUIRED") {
 				runDb.close();

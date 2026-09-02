@@ -21,11 +21,4 @@ export type SqliteDriver = {
 	 * owned by the caller and must be closed explicitly.
 	 */
 	open(path: string): SqliteConnection;
-	/**
-	 * Open an existing database in read-only mode.  MUST NOT create the
-	 * file and MUST NOT perform write-side-effect pragmas.  Drivers without
-	 * read-only support omit this method; inspection callers then fail
-	 * closed (treat the state as unknown).
-	 */
-	openReadOnly?(path: string): SqliteConnection;
 };

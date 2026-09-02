@@ -117,6 +117,11 @@ export type BootstrapNewRunResult =
 			readonly leaseUntilEpochMs: number;
 	  }
 	| {
+			/** The run's retention state is RETIRING: no ownership may ever
+			 *  be published again for this run. */
+			readonly kind: "RUN_RETIRING";
+	  }
+	| {
 			readonly kind: "INCOMPLETE_EXISTING_BOOTSTRAP";
 			readonly details: string;
 	  }
@@ -155,6 +160,11 @@ export type MigrateLegacyRunResult =
 	  }
 	| {
 			readonly kind: "ACTIVE_CONFLICT";
+	  }
+	| {
+			/** The run's retention state is RETIRING: no ownership may ever
+			 *  be published again for this run. */
+			readonly kind: "RUN_RETIRING";
 	  }
 	| {
 			readonly kind: "INCOMPLETE_EXISTING_BOOTSTRAP";
@@ -381,7 +391,9 @@ export function establishRunInTransaction(
 	params.onFaultPoint?.("AFTER_INCARNATION_WRITE");
 	// 3. Ensure ownership row.
 	ensureOwnershipRowInTransaction(db, incarnationId);
-	// 4. Acquire ownership directly.
+	// 4. Acquire ownership directly.  This single primitive also enforces
+	//    the durable retention state inside the same transaction: a
+	//    RETIRING run must never publish a new ownership.
 	const acquireResult = acquireOwnershipDirectInTransaction(
 		db,
 		incarnationId,
@@ -390,7 +402,12 @@ export function establishRunInTransaction(
 		nowEpochMs,
 		leaseDurationMs,
 	);
-	if (acquireResult === null) {
+	if (acquireResult.kind === "RUN_RETIRING") {
+		throw new DbIntegrityError(
+			"RUN_RETIRING: retention retirement consumed — no ownership may be published",
+		);
+	}
+	if (acquireResult.kind === "ACTIVE_CONFLICT") {
 		throw new DbIntegrityError(
 			"ACTIVE_CONFLICT: ownership held by another process",
 		);
@@ -596,6 +613,9 @@ export function bootstrapNewRunAtomicCore(
 							ownRow?.lease_until_epoch_ms ?? lockEpochMs + leaseDurationMs,
 					};
 				}
+				if (msg.startsWith("RUN_RETIRING")) {
+					return { kind: "RUN_RETIRING" };
+				}
 				if (msg.startsWith("INCOMPLETE_BOOTSTRAP")) {
 					return {
 						kind: "INCOMPLETE_EXISTING_BOOTSTRAP",
@@ -762,6 +782,9 @@ export function migrateLegacyRunAtomicCore(
 				const msg = error.message;
 				if (msg.startsWith("ACTIVE_CONFLICT")) {
 					return { kind: "ACTIVE_CONFLICT" };
+				}
+				if (msg.startsWith("RUN_RETIRING")) {
+					return { kind: "RUN_RETIRING" };
 				}
 				if (msg.startsWith("INCOMPLETE_BOOTSTRAP")) {
 					return {

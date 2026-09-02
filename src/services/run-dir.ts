@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { InvalidConfigError } from "../errors/concrete.js";
+import type { RunRetentionClaimResult } from "../persistence/sqlite/retention-claim.js";
 
 const DEFAULT_RUN_DIR_ROOT = path.join(".turnlock", "runs");
 const RUN_DIR_ROOT_ENV_VAR = "TURNLOCK_RUN_DIR_ROOT";
@@ -14,28 +15,25 @@ function resolveRunDirRoot(cwd: string, configRoot?: string): string {
 				: DEFAULT_RUN_DIR_ROOT;
 	return path.isAbsolute(root) ? root : path.join(cwd, root);
 }
-/** Protection decision for a retention deletion candidate.
+/** Durable deletion authorization for retention candidates.
  *
- *  `cleanupOldRuns` is destructive; it requires an explicit protection
- *  policy so that a RUN_DIR cannot be deleted without a caller-supplied
- *  decision about what keeps a run alive (e.g. a live SQLite ownership
- *  lease).  Policies must fail closed: returning `true` (or throwing) for
- *  any ambiguous state keeps the directory. */
-export interface RunDirRetentionProtection {
+ *  `cleanupOldRuns` is destructive; it never deletes on a read-only
+ *  observation.  A caller must supply a claim delegate that atomically
+ *  obtains a durable, irreversible deletion authorization in the same
+ *  authority that publishes ownership (see `claimRunForRetentionDeletion`).
+ *  Deletion is only performed for CLAIMED / ALREADY_RETIRING; every other
+ *  result — or a throwing delegate — keeps the directory (fail-closed). */
+export interface RunDirRetentionClaim {
 	/**
-	 * Decide whether a candidate RUN_DIR must be kept.
+	 * Atomically claim the candidate RUN_DIR for retention deletion.
 	 *
 	 * @param runDir absolute path of the candidate directory
 	 * @param runId the directory name (the run identifier)
-	 * @param nowEpochMs the single cleanup-pass time boundary — the same
-	 * value the retention threshold was computed from.  Lease liveness
-	 * decisions must use this boundary, not an independent clock reading.
 	 */
-	readonly isRunProtected: (
+	readonly claimRunForDeletion: (
 		runDir: string,
 		runId: string,
-		nowEpochMs: number,
-	) => boolean;
+	) => RunRetentionClaimResult;
 }
 export function resolveRunDir(
 	cwd: string,
@@ -51,7 +49,7 @@ export function cleanupOldRuns(
 	orchestratorName: string,
 	retentionDays: number,
 	currentRunId: string,
-	protection: RunDirRetentionProtection,
+	claim: RunDirRetentionClaim,
 	runDirRoot?: string,
 ): number {
 	const baseDir = path.join(
@@ -60,10 +58,7 @@ export function cleanupOldRuns(
 	);
 	if (!fs.existsSync(baseDir)) return 0;
 	const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
-	// Single time boundary for the whole pass: the retention threshold and
-	// every protection decision share this one clock reading.
-	const nowEpochMs = Date.now();
-	const thresholdEpoch = nowEpochMs - retentionMs;
+	const thresholdEpoch = Date.now() - retentionMs;
 	let deleted = 0;
 	const entries = fs.readdirSync(baseDir, { withFileTypes: true });
 	for (const entry of entries) {
@@ -77,20 +72,29 @@ export function cleanupOldRuns(
 			continue;
 		}
 		if (stat.mtimeMs < thresholdEpoch) {
+			// Destructive permission is a durable, atomically-coordinated
+			// claim — never a read-then-delete observation.
+			let claimResult: RunRetentionClaimResult;
 			try {
-				if (protection.isRunProtected(runDir, entry.name, nowEpochMs)) {
-					continue;
-				}
+				claimResult = claim.claimRunForDeletion(runDir, entry.name);
 			} catch {
-				// A protection failure is an ambiguous state — fail closed
-				// and keep the directory rather than delete it.
+				// A claim failure is an ambiguous state — fail closed and
+				// keep the directory rather than delete it.
+				continue;
+			}
+			if (
+				claimResult.kind !== "CLAIMED" &&
+				claimResult.kind !== "ALREADY_RETIRING"
+			) {
 				continue;
 			}
 			try {
 				fs.rmSync(runDir, { recursive: true, force: true });
 				deleted++;
 			} catch {
-				// best-effort
+				// The retirement claim stays committed (irreversible): the
+				// run remains non-resumable and a future cleanup retries
+				// the deletion.  Never reactivate a partially deleted run.
 			}
 		}
 	}

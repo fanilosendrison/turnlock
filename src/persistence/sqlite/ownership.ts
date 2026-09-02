@@ -10,6 +10,11 @@
 // returned after a successful COMMIT.
 import { generateRunId } from "../../services/run-id.js";
 import { DbIntegrityError } from "./errors.js";
+import {
+	ensureRetentionRowInTransaction,
+	RETENTION_STATUS_RETIRING,
+	readRetentionStatus,
+} from "./retention-state.js";
 import type { SqliteConnection } from "./sqlite-driver.js";
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +41,11 @@ export type AcquireResult =
 			readonly kind: "ACTIVE_CONFLICT";
 			readonly ownerPid: number;
 			readonly leaseUntilEpochMs: number;
+	  }
+	| {
+			/** The run's retention state is RETIRING: no ownership may ever
+			 *  be published again for this run. */
+			readonly kind: "RUN_RETIRING";
 	  }
 	| {
 			readonly kind: "PREDECESSOR_CAS_MISS";
@@ -391,18 +401,29 @@ export function ensureOwnershipRowInTransaction(
 	}
 }
 /** Result of acquiring ownership directly within a transaction. */
-export interface AcquireOwnershipInTransactionResult {
-	readonly fenceToken: bigint;
-	readonly leaseUntilEpochMs: number;
-}
+export type AcquireOwnershipDirectInTransactionResult =
+	| {
+			readonly kind: "ACQUIRED";
+			readonly fenceToken: bigint;
+			readonly leaseUntilEpochMs: number;
+	  }
+	| {
+			readonly kind: "ACTIVE_CONFLICT";
+	  }
+	| {
+			readonly kind: "RUN_RETIRING";
+	  };
 /** Directly set ownership to HELD within an active transaction.
  *
  *  No CAS retry loop — the caller holds BEGIN IMMEDIATE and is the only
  *  writer.  The fence token is read from the current row and incremented.
  *
- *  Returns null if the ownership is actively held by another owner
- *  (lease not yet expired).  The caller must ROLLBACK and report
- *  ACTIVE_CONFLICT. */
+ *  The durable retention state is checked IN THE SAME TRANSACTION: a run
+ *  whose retention is RETIRING must never publish a new ownership.
+ *  Returns ACTIVE_CONFLICT if the ownership is actively held by another
+ *  owner (lease not yet expired) or RUN_RETIRING if the run's retention
+ *  eligibility was irreversibly consumed.  The caller must ROLLBACK and
+ *  report the corresponding result kind. */
 export function acquireOwnershipDirectInTransaction(
 	db: SqliteConnection,
 	incarnationId: string,
@@ -410,7 +431,14 @@ export function acquireOwnershipDirectInTransaction(
 	ownerPid: number,
 	nowEpochMs: number,
 	leaseDurationMs: number,
-): AcquireOwnershipInTransactionResult | null {
+): AcquireOwnershipDirectInTransactionResult {
+	// Retention eligibility — the same write lock serializes this check
+	// against a concurrent retention retirement claim.  A RETIRING run
+	// can never publish ownership again.
+	ensureRetentionRowInTransaction(db);
+	if (readRetentionStatus(db) === RETENTION_STATUS_RETIRING) {
+		return { kind: "RUN_RETIRING" };
+	}
 	// Read current ownership state.
 	const row = db
 		.prepare(
@@ -434,7 +462,7 @@ export function acquireOwnershipDirectInTransaction(
 			nowEpochMs,
 		})
 	) {
-		return null; // ACTIVE_CONFLICT
+		return { kind: "ACTIVE_CONFLICT" };
 	}
 	const newFence = bigintFromRow(row.fence_token) + 1n;
 	const leaseUntil = nowEpochMs + leaseDurationMs;
@@ -454,7 +482,11 @@ export function acquireOwnershipDirectInTransaction(
 		leaseUntil,
 		incarnationId,
 	);
-	return { fenceToken: newFence, leaseUntilEpochMs: leaseUntil };
+	return {
+		kind: "ACQUIRED",
+		fenceToken: newFence,
+		leaseUntilEpochMs: leaseUntil,
+	};
 }
 /** Read the current incarnation_id from the ownership row (within a
  *  transaction or outside).  Returns null if no ownership row exists. */
@@ -473,6 +505,10 @@ export function readOwnershipIncarnationId(
 function isBusy(error: unknown): boolean {
 	const msg = String(error);
 	return msg.includes("SQLITE_BUSY") || msg.includes("database is locked");
+}
+/** Shared SQLite busy-error classifier for retry loops. */
+export function isSqliteBusyError(error: unknown): boolean {
+	return isBusy(error);
 }
 // ---------------------------------------------------------------------------
 // Public API
@@ -548,6 +584,16 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 		// produce a stale lease computation.  Use the provided
 		// lease clock if available, otherwise the real clock.
 		const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
+		// Retention eligibility — checked IN the same write-locked
+		// transaction that would publish the ownership.  This is what
+		// serializes acquisition against a concurrent retention retirement
+		// claim: once RETIRING is committed, no LockHandle can ever be
+		// published for this run again.
+		ensureRetentionRowInTransaction(db);
+		if (readRetentionStatus(db) === RETENTION_STATUS_RETIRING) {
+			rollback(db);
+			return { kind: "RUN_RETIRING" };
+		}
 		// Active-owner check AFTER lock acquisition with fresh clock.
 		// The pre-lock predecessor observation may be stale; the
 		// authoritative decision uses lockEpochMs captured above.
