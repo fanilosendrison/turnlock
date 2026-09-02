@@ -164,8 +164,12 @@ does not understand SQLite ownership and may:
 - Fail to detect the SQLite-based owner
 - Produce a mixed-protocol state
 
-The presence of `turnlock.sqlite3` is the durable no-return marker:
-`this RUN_DIR belongs to the SQLite protocol`.
+The presence of `turnlock.sqlite3` is the durable protocol marker:
+`this RUN_DIR belongs to the SQLite protocol` — as long as the run
+lives.  Retention cleanup is a separate lifecycle: once a run is
+retired, its `turnlock.sqlite3` is deliberately deleted together with
+the retired RUN_DIR, and a new incarnation may later create a fresh
+`turnlock.sqlite3` at the same canonical pathname.
 
 ## Recovery from a residual `.lock`
 
@@ -216,9 +220,29 @@ check that catches the static case (`.lock` already present at migration time).
 The dynamic case (legacy process starts after the check) is excluded by the
 operational precondition.
 
-### No-return marker
+### Protocol marker vs retired/deleted run lifecycle
 
-The `turnlock.sqlite3` file (and its `schema_metadata` table at version 1)
-is the durable marker that a run directory belongs to the SQLite protocol.
-Legacy binaries do not understand this marker — it serves as documentation
-for operators and new tooling, not as an active exclusion mechanism.
+The `turnlock.sqlite3` file (and its `schema_metadata` table) is the
+durable marker that a run directory belongs to the SQLite protocol
+while that run exists.  Legacy binaries do not understand this marker —
+it serves as documentation for operators and new tooling, not as an
+active exclusion mechanism.
+
+This marker is about **protocol migration**, not about retention:
+
+- The SQLite → legacy downgrade remains a no-return decision.
+- Retention retirement is a different, later lifecycle stage: the
+  durable retirement claim (`run_retention` ACTIVE → RETIRING in the
+  same database) is the no-return marker for **ownership**.  After the
+  claim, the retired RUN_DIR is atomically renamed into the `.retired`
+  area of its orchestrator namespace and then deleted; the deleted
+  `turnlock.sqlite3` does not undo the downgrade no-return rule, because
+  a legacy binary must still never run against a run directory that has
+  ever been SQLite-authoritative.
+- A NEW incarnation may later occupy the same canonical pathname with a
+  fresh `turnlock.sqlite3` — it is a new run, not a migration of the
+  retired one.  Retirement tombstoning and protocol migration are
+  therefore distinct: the former lives in `run_retention` (deleted with
+  the retired incarnation, which is fine because the retired incarnation
+  is permanently non-resumable), the latter is a deployment-level rule
+  documented here.
