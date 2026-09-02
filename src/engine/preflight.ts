@@ -73,6 +73,22 @@ export function validateConfig<S extends object>(
 			"config.resumeCommand is required (must be a function)",
 		);
 	}
+	// retentionDays drives a destructive cleanup: a non-finite, negative,
+	// or fractional value would move the retention threshold into the future
+	// (or to NaN) and make nearly every RUN_DIR eligible for deletion.
+	// Reject it during preflight, before any cleanup effect is possible.
+	if (config.retentionDays !== undefined) {
+		const retentionDays = config.retentionDays;
+		if (
+			!Number.isFinite(retentionDays) ||
+			!Number.isInteger(retentionDays) ||
+			retentionDays < 0
+		) {
+			throw new InvalidConfigError(
+				`config.retentionDays must be a finite non-negative integer (got ${String(retentionDays)})`,
+			);
+		}
+	}
 }
 export function validateExternalRunId(
 	runId: string,

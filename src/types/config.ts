@@ -11,6 +11,13 @@ export interface OrchestratorConfig<State extends object = object> {
 	readonly retry?: RetryPolicy;
 	readonly timeout?: TimeoutPolicy;
 	readonly logging?: LoggingPolicy;
+	/**
+	 * Retention window in days, used by the startup cleanup that deletes
+	 * old foreign RUN_DIRs under the orchestrator's run root.
+	 * Validated in preflight: must be a finite, non-negative integer.
+	 * `0` means "no retention delay" (eligible directories are deleted
+	 * immediately).  Defaults to 7 days.
+	 */
 	readonly retentionDays?: number;
 	/**
 	 * Root directory for RUN_DIRs. Path = `<root>/<name>/<runId>`.
