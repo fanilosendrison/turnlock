@@ -1,4 +1,7 @@
-import type { DelegationRequest } from "../types/delegation.js";
+import type {
+	DelegationRequest,
+	DelegationTarget,
+} from "../types/delegation.js";
 
 export { MANIFEST_VERSION } from "../constants.js";
 export interface DelegationContext {
@@ -20,7 +23,7 @@ export interface DelegationManifestJob {
 	readonly resultPath: string;
 }
 export interface DelegationManifest {
-	readonly manifestVersion: 2;
+	readonly manifestVersion: 3;
 	readonly runId: string;
 	readonly orchestratorName: string;
 	readonly phase: string;
@@ -33,7 +36,8 @@ export interface DelegationManifest {
 	readonly deadlineAtEpochMs: number;
 	readonly attempt: number;
 	readonly maxAttempts: number;
-	readonly worker?: string;
+	/** Mandatory logical destination (ADR-0001). Never derived from absence. */
+	readonly target: DelegationTarget;
 	readonly prompt?: string;
 	readonly jobs?: readonly DelegationManifestJob[];
 	readonly resultPath?: string;

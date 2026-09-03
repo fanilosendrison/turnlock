@@ -34,12 +34,14 @@ export const LEGACY_PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD =
 	"__turnlockPendingInitialDispatchVersion" as const;
 export const MAX_EVENT_FIELD_LENGTH = 200;
 export const MAX_EXTERNAL_LABEL_LENGTH = 173;
+/** Maximum length of a logical worker name (mirrors event-field cap). */
+export const MAX_WORKER_NAME_LENGTH = 200 as const;
 export const DEFAULT_MAX_ATTEMPTS = 3;
 export const DEFAULT_BACKOFF_BASE_MS = 1000;
 export const DEFAULT_MAX_BACKOFF_MS = 30000;
 export const DEFAULT_TIMEOUT_MS = 600000;
 export const DEFAULT_RETENTION_DAYS = 7;
 export const DEFAULT_IDLE_LEASE_MS = 30 * 60 * 1000;
-export const MANIFEST_VERSION = 2 as const;
+export const MANIFEST_VERSION = 3 as const;
 /** Filename of the per-run SQLite authority, one per RUN_DIR. */
 export const RUN_DB_FILENAME = "turnlock.sqlite3" as const;

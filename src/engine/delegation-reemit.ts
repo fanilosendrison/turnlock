@@ -1,6 +1,6 @@
 import * as path from "node:path";
+import { resolveManifestTarget } from "../bindings/target.js";
 import type { DelegationManifest } from "../bindings/types.js";
-import { MANIFEST_VERSION } from "../constants.js";
 import { AbortedError, ProtocolError } from "../errors/concrete.js";
 import { abortableSleep } from "../services/abortable-sleep.js";
 import {
@@ -65,19 +65,19 @@ export async function reemitDelegationAttempt<S extends object>(
 		ctx.runDir,
 		pd.manifestArtifact,
 	);
-	const oldManifest = JSON.parse(
+	const rawManifest = JSON.parse(
 		Buffer.from(oldManifestBytes).toString("utf-8"),
-	) as DelegationManifest;
-	if (oldManifest.manifestVersion !== MANIFEST_VERSION) {
-		throw new ProtocolError(
-			`manifestVersion mismatch: expected ${MANIFEST_VERSION}, got ${String(oldManifest.manifestVersion)}`,
-			{
-				runId: ctx.runId,
-				orchestratorName: ctx.config.name,
-				phase,
-			},
-		);
-	}
+	) as Record<string, unknown>;
+	// Resolve the logical target exactly once.  v3 manifests carry a
+	// validated mandatory target; v2 manifests with a worker migrate
+	// deterministically; v2 manifests without a worker fail closed (the
+	// historical target is ambiguous and is NEVER guessed as host).
+	const target = resolveManifestTarget(rawManifest, pd.label, {
+		runId: ctx.runId,
+		orchestratorName: ctx.config.name,
+		phase,
+	});
+	const oldManifest = rawManifest as unknown as DelegationManifest;
 	const newAttempt = pd.attempt + 1;
 	const newEmittedAtEpochMs = clock.nowEpochMs();
 	const newEmittedAt = clock.nowWallIso();
@@ -89,6 +89,7 @@ export async function reemitDelegationAttempt<S extends object>(
 		deadlineAtEpochMs: newDeadlineAtEpochMs,
 		label: pd.label,
 		runDir: ctx.runDir,
+		target,
 	});
 	// 2. Prepare and install new immutable blob.
 	const prepared = prepareJsonArtifact(
@@ -133,6 +134,8 @@ export async function reemitDelegationAttempt<S extends object>(
 		phase,
 		label: pd.label,
 		kind: pd.kind,
+		target,
+		attempt: newAttempt,
 		jobCount: pd.jobIds?.length ?? 1,
 		timestamp: newEmittedAt,
 	});

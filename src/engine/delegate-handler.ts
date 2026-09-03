@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { assertValidDelegationTarget } from "../bindings/target.js";
 import {
 	DEFAULT_BACKOFF_BASE_MS,
 	DEFAULT_MAX_ATTEMPTS,
@@ -42,6 +43,7 @@ export async function handleDelegate<S extends object>(
 	const request = result.request;
 	const { label, kind } = request;
 	const { resumeAt } = result;
+	assertValidDelegationTarget(request.target, label);
 	if (!(resumeAt in ctx.config.phases)) {
 		throw new ProtocolError(`unknown phase: ${resumeAt}`, {
 			runId: ctx.runId,
@@ -175,6 +177,8 @@ export async function handleDelegate<S extends object>(
 		phase: state.currentPhase,
 		label,
 		kind,
+		target: request.target,
+		attempt,
 		jobCount:
 			kind === "batch" ? (request as BatchDelegationRequest).jobs.length : 1,
 		timestamp: emittedAt,

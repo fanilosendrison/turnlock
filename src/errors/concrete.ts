@@ -97,6 +97,15 @@ export class PersistenceFailureError extends OrchestratorError {
 // ---------------------------------------------------------------------------
 // Existing errors
 // ---------------------------------------------------------------------------
+/**
+ * Raised when retry/re-emission must re-execute a delegation recorded by a
+ * legacy manifest v2 WITHOUT a worker field.  Absence of worker never
+ * implied "host", so the historical logical target is ambiguous.  Turnlock
+ * fails closed instead of inventing a destination.
+ */
+export class AmbiguousLegacyDelegationTargetError extends OrchestratorError {
+	readonly kind = "ambiguous_legacy_delegation_target" as const;
+}
 export class InvalidConfigError extends OrchestratorError {
 	readonly kind = "invalid_config" as const;
 }

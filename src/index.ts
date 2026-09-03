@@ -5,6 +5,7 @@ export type { OrchestratorErrorKind } from "./errors/base.js";
 export { OrchestratorError } from "./errors/base.js";
 export {
 	AbortedError,
+	AmbiguousLegacyDelegationTargetError,
 	ArtifactIntegrityError,
 	type AuthorityLossReason,
 	AuthorityLostError,
@@ -43,6 +44,7 @@ export type { Clock, OrchestratorConfig } from "./types/config.js";
 export type {
 	BatchDelegationRequest,
 	DelegationRequest,
+	DelegationTarget,
 	PromptDelegationRequest,
 } from "./types/delegation.js";
 export type { OrchestratorEvent, OrchestratorLogger } from "./types/events.js";

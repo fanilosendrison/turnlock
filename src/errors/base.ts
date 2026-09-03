@@ -21,7 +21,8 @@ export type OrchestratorErrorKind =
 	| "legacy_lock_migration_blocked"
 	| "mixed_ownership_protocol_detected"
 	| "indeterminate_phase_execution"
-	| "initial_dispatch_already_claimed";
+	| "initial_dispatch_already_claimed"
+	| "ambiguous_legacy_delegation_target";
 export interface OrchestratorErrorOptions {
 	readonly cause?: unknown;
 	readonly runId?: string;

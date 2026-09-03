@@ -48,6 +48,7 @@ export function classify(err: unknown): ErrorCategory {
 		case "mixed_ownership_protocol_detected":
 		case "indeterminate_phase_execution":
 		case "initial_dispatch_already_claimed":
+		case "ambiguous_legacy_delegation_target":
 			return "permanent";
 	}
 	return "unknown";
