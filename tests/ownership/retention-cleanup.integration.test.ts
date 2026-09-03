@@ -867,6 +867,76 @@ describe("retention cleanup safety", () => {
 		}
 	});
 
+	test("partial retired deletion with the SQLite DB already gone is permanently unrecoverable (RED)", () => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			// 1. Create a genuine retired payload through the production flow.
+			bootstrapForeignRun(runBDir, RUN_B);
+			expireLease(runBDir);
+			ageDir(runBDir, 100);
+			const claim = claimB(runBDir);
+			assert.strictEqual(claim.kind, "CLAIMED");
+			if (claim.kind !== "CLAIMED") throw new Error("setup");
+			const rename = renameRunDirectoryToRetired({
+				driver: nodeSqliteDriver,
+				runDir: runBDir,
+				runId: RUN_B,
+				retirementToken: claim.retirementToken,
+				databaseIdentity: claim.databaseIdentity,
+			});
+			assert.strictEqual(rename.kind, "RENAMED");
+			if (rename.kind !== "RENAMED") throw new Error("setup");
+			const retiredPath = rename.retiredPath;
+			// 2. Establish that the payload was legitimately RETIRING.
+			const checkDb = openRunDatabase({
+				driver: nodeSqliteDriver,
+				dbPath: join(retiredPath, "turnlock.sqlite3"),
+				busyTimeoutMs: 2000,
+			});
+			try {
+				assert.strictEqual(
+					readRetentionStatus(checkDb.connection),
+					RETENTION_STATUS_RETIRING,
+				);
+			} finally {
+				checkDb.close();
+			}
+			// 3. The payload lives in the current .retired structure.
+			assert.ok(retiredPath.includes(RETIRED_DIR_NAME));
+			// 4. Delete the internal SQLite authority and its sidecars
+			//    while at least one other file remains in the payload.
+			const leftoversDir = join(retiredPath, "leftovers");
+			mkdirSync(leftoversDir);
+			writeFileSync(join(leftoversDir, "keep.txt"), "leftover");
+			rmSync(join(retiredPath, "turnlock.sqlite3"));
+			rmSync(join(retiredPath, "turnlock.sqlite3-wal"), { force: true });
+			rmSync(join(retiredPath, "turnlock.sqlite3-shm"), { force: true });
+			assert.strictEqual(existsSync(join(leftoversDir, "keep.txt")), true);
+			// 6. Run the current sweep.
+			const deleted = cleanupOldRuns(
+				root,
+				ORCHESTRATOR_NAME,
+				7,
+				RUN_A,
+				productionRetirement,
+				runDirRoot,
+			);
+			// Desired invariant: a retirement whose destructive permission
+			// was already established must complete its destruction even
+			// though its internal DB no longer exists.
+			assert.strictEqual(
+				existsSync(retiredPath),
+				false,
+				"expected: partial retired payload with DB gone is fully deleted; actual: unrecoverable orphan",
+			);
+			assert.strictEqual(deleted, 1);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
 	test("retention status invalid → KEEP (no destructive effect)", () => {
 		const root = makeTempDir();
 		try {
