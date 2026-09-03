@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-// NIB-T §13 — PromptBinding (T-PRM-01..05, P-PRM-a/b)
+// Authority: public types + serialization contracts + tests + ADR-0001 +
+// docs/architecture/delegation-model.md
 import { describe, test } from "node:test";
 import { promptBinding } from "../../src/bindings/prompt.js";
 import type { DelegationContext } from "../../src/bindings/types.js";
@@ -26,7 +27,7 @@ function makeContext(
 }
 const baseRequest: PromptDelegationRequest = {
 	kind: "prompt",
-	worker: "senior-reviewer-file",
+	target: { kind: "worker", name: "senior-reviewer-file" },
 	prompt: "Review src/component.ts",
 	label: "review-component",
 };
@@ -34,13 +35,62 @@ describe("PromptBinding.buildManifest (T-PRM-01..03)", () => {
 	test("T-PRM-01 | full prompt manifest", () => {
 		const m = promptBinding.buildManifest(baseRequest, makeContext());
 		assert.strictEqual(m.kind, "prompt");
-		assert.strictEqual(m.worker, "senior-reviewer-file");
+		assert.deepStrictEqual(m.target, {
+			kind: "worker",
+			name: "senior-reviewer-file",
+		});
 		assert.strictEqual(m.prompt, "Review src/component.ts");
 		assert.strictEqual(
 			m.resultPath,
 			`${RUN_DIR}/results/review-component-0.json`,
 		);
 		assert.strictEqual(m.jobs, undefined);
+	});
+	test("T-PRM-01h | host target preserved exactly", () => {
+		const m = promptBinding.buildManifest(
+			{ ...baseRequest, target: { kind: "host" } },
+			makeContext(),
+		);
+		assert.deepStrictEqual(m.target, { kind: "host" });
+	});
+	test("T-PRM-01w | worker name preserved exactly", () => {
+		const m = promptBinding.buildManifest(
+			{
+				...baseRequest,
+				target: { kind: "worker", name: "git-commit-generator" },
+			},
+			makeContext(),
+		);
+		assert.deepStrictEqual(m.target, {
+			kind: "worker",
+			name: "git-commit-generator",
+		});
+	});
+	test("T-PRM-01v | manifest is version 3", () => {
+		const m = promptBinding.buildManifest(baseRequest, makeContext());
+		assert.strictEqual(m.manifestVersion, 3);
+	});
+	test("T-PRM-01l | no legacy worker field emitted", () => {
+		const m = promptBinding.buildManifest(baseRequest, makeContext());
+		assert.strictEqual("worker" in Object(m), false);
+		assert.deepStrictEqual(Object.keys(m).sort(), [
+			"attempt",
+			"deadlineAtEpochMs",
+			"emittedAt",
+			"emittedAtEpochMs",
+			"kind",
+			"label",
+			"manifestVersion",
+			"maxAttempts",
+			"orchestratorName",
+			"phase",
+			"prompt",
+			"resultPath",
+			"resumeAt",
+			"runId",
+			"target",
+			"timeoutMs",
+		]);
 	});
 	test("T-PRM-02 | long prompt preserved", () => {
 		const long = "x".repeat(5000);

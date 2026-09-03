@@ -1,11 +1,11 @@
 {"eventType":"orchestrator_start","runId":"01HX0000000000000000000011","orchestratorName":"test-orch","initialPhase":"a","timestamp":"2026-04-19T12:00:00.000Z"}
 {"eventType":"phase_start","runId":"01HX0000000000000000000011","phase":"a","attemptCount":1,"timestamp":"2026-04-19T12:00:00.100Z"}
-{"eventType":"delegation_emit","runId":"01HX0000000000000000000011","phase":"a","label":"foo","kind":"prompt","jobCount":1,"timestamp":"2026-04-19T12:00:00.200Z"}
+{"eventType":"delegation_emit","runId":"01HX0000000000000000000011","phase":"a","label":"foo","kind":"prompt","jobCount":1,"timestamp":"2026-04-19T12:00:00.200Z","target":{"kind":"worker","name":"reviewer"},"attempt":0}
 {"eventType":"phase_end","runId":"01HX0000000000000000000011","phase":"a","durationMs":100,"resultKind":"delegate","timestamp":"2026-04-19T12:00:00.200Z"}
 {"eventType":"orchestrator_start","runId":"01HX0000000000000000000011","orchestratorName":"test-orch","initialPhase":"b","timestamp":"2026-04-19T12:05:00.000Z"}
 {"eventType":"phase_start","runId":"01HX0000000000000000000011","phase":"b","attemptCount":1,"timestamp":"2026-04-19T12:05:00.050Z"}
 {"eventType":"delegation_result_read","runId":"01HX0000000000000000000011","phase":"b","label":"foo","jobCount":1,"filesLoaded":1,"timestamp":"2026-04-19T12:05:00.060Z"}
 {"eventType":"delegation_validation_failed","runId":"01HX0000000000000000000011","phase":"b","label":"foo","zodErrorSummary":"verdict: invalid_type","timestamp":"2026-04-19T12:05:00.070Z"}
 {"eventType":"retry_scheduled","runId":"01HX0000000000000000000011","phase":"b","label":"foo","attempt":1,"delayMs":1000,"reason":"delegation_schema","timestamp":"2026-04-19T12:05:00.080Z"}
-{"eventType":"delegation_emit","runId":"01HX0000000000000000000011","phase":"b","label":"foo","kind":"prompt","jobCount":1,"timestamp":"2026-04-19T12:05:01.100Z"}
+{"eventType":"delegation_emit","runId":"01HX0000000000000000000011","phase":"b","label":"foo","kind":"prompt","jobCount":1,"timestamp":"2026-04-19T12:05:01.100Z","target":{"kind":"worker","name":"reviewer"},"attempt":1}
 {"eventType":"phase_end","runId":"01HX0000000000000000000011","phase":"b","durationMs":1050,"resultKind":"delegate","timestamp":"2026-04-19T12:05:01.100Z"}

@@ -53,7 +53,7 @@ await runOrchestrator<State>({
 		"delegate-next": definePhase<State>(async (state, io) => {
 			io.consumePendingExternalResolution(z.object({ ok: z.boolean() }));
 			return io.delegate(
-				{ kind: "prompt", label: "review", prompt: "review" },
+				{ kind: "prompt", target: { kind: "host" }, label: "review", prompt: "review" },
 				"finish",
 				{ ...state, stage: "delegated" },
 			);
@@ -116,7 +116,7 @@ await runOrchestrator<State>({
 	phases: {
 		"delegate-first": definePhase<State>(async (_state, io) =>
 			io.delegate(
-				{ kind: "prompt", label: "review", prompt: "review" },
+				{ kind: "prompt", target: { kind: "host" }, label: "review", prompt: "review" },
 				"external-next",
 				{ stage: "reviewed" },
 			),

@@ -166,7 +166,7 @@ await runOrchestrator<State>({
 	resumeCommand: ${baseResumeCommandSource()},
 	phases: {
 		start: definePhase<State>(async (_state, io) =>
-			io.delegate({ kind: "prompt", worker: "reviewer", prompt: "inspect", label: "review" }, "finish", { count: 1 }),
+			io.delegate({ kind: "prompt", target: { kind: "worker", name: "reviewer" }, prompt: "inspect", label: "review" }, "finish", { count: 1 }),
 		),
 		finish: definePhase<State>(async (_state, io) => io.done({ ok: true })),
 	},
@@ -193,9 +193,11 @@ await runOrchestrator<State>({
 				label: "review",
 				kind: "prompt",
 				attempt: 0,
-				worker: "reviewer",
+				target: { kind: "worker", name: "reviewer" },
 				prompt: "inspect",
 			});
+			assert.strictEqual(manifest.manifestVersion, 3);
+			assert.strictEqual("worker" in Object(manifest), false);
 			assert.strictEqual(
 				manifest.resultPath,
 				join(runDir, "results", "review-0.json"),
@@ -218,12 +220,22 @@ await runOrchestrator<State>({
 				/* manifestArtifact checked below */
 			});
 			expectLockReleased(runDir);
-			assert.deepStrictEqual(eventTypes(readEvents(runDir)), [
+			const events = readEvents(runDir);
+			assert.deepStrictEqual(eventTypes(events), [
 				"orchestrator_start",
 				"phase_start",
 				"phase_end",
 				"delegation_emit",
 			]);
+			const emit = events.find((e) => e.eventType === "delegation_emit");
+			if (emit === undefined || emit.eventType !== "delegation_emit") {
+				assert.fail("expected delegation_emit event");
+			}
+			assert.deepStrictEqual(emit.target, {
+				kind: "worker",
+				name: "reviewer",
+			});
+			assert.strictEqual(emit.attempt, 0);
 		} finally {
 			workspace.cleanup();
 		}
@@ -244,7 +256,7 @@ await runOrchestrator<State>({
 	resumeCommand: ${baseResumeCommandSource()},
 	phases: {
 		ask: definePhase<State>(async (_state, io) =>
-			io.delegate({ kind: "prompt", prompt: "verdict", label: "answer" }, "finish", { count: 1 }),
+			io.delegate({ kind: "prompt", target: { kind: "host" }, prompt: "verdict", label: "answer" }, "finish", { count: 1 }),
 		),
 		finish: definePhase<State>(async (state, io) => {
 			const result = io.consumePendingResult(z.object({ verdict: z.string() }));
@@ -331,6 +343,7 @@ await runOrchestrator<State>({
 			io.delegateBatch(
 				{
 					kind: "batch",
+					target: { kind: "host" },
 					label: "jobs",
 					jobs: [
 						{ id: "first", prompt: "one" },
@@ -425,15 +438,15 @@ await runOrchestrator<State>({
 	resumeCommand: ${baseResumeCommandSource()},
 	phases: {
 		a: definePhase<State>(async (_state, io) =>
-			io.delegate({ kind: "prompt", prompt: "one", label: "l1" }, "b", { seen: [] }),
+			io.delegate({ kind: "prompt", target: { kind: "host" }, prompt: "one", label: "l1" }, "b", { seen: [] }),
 		),
 		b: definePhase<State>(async (state, io) => {
 			const result = io.consumePendingResult(z.object({ value: z.string() }));
-			return io.delegate({ kind: "prompt", prompt: "two", label: "l2" }, "c", { seen: [...state.seen, result.value] });
+			return io.delegate({ kind: "prompt", target: { kind: "host" }, prompt: "two", label: "l2" }, "c", { seen: [...state.seen, result.value] });
 		}),
 		c: definePhase<State>(async (state, io) => {
 			const result = io.consumePendingResult(z.object({ value: z.string() }));
-			return io.delegate({ kind: "prompt", prompt: "three", label: "l3" }, "d", { seen: [...state.seen, result.value] });
+			return io.delegate({ kind: "prompt", target: { kind: "host" }, prompt: "three", label: "l3" }, "d", { seen: [...state.seen, result.value] });
 		}),
 		d: definePhase<State>(async (state, io) => {
 			const result = io.consumePendingResult(z.object({ value: z.string() }));
@@ -518,6 +531,7 @@ await runOrchestrator<State>({
 			io.delegate(
 				{
 					kind: "prompt",
+					target: { kind: "host" },
 					prompt: "verdict",
 					label: "retryable",
 					retry: { maxAttempts: 2, backoffBaseMs: 1, maxBackoffMs: 1 },
@@ -575,6 +589,10 @@ await runOrchestrator<State>({
 				retryManifest.resultPath,
 				join(runDir, "results", "retryable-1.json"),
 			);
+			// The logical target is immutable across retries (ADR-0001).
+			assert.deepStrictEqual(retryManifest.target, initialManifest.target);
+			assert.deepStrictEqual(retryManifest.target, { kind: "host" });
+			assert.strictEqual("worker" in Object(retryManifest), false);
 			const retryState = readStateFile<{
 				count: number;
 			}>(runDir);
@@ -583,6 +601,24 @@ await runOrchestrator<State>({
 				attempt: 1,
 			});
 			expectLastTransitionMatchesManifest(retryState, retryManifest);
+			const retryEmit = readEvents(runDir).filter(
+				(e) => e.eventType === "delegation_emit",
+			);
+			assert.strictEqual(retryEmit.length, 2);
+			const emit0 = retryEmit[0];
+			const emit1 = retryEmit[1];
+			if (
+				emit0 === undefined ||
+				emit0.eventType !== "delegation_emit" ||
+				emit1 === undefined ||
+				emit1.eventType !== "delegation_emit"
+			) {
+				assert.fail("expected two delegation_emit events");
+			}
+			assert.strictEqual(emit0.attempt, 0);
+			assert.strictEqual(emit1.attempt, 1);
+			assert.deepStrictEqual(emit0.target, { kind: "host" });
+			assert.deepStrictEqual(emit1.target, emit0.target);
 			assert.ok(eventTypes(readEvents(runDir)).includes("retry_scheduled"));
 			writePromptResult(runDir, "retryable", 0, { verdict: "stale" });
 			writePromptResult(runDir, "retryable", 1, { verdict: "fresh" });
@@ -628,6 +664,7 @@ await runOrchestrator<State>({
 			io.delegate(
 				{
 					kind: "prompt",
+					target: { kind: "host" },
 					prompt: "verdict",
 					label: "retryable",
 					retry: { maxAttempts: 1, backoffBaseMs: 1, maxBackoffMs: 1 },
@@ -693,6 +730,7 @@ await runOrchestrator<State>({
 			io.delegate(
 				{
 					kind: "prompt",
+					target: { kind: "host" },
 					prompt: "slow",
 					label: "slow",
 					retry: { maxAttempts: 2, backoffBaseMs: 1, maxBackoffMs: 1 },
@@ -1010,7 +1048,7 @@ await runOrchestrator<State>({
 	resumeCommand: ${baseResumeCommandSource()},
 	phases: {
 		ask: definePhase<State>(async (_state, io) =>
-			io.delegate({ kind: "prompt", prompt: "verdict", label: "answer" }, "finish", { count: 1 }),
+			io.delegate({ kind: "prompt", target: { kind: "host" }, prompt: "verdict", label: "answer" }, "finish", { count: 1 }),
 		),
 		finish: definePhase<State>(async (_state, io) => {
 			io.consumePendingResult(z.object({ verdict: z.string() }));

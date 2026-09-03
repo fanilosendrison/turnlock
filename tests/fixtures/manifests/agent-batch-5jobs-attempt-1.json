@@ -1,5 +1,5 @@
 {
-	"manifestVersion": 2,
+	"manifestVersion": 3,
 	"runId": "01HX0000000000000000000004",
 	"orchestratorName": "test-orch",
 	"phase": "a",
@@ -12,7 +12,10 @@
 	"deadlineAtEpochMs": 1745064300000,
 	"attempt": 1,
 	"maxAttempts": 3,
-	"worker": "reviewer",
+	"target": {
+		"kind": "worker",
+		"name": "reviewer"
+	},
 	"jobs": [
 		{
 			"id": "j1",
@@ -34,6 +37,10 @@
 			"prompt": "p4",
 			"resultPath": "/tmp/results/batch-1/j4.json"
 		},
-		{ "id": "j5", "prompt": "p5", "resultPath": "/tmp/results/batch-1/j5.json" }
+		{
+			"id": "j5",
+			"prompt": "p5",
+			"resultPath": "/tmp/results/batch-1/j5.json"
+		}
 	]
 }
