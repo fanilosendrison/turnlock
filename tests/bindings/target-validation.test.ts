@@ -247,9 +247,7 @@ describe("resolveManifestTarget (re-emission compatibility)", () => {
 		} catch (err) {
 			assert.ok(err instanceof AmbiguousLegacyDelegationTargetError);
 			assert.strictEqual(err.kind, "ambiguous_legacy_delegation_target");
-			assert.ok(
-				String((err as Error).message).includes("no legacy default"),
-			);
+			assert.ok(String((err as Error).message).includes("no legacy default"));
 			assert.strictEqual((err as { runId?: string }).runId, CONTEXT.runId);
 		}
 	});
