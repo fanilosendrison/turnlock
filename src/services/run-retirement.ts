@@ -42,7 +42,9 @@ export const RETIRED_DIR_NAME = ".retired" as const;
 // ---------------------------------------------------------------------------
 /** Closed set of internal fault points reserved for tests.  Production
  *  callers never observe these. */
-export type RunRetirementFaultPoint = "AFTER_PRE_RENAME_VERIFICATION";
+export type RunRetirementFaultPoint =
+	| "AFTER_PRE_RENAME_VERIFICATION"
+	| "AFTER_RENAME_BEFORE_POSTCHECK";
 
 /** Internal dependencies — extends the production retirement flow with a
  *  fault-injection hook reserved for testing.  NEVER exposed on the public
@@ -246,6 +248,10 @@ export function renameRunDirectoryToRetiredInternal(
 	// passed and immediately before the atomic rename.
 	dependencies.onFaultPoint?.("AFTER_PRE_RENAME_VERIFICATION");
 	fs.renameSync(runDir, retiredPath);
+	// Test-only fault point: fires immediately after the atomic rename
+	// completed and BEFORE the post-rename token verification (and any
+	// possible restoration) gets a chance to observe the mismatch.
+	dependencies.onFaultPoint?.("AFTER_RENAME_BEFORE_POSTCHECK");
 	// Post-rename self-check: if the renamed directory does not carry our
 	// retirement token, restore it to the canonical path if possible and
 	// NEVER delete it.
