@@ -70,9 +70,9 @@ runOrchestrator({
   phases: {
     verify: async (state, io) => {
       // Mechanical: tests pass, lint passes, typecheck passes
-      // Delegate to a skill: write the commit message
+      // Delegate to a worker: write the commit message
       return io.delegate(
-        { kind: "prompt", worker: "commit-msg", prompt: "Write a conventional commit for the staged diff", label: "msg" },
+        { kind: "prompt", target: { kind: "worker", name: "commit-msg" }, prompt: "Write a conventional commit for the staged diff", label: "msg" },
         "commit",
         state,
       );
@@ -92,7 +92,7 @@ runOrchestrator({
 
 1. `verify` runs once. Checks pass, then it calls `io.delegate(...)`.
 2. The runtime snapshots state to disk, prints a `@@TURNLOCK@@` protocol block on stdout, and **exits**.
-3. The parent agent (Claude Code) reads the protocol block, invokes the `commit-msg` skill, waits for completion, then relaunches the binary with `--resume --run-id <id>`.
+3. The parent agent (Claude Code) reads the protocol block, resolves the logical target (here: `worker("commit-msg")`) to a physical execution mechanism in its own runtime, waits for completion, then relaunches the binary with `--resume --run-id <id>`.
 4. On resume, authoritative state is loaded from SQLite and `state.json` is repaired or regenerated as a projection. `commit` runs, consumes the skill's result, commits with the agent-written message, and emits `DONE`.
 
 Notice that a phase is not synonymous with an agent call. A phase can do as much mechanical work as it needs before yielding. Splitting into another phase is reserved for durable boundaries: `delegate(...)`, `delegateBatch(...)`, `requestExternal(...)`, `done(...)`, or `fail(...)`.
@@ -128,8 +128,8 @@ Turnlock itself runs on Node.js. `resumeCommand` remains opaque consumer data, s
 │          │         ▼                        │             │  │
 │          │  ┌────────────────────┐         │             │  │
 │          │  │  Parent agent      │         │             │  │
-│          │  │  executes skill    │         │             │  │
-│          │  │  or spawns agent   │         │             │  │
+│          │  │  resolves target   │         │             │  │
+│          │  │  executes work     │         │             │  │
 │          │  │  writes result to  │         │             │  │
 │          │  │  $RUN_DIR/results/ │         │             │  │
 │          │  └────────┬───────────┘         │             │  │
@@ -196,7 +196,21 @@ Temporal is a fantastic workflow engine — for distributed systems with a serve
 
 ### ...an AI SDK (Vercel AI, LangChain)?
 
-AI SDKs are for chaining LLM calls. turnlock is for chaining **mechanical and agent steps** with reliability guarantees. Turnlock doesn't call LLMs directly — it delegates to the host agent, which has full session context (tools, memory, project knowledge). Different layer.
+AI SDKs are for chaining LLM calls. turnlock is for chaining **mechanical and agent steps** with reliability guarantees. Turnlock itself does not execute semantic workers: it emits durable delegation requests to logical targets (`host` or `worker(name)`). The surrounding runtime or consumer decides how each target is satisfied — by the current host agent, a child agent session, a direct model call, a remote service, or another execution mechanism.
+
+Turnlock knows:
+
+```text
+target = worker("reviewer")
+```
+
+Turnlock does NOT know:
+
+```text
+reviewer = Pi child using model X
+```
+
+That resolution belongs to the consumer runtime. Different layer.
 
 ### ...an in-process FSM library (XState, etc.)?
 
@@ -214,7 +228,35 @@ If you don't need crash recovery or auditability, a state-machine library in a l
 
 **Auditability.** Each run produces a SQLite-authoritative state store, a projected `state.json` snapshot, an append-only `events.ndjson` audit trail, and JSON manifests for yielded requests — all correlated by `run_id`. `state.json` is a readable projection; SQLite holds the authority.
 
-**Host-agnostic.** Delegation requests travel over stdout in a neutral protocol (`@@TURNLOCK@@ ... @@END@@`). Any host that can read them, execute the request, and relaunch the binary is a valid consumer. Claude Code is the reference integration; Codex, Cursor, and custom scripts are all valid.
+**Host-agnostic.** Delegation requests travel over stdout in a neutral protocol (`@@TURNLOCK@@ ... @@END@@`). Any host that can read them, resolve the logical target, execute the work, and relaunch the binary is a valid consumer. Claude Code is the reference integration; Codex, Cursor, and custom scripts are all valid.
+
+## Explicit orchestration: shape, target, execution
+
+Turnlock separates three orthogonal axes of delegation (see [ADR-0001](docs/adr/0001-logical-delegation-targets.md) and the [delegation model](docs/architecture/delegation-model.md)):
+
+| Axis | Meaning | Examples |
+| ---- | ------- | -------- |
+| Delegation shape | structure of semantic work | `prompt`, `batch` |
+| Logical target | who logically owns the work | `host`, `worker("reviewer")` |
+| Physical execution | how the runtime satisfies the target | Pi child, LLM API, service |
+
+`host` means the principal semantic actor of the harness that launched the workflow, in the current host context. `worker(name)` is a named logical execution capability — never a specific subprocess, session, model, or provider. The runtime resolves the target; Turnlock only records it.
+
+Delegation/orchestration is explicit in the workflow rather than emerging implicitly from the main agent's hidden behavior:
+
+```text
+deterministic phase
+    ↓
+worker("researcher") batch
+    ↓
+results collected
+    ↓
+host synthesis delegation
+    ↓
+deterministic phase
+    ↓
+worker("reviewer")
+```
 
 ---
 
@@ -277,7 +319,7 @@ At the first syntactically valid JSON resolution, Turnlock atomically preserves 
 
 The consumer should write the candidate resolution through a temporary file, flush it when required by its durability model, and atomically rename it to the manifest's `resultPath` before running `resume_cmd`. Turnlock owns the accepted copy and never executes the external effect.
 
-Turnlock 0.10.0 emits protocol version 3 and state schema version 3. It migrates state schema v2 snapshots to v3 during resume while preserving pending delegations. Older Turnlock releases cannot read a state v3 snapshot, and consumers must recognize `REQUEST_EXTERNAL` before handling this new yield type.
+Turnlock 0.11.0 emits protocol version 3, state schema version 4, and delegation manifest version 3. It migrates legacy state schema v2/v3 snapshots and legacy manifest v2 delegations during resume where the historical destination is unambiguous (a v2 manifest with a named worker migrates deterministically to `worker(name)`; a v2 manifest without a worker is never guessed — re-execution of such a delegation fails closed). Older Turnlock releases cannot read the newer snapshots, and consumers must recognize `REQUEST_EXTERNAL` before handling that yield type.
 
 > `requestExternal()` is optional. It should be used only when a consumer wants to suspend the workflow durably while waiting for an external resolution.
 
@@ -327,11 +369,10 @@ pnpm run build     # emit ./dist from src/
 
 | Resource | Description |
 |----------|-------------|
-| [`docs/NX-TURNLOCK.md`](docs/NX-TURNLOCK.md) | Full architectural concept: invariants, layer model, contract, protocol |
-| [`docs/SEPARATION.md`](docs/SEPARATION.md) | Runtime / consumer architecture separation |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records (why decisions were made) |
+| [`docs/architecture/delegation-model.md`](docs/architecture/delegation-model.md) | Current delegation model: shape, logical target, runtime execution |
 | [`docs/sqlite-ownership-migration.md`](docs/sqlite-ownership-migration.md) | **Upgrade guide**: migrating from legacy `.lock` to SQLite ownership |
-| [`docs/consumers/claude-code/`](docs/consumers/claude-code/) | Claude Code integration (reference consumer) |
-| [`specs/briefs/`](specs/briefs/) | Immutable historical briefs documenting the original implementation intent; the current code is authoritative |
+| [`docs/migrations/node-pnpm/`](docs/migrations/node-pnpm/) | Bun → Node/pnpm migration notes and parity contract |
 
 ---
 
