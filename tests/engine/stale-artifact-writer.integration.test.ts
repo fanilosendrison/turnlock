@@ -26,9 +26,9 @@ import type { DispatchContext } from "../../src/engine/context.js";
 import { handleDone } from "../../src/engine/terminal-handlers.js";
 import { AuthorityLostError } from "../../src/errors/concrete.js";
 import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
+import { claimRunForRetentionDeletion } from "../../src/persistence/sqlite/retention-claim.js";
 import { bootstrapNewRunAtomic } from "../../src/persistence/sqlite/run-bootstrap.js";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
-import { claimRunForRetentionDeletion } from "../../src/persistence/sqlite/retention-claim.js";
 import {
 	installPreparedArtifact,
 	prepareJsonArtifact,
@@ -219,12 +219,15 @@ describe("stale runtime filesystem writes", () => {
 			} catch (error) {
 				caught = error;
 			}
-			// The stale handle must be rejected...
+			// The stale handle must be rejected with the exact
+			// authority-loss classification (fenced handle → STALE_HANDLE).
 			assert.ok(
-				caught instanceof AuthorityLostError ||
-					caught instanceof Error,
-				`expected a stale-handle rejection, got: ${String(caught)}`,
+				caught instanceof AuthorityLostError,
+				`expected AuthorityLostError from stale runtime, got ${String(caught)}`,
 			);
+			if (caught instanceof AuthorityLostError) {
+				assert.strictEqual(caught.reason, "STALE_HANDLE");
+			}
 			staleDb.close();
 			// ...and the filesystem write must NOT have landed inside the
 			// NEW incarnation.
