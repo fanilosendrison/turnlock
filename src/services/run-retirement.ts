@@ -37,6 +37,22 @@ import type { RunDirRetirement } from "./run-dir.js";
 
 export const RETIRED_DIR_NAME = ".retired" as const;
 
+// ---------------------------------------------------------------------------
+// Internal test seams (never exposed on the public package API)
+// ---------------------------------------------------------------------------
+/** Closed set of internal fault points reserved for tests.  Production
+ *  callers never observe these. */
+export type RunRetirementFaultPoint = "AFTER_PRE_RENAME_VERIFICATION";
+
+/** Internal dependencies — extends the production retirement flow with a
+ *  fault-injection hook reserved for testing.  NEVER exposed on the public
+ *  package API; production always uses {@link productionRetirementDependencies}. */
+export interface RunRetirementInternalDependencies {
+	readonly onFaultPoint?: (point: RunRetirementFaultPoint) => void;
+}
+
+const productionRetirementDependencies: RunRetirementInternalDependencies = {};
+
 /** Outcome of retiring (and deleting) one canonical RUN_DIR candidate. */
 export type RunRetirementOutcome =
 	| {
@@ -174,6 +190,28 @@ export function renameRunDirectoryToRetired(params: {
 	| {
 			readonly kind: "MISMATCH";
 	  } {
+	return renameRunDirectoryToRetiredInternal(
+		params,
+		productionRetirementDependencies,
+	);
+}
+
+/** Internal variant of {@link renameRunDirectoryToRetired} with test-only
+ *  fault injection.  NEVER exposed on the public package API. */
+export function renameRunDirectoryToRetiredInternal(
+	params: {
+		readonly driver: SqliteDriver;
+		readonly runDir: string;
+		readonly runId: string;
+		readonly retirementToken: string;
+		readonly databaseIdentity: RunDatabaseFilesystemIdentity | null;
+	},
+	dependencies: RunRetirementInternalDependencies,
+):
+	| { readonly kind: "RENAMED"; readonly retiredPath: string }
+	| {
+			readonly kind: "MISMATCH";
+	  } {
 	const { driver, runDir, runId, retirementToken, databaseIdentity } = params;
 	const dbPath = path.join(runDir, RUN_DB_FILENAME);
 	const retiredRoot = path.join(path.dirname(runDir), RETIRED_DIR_NAME);
@@ -204,6 +242,9 @@ export function renameRunDirectoryToRetired(params: {
 		// retired side.
 		return { kind: "MISMATCH" };
 	}
+	// Test-only fault point: fires after every pre-rename verification
+	// passed and immediately before the atomic rename.
+	dependencies.onFaultPoint?.("AFTER_PRE_RENAME_VERIFICATION");
 	fs.renameSync(runDir, retiredPath);
 	// Post-rename self-check: if the renamed directory does not carry our
 	// retirement token, restore it to the canonical path if possible and
@@ -302,6 +343,19 @@ export function retireRunDirectory(params: {
 	readonly runDir: string;
 	readonly runId: string;
 }): RunRetirementOutcome {
+	return retireRunDirectoryInternal(params, productionRetirementDependencies);
+}
+
+/** Internal variant of {@link retireRunDirectory} with test-only fault
+ *  injection.  NEVER exposed on the public package API. */
+export function retireRunDirectoryInternal(
+	params: {
+		readonly driver: SqliteDriver;
+		readonly runDir: string;
+		readonly runId: string;
+	},
+	dependencies: RunRetirementInternalDependencies,
+): RunRetirementOutcome {
 	const { driver, runDir, runId } = params;
 	const claim = claimRunForRetentionDeletion({
 		driver,
@@ -323,13 +377,16 @@ export function retireRunDirectory(params: {
 		case "ALREADY_RETIRING":
 			break;
 	}
-	const rename = renameRunDirectoryToRetired({
-		driver,
-		runDir,
-		runId,
-		retirementToken: claim.retirementToken,
-		databaseIdentity: claim.databaseIdentity,
-	});
+	const rename = renameRunDirectoryToRetiredInternal(
+		{
+			driver,
+			runDir,
+			runId,
+			retirementToken: claim.retirementToken,
+			databaseIdentity: claim.databaseIdentity,
+		},
+		dependencies,
+	);
 	if (rename.kind !== "RENAMED") {
 		return { kind: "KEPT", reason: "IDENTITY_MISMATCH" };
 	}
