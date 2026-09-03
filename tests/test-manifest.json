@@ -1,6 +1,6 @@
 {
 	"version": 1,
-	"expectedFiles": 50,
+	"expectedFiles": 51,
 	"testFiles": [
 		"tests/bindings/batch-binding.test.ts",
 		"tests/bindings/external-request-binding.test.ts",
@@ -23,6 +23,7 @@
 		"tests/engine/phase-io.test.ts",
 		"tests/engine/preflight.test.ts",
 		"tests/engine/projection-fencing.test.ts",
+		"tests/engine/stale-artifact-writer.integration.test.ts",
 		"tests/engine/state-commit.test.ts",
 		"tests/observability/events-ndjson.test.ts",
 		"tests/observability/events-taxonomy.test.ts",
