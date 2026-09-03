@@ -85,12 +85,7 @@ const dependencies: RunOrchestratorInternalDependencies = {
 			try {
 				const runDb = openRunDatabase({
 					driver: nodeSqliteDriver,
-					dbPath: join(
-						RUN_ROOT,
-						ORCHESTRATOR_NAME,
-						RUN_ID,
-						"turnlock.sqlite3",
-					),
+					dbPath: join(RUN_ROOT, ORCHESTRATOR_NAME, RUN_ID, "turnlock.sqlite3"),
 					busyTimeoutMs: 2000,
 				});
 				try {
