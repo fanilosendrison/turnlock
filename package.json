@@ -1,6 +1,6 @@
 {
   "name": "turnlock",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Durable finite-state-machine runtime for TypeScript. SQLite-authoritative durable workflow state with fenced ownership, repairable JSON projections, and an in-band stdout protocol. Host-agnostic: suspends by terminating its process and resumes from disk.",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,7 +14,9 @@
   "files": [
     "dist",
     "README.md",
-    "docs/sqlite-ownership-migration.md"
+    "docs/sqlite-ownership-migration.md",
+    "docs/adr/",
+    "docs/architecture/"
   ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
