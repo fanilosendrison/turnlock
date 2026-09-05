@@ -246,3 +246,41 @@ This marker is about **protocol migration**, not about retention:
   the retired incarnation, which is fine because the retired incarnation
   is permanently non-resumable), the latter is a deployment-level rule
   documented here.
+
+## Retention protocol — three distinct boundaries
+
+Retention cleanup uses three distinct persistence layers with disjoint
+responsibilities.  They must not be conflated as a single "authority":
+
+1. **Run-local SQLite authority** (`RUN_DIR/turnlock.sqlite3`) — the ONLY
+   workflow authority.  It holds ownership, incarnation, retention
+   eligibility, and the authoritative state.  The irreversible
+   `run_retention` ACTIVE → RETIRING COMMIT (serialized with every
+   ownership acquisition on the same `BEGIN IMMEDIATE`) is the frontier
+   after which the old run can never regain ownership.
+
+2. **Namespace sidecar SQLite** (`RUN_ROOT/<orchestrator>/.namespace/<runId>.sqlite3`)
+   — an EPHEMERAL MUTEX ONLY.  It carries no run state, no ownership, no
+   lease, no fence token, no generation, no retirement state.  Its single
+   purpose is to serialize, across protocol-compatible Turnlock
+   processes, every operation that can create, detach, or establish the
+   canonical RUN_DIR pathname of one runId (initial bootstrap and
+   retention cleanup).  Held via `BEGIN IMMEDIATE` for short synchronous
+   critical sections only; a SIGKILLed holder releases the lock because
+   the OS closes its file descriptors.  No stale-lock recovery exists or
+   is needed.  Sidecar files are intentionally retained rather than
+   unlinked: deleting a lock inode while another process has an open
+   handle would let a later opener create a replacement inode and bypass
+   the still-open handle.
+
+3. **Retirement READY journal** (`.retired/ready/<runId>--<retirementToken>.json`)
+   — the DURABLE authorization for PHYSICAL DELETION ONLY.  Once the
+   marker is durably published (atomic, create-once, fsynced), the
+   payload has already been detached from the canonical namespace and
+   may be physically destroyed without consulting any file inside the
+   payload — including a `turnlock.sqlite3` that may already be gone.
+
+The protocol guarantee applies to protocol-compatible Turnlock processes:
+concurrent access from older builds that predate the namespace protocol
+is not supported and remains governed by the open
+package/version/compatibility item.
