@@ -29,6 +29,8 @@ export interface OwnershipPredecessor {
 	readonly incarnationId: string;
 	readonly status: "FREE" | "HELD";
 	readonly ownerToken: string | null;
+	readonly ownerPid: number | null;
+	readonly acquiredAtEpochMs: number | null;
 	readonly fenceToken: bigint;
 	readonly leaseUntilEpochMs: number | null;
 }
@@ -126,6 +128,7 @@ export function readOwnershipPredecessor(
 ): OwnershipPredecessor | null {
 	const row = db
 		.prepare(`SELECT incarnation_id, ownership_status, owner_token,
+			        owner_pid, acquired_at_epoch_ms,
 			        fence_token, lease_until_epoch_ms
 			 FROM run_ownership
 			 WHERE singleton = 1`)
@@ -134,6 +137,8 @@ export function readOwnershipPredecessor(
 				incarnation_id: string;
 				ownership_status: string;
 				owner_token: string | null;
+				owner_pid: number | null;
+				acquired_at_epoch_ms: number | null;
 				fence_token: number | bigint;
 				lease_until_epoch_ms: number | null;
 		  }
@@ -143,6 +148,8 @@ export function readOwnershipPredecessor(
 		incarnationId: row.incarnation_id,
 		status: row.ownership_status as "FREE" | "HELD",
 		ownerToken: row.owner_token,
+		ownerPid: row.owner_pid,
+		acquiredAtEpochMs: row.acquired_at_epoch_ms,
 		fenceToken: bigintFromRow(row.fence_token),
 		leaseUntilEpochMs: row.lease_until_epoch_ms,
 	};
@@ -517,6 +524,89 @@ function isBusy(error: unknown): boolean {
 export function isSqliteBusyError(error: unknown): boolean {
 	return isBusy(error);
 }
+// ---------------------------------------------------------------------------
+// Shared transaction-scoped live-ownership verification
+// ---------------------------------------------------------------------------
+/** Result of verifying, INSIDE a run-local write transaction, that a
+ *  LockHandle still represents the single live ownership of the run.
+ *
+ *  This is the ONE shared definition of "live ownership" used by every
+ *  fenced filesystem operation (state.json projection, canonical
+ *  artifact projection, runtime artifact installation) — no caller may
+ *  re-derive it. */
+export type LiveOwnershipVerification =
+	| { readonly kind: "LIVE" }
+	| { readonly kind: "STALE_HANDLE" }
+	| { readonly kind: "EXPIRED_HANDLE" }
+	| { readonly kind: "RETIRING" };
+
+/** Verify the live ownership inside an ACTIVE transaction.
+ *
+ *  Checks, in order:
+ *    1. retention state is ACTIVE (a RETIRING run can never authorize a
+ *       filesystem write);
+ *    2. ownership status HELD with matching incarnation/owner/fence;
+ *    3. the lease is still live at the caller-supplied post-lock clock.
+ *
+ *  Missing/incoherent retention or ownership rows throw DbIntegrityError
+ *  (fail closed). */
+export function verifyLiveOwnershipInTransaction(
+	db: SqliteConnection,
+	handle: LockHandle,
+	nowEpochMs: number,
+): LiveOwnershipVerification {
+	const retentionStatus = readRetentionStatus(db);
+	if (retentionStatus === RETENTION_STATUS_RETIRING) {
+		return { kind: "RETIRING" };
+	}
+	if (retentionStatus === null) {
+		throw new DbIntegrityError(
+			"retention state missing or unrecognized — fenced filesystem operation refused",
+		);
+	}
+	const row = db
+		.prepare(`SELECT ownership_status, incarnation_id, owner_token,
+			        fence_token, lease_until_epoch_ms
+			 FROM run_ownership WHERE singleton = 1`)
+		.get() as
+		| {
+				ownership_status: string;
+				incarnation_id: string;
+				owner_token: string;
+				fence_token: number | bigint;
+				lease_until_epoch_ms: number | null;
+		  }
+		| undefined;
+	if (row === undefined) {
+		throw new DbIntegrityError(
+			"ownership row missing — fenced filesystem operation refused",
+		);
+	}
+	if (row.ownership_status !== "HELD") {
+		return { kind: "STALE_HANDLE" };
+	}
+	if (row.incarnation_id !== handle.incarnationId) {
+		return { kind: "STALE_HANDLE" };
+	}
+	if (row.owner_token !== handle.ownerToken) {
+		return { kind: "STALE_HANDLE" };
+	}
+	const rowFence =
+		typeof row.fence_token === "bigint"
+			? row.fence_token
+			: BigInt(row.fence_token);
+	if (rowFence !== handle.fenceToken) {
+		return { kind: "STALE_HANDLE" };
+	}
+	if (
+		row.lease_until_epoch_ms === null ||
+		nowEpochMs >= row.lease_until_epoch_ms
+	) {
+		return { kind: "EXPIRED_HANDLE" };
+	}
+	return { kind: "LIVE" };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

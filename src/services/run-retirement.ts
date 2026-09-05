@@ -1,29 +1,47 @@
 // Filesystem retirement protocol for SQLite-backed RUN_DIRs.
 //
-// Two explicit frontiers separate logical retirement from physical
-// destruction:
+// Retention uses three distinct boundaries:
 //
-//   SQLite linearization point:
-//     COMMIT ACTIVE → RETIRING (durable, irreversible, fences the owner)
+//   1. SQLite retirement COMMIT:
+//      the old run can never regain ownership.
 //
-//   Filesystem linearization point:
-//     atomic rename  RUN_ROOT/<orchestrator>/<runId>
-//                →   RUN_ROOT/<orchestrator>/.retired/<runId>--<retirementToken>
+//   2. Namespace-mutex-protected atomic rename:
+//      the old physical incarnation leaves the canonical runId pathname
+//      while no compliant creator can replace that pathname.
 //
-// After the rename, the retired incarnation lives exclusively under the
-// retirement-specific pathname and recursive deletion operates ONLY there.
-// The canonical `<runId>` pathname can later be reused by a NEW
-// incarnation without sharing any physical deletion scope with the
-// retired one.
+//   3. Durable READY marker:
+//      physical deletion may proceed and recover independently of all
+//      files inside the retired payload.
 //
-// Identity safety: a claim authorizes rename/delete of a specific
-// filesystem object (dev/ino of the directory and of the database,
-// captured while the claim's SQLite connection was still open).  Before
-// the rename, the canonical pathname is re-verified against that identity
-// AND the database content is re-checked (RETIRING + matching durable
-// retirement token).  A swapped pathname fails closed: the canonical path
-// is kept and the retirement is resumed by a later sweep through the
-// .retired area if the old incarnation was moved there.
+// Protocol:
+//
+//   acquire namespace mutex(runId)          RUN_ROOT/<orch>/.namespace/<runId>.sqlite3
+//     ↓
+//   claim ACTIVE → RETIRING (run-local SQLite authority; LIVE_OWNER /
+//   UNKNOWN / FAILURE → release mutex → KEEP)
+//     ↓
+//   pre-rename identity + strict read-only DB verification
+//     ↓
+//   atomic rename canonical → .retired/payload/<runId>--<token>
+//     ↓
+//   fsync source + destination parents
+//     ↓
+//   post-rename strict verification (restore on mismatch, under mutex)
+//     ↓
+//   publish durable READY marker (create-once, fsynced)
+//     ↓
+//   release namespace mutex                    ← rm MUST NOT run under it
+//     ↓
+//   rm -rf the retired payload (READY remains until the payload is gone)
+//
+// Crash recovery (sweep):
+//   READY first — marker + payload root identity is the destructive
+//   authority; the payload's turnlock.sqlite3 is never opened.
+//   UNREADY next — strict read-only DB inspection re-establishes READY
+//   from an intact database.
+//
+// NORMATIVE LOCK ORDERING: the namespace mutex is acquired BEFORE any
+// run-local SQLite BEGIN IMMEDIATE.  Never the reverse.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { RUN_DB_FILENAME } from "../constants.js";
@@ -31,11 +49,41 @@ import {
 	claimRunForRetentionDeletion,
 	type RunDatabaseFilesystemIdentity,
 } from "../persistence/sqlite/retention-claim.js";
-import { openRunDatabase } from "../persistence/sqlite/run-database.js";
+import { inspectRetiredRunAuthority } from "../persistence/sqlite/retired-run-inspection.js";
 import type { SqliteDriver } from "../persistence/sqlite/sqlite-driver.js";
+import {
+	ensureDirectoryPathWithoutSymlinks,
+	fsyncDirectory,
+} from "./durable-fs.js";
+import {
+	captureRetiredPayloadIdentity,
+	publishRetirementReadyMarker,
+	RETIRED_PAYLOAD_DIR_NAME,
+	RETIRED_READY_DIR_NAME,
+	RETIREMENT_READY_MARKER_VERSION,
+	type RetirementReadyMarkerV1,
+	removeRetirementReadyMarkerDurably,
+	retiredDirectoryName,
+	sweepReadyRetirementMarkers,
+	sweepUnreadyRetiredPayloads,
+} from "./retirement-journal.js";
 import type { RunDirRetirement } from "./run-dir.js";
+import { isValidRunId } from "./run-id.js";
+import {
+	acquireRunNamespaceMutex,
+	NAMESPACE_MUTEX_BUSY_TIMEOUT_MS,
+	resolveNamespaceMutexPath,
+} from "./run-namespace-mutex.js";
 
 export const RETIRED_DIR_NAME = ".retired" as const;
+
+// Re-exports for the recovery journal layout.
+export {
+	RETIRED_PAYLOAD_DIR_NAME,
+	RETIRED_READY_DIR_NAME,
+	RETIREMENT_READY_MARKER_VERSION,
+	retiredDirectoryName,
+} from "./retirement-journal.js";
 
 // ---------------------------------------------------------------------------
 // Internal test seams (never exposed on the public package API)
@@ -63,6 +111,14 @@ export type RunRetirementOutcome =
 			readonly kind: "DELETED";
 	  }
 	| {
+			/** The old incarnation no longer occupies the canonical
+			 *  pathname but physical deletion was not completed — the
+			 *  durable READY marker (or the intact DB, recovered by the
+			 *  UNREADY sweep) authorizes a future sweep to finish. */
+			readonly kind: "DETACHED_PENDING_SWEEP";
+			readonly retirementToken: string;
+	  }
+	| {
 			/** The canonical pathname was kept (fail-closed). */
 			readonly kind: "KEPT";
 			readonly reason:
@@ -71,84 +127,9 @@ export type RunRetirementOutcome =
 				| "DB_FAILURE"
 				| "DB_CONTENTION_TIMEOUT"
 				| "IDENTITY_MISMATCH"
+				| "NAMESPACE_MUTEX_FAILURE"
 				| "FILESYSTEM_FAILURE";
 	  };
-
-// ---------------------------------------------------------------------------
-// Path safety
-// ---------------------------------------------------------------------------
-const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-
-function isValidRetiredEntryName(name: string): boolean {
-	const separator = name.lastIndexOf("--");
-	if (separator === -1) return false;
-	const runId = name.slice(0, separator);
-	const token = name.slice(separator + 2);
-	return ULID_PATTERN.test(runId) && ULID_PATTERN.test(token);
-}
-
-/** The directory name of a retirement-specific pathname. */
-export function retiredDirectoryName(
-	runId: string,
-	retirementToken: string,
-): string {
-	return `${runId}--${retirementToken}`;
-}
-
-// ---------------------------------------------------------------------------
-// Database content verification
-// ---------------------------------------------------------------------------
-/** Read the persisted retirement token from a database at `dbPath`,
- *  verifying run identity and RETIRING status.  Returns null on any
- *  mismatch, incoherence, or unreadable state — never delete on null. */
-export function readRetirementTokenFromDb(
-	driver: SqliteDriver,
-	dbPath: string,
-	runId: string,
-): string | null {
-	let runDb: ReturnType<typeof openRunDatabase> | undefined;
-	try {
-		runDb = openRunDatabase({
-			driver,
-			dbPath,
-			busyTimeoutMs: 2000,
-		});
-		const incarnation = runDb.connection
-			.prepare("SELECT run_id FROM run_incarnation WHERE singleton = 1")
-			.get() as
-			| {
-					run_id: string;
-			  }
-			| undefined;
-		if (incarnation === undefined || incarnation.run_id !== runId) {
-			return null;
-		}
-		const retention = runDb.connection
-			.prepare(
-				`SELECT retention_status, retirement_token,\n\t\t\t\t        retirement_claimed_at_epoch_ms\n\t\t\t\t FROM run_retention WHERE singleton = 1`,
-			)
-			.get() as
-			| {
-					retention_status: string;
-					retirement_token: string | null;
-					retirement_claimed_at_epoch_ms: number | null;
-			  }
-			| undefined;
-		if (retention === undefined) return null;
-		if (retention.retention_status !== "RETIRING") return null;
-		if (
-			retention.retirement_token === null ||
-			retention.retirement_claimed_at_epoch_ms === null
-		) {
-			return null;
-		}
-		return retention.retirement_token;
-	} catch {
-		return null;
-	} finally {
-		runDb?.close();
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Filesystem primitives
@@ -159,39 +140,63 @@ function pathIdentityMatches(
 	expected: RunDatabaseFilesystemIdentity,
 ): boolean {
 	try {
-		const dirStat = fs.lstatSync(canonicalRunDir);
-		const dbStat = fs.lstatSync(dbPath);
+		const dirStat = fs.lstatSync(canonicalRunDir, { bigint: true });
+		const dbStat = fs.lstatSync(dbPath, { bigint: true });
 		if (dirStat.isSymbolicLink() || dbStat.isSymbolicLink()) return false;
 		return (
-			dirStat.dev === expected.dirDev &&
-			dirStat.ino === expected.dirIno &&
-			dbStat.dev === expected.dbDev &&
-			dbStat.ino === expected.dbIno
+			dirStat.dev.toString() === expected.dirDev &&
+			dirStat.ino.toString() === expected.dirIno &&
+			dbStat.dev.toString() === expected.dbDev &&
+			dbStat.ino.toString() === expected.dbIno
 		);
 	} catch {
 		return false;
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Rename — the filesystem namespace linearization point
+// ---------------------------------------------------------------------------
+export type RenameRunDirectoryResult =
+	| {
+			/** Detached and verified: rename + fsync + post-rename strict
+			 *  verification all succeeded.  READY may now be published. */
+			readonly kind: "RENAMED";
+			readonly retiredPath: string;
+	  }
+	| {
+			/** Canonical kept (or restored) — NEVER delete. */
+			readonly kind: "MISMATCH";
+	  }
+	| {
+			/** The rename happened but durability could not be proven —
+			 *  NO READY, NO DELETE; the UNREADY sweep re-validates the
+			 *  intact database later. */
+			readonly kind: "DETACHED_UNREADY";
+			readonly retiredPath: string;
+	  };
+
 /** Rename a claimed canonical RUN_DIR into the retirement area.
  *
  *  Re-verifies, before the rename, that the canonical pathname still
  *  refers to the exact directory and database object the claim identified
  *  (dev/ino) AND that the database still carries the matching durable
- *  retirement token.  Re-verifies again AFTER the rename and, on mismatch,
+ *  retirement state (strictly read-only: RETIRING + token + incarnation,
+ *  ownership FREE).  Re-verifies again AFTER the rename and, on mismatch,
  *  attempts to restore the directory to the canonical path — it is never
- *  deleted in that case. */
+ *  deleted in that case.
+ *
+ *  The CALLER must hold the per-run namespace mutex for the whole call. */
 export function renameRunDirectoryToRetired(params: {
 	readonly driver: SqliteDriver;
 	readonly runDir: string;
 	readonly runId: string;
 	readonly retirementToken: string;
+	readonly incarnationId: string;
+	/** Expected namespace identity, when known. */
+	readonly expectedOrchestratorName?: string;
 	readonly databaseIdentity: RunDatabaseFilesystemIdentity | null;
-}):
-	| { readonly kind: "RENAMED"; readonly retiredPath: string }
-	| {
-			readonly kind: "MISMATCH";
-	  } {
+}): RenameRunDirectoryResult {
 	return renameRunDirectoryToRetiredInternal(
 		params,
 		productionRetirementDependencies,
@@ -206,24 +211,25 @@ export function renameRunDirectoryToRetiredInternal(
 		readonly runDir: string;
 		readonly runId: string;
 		readonly retirementToken: string;
+		readonly incarnationId: string;
+		/** Expected namespace identity, when known. */
+		readonly expectedOrchestratorName?: string;
 		readonly databaseIdentity: RunDatabaseFilesystemIdentity | null;
 	},
 	dependencies: RunRetirementInternalDependencies,
-):
-	| { readonly kind: "RENAMED"; readonly retiredPath: string }
-	| {
-			readonly kind: "MISMATCH";
-	  } {
-	const { driver, runDir, runId, retirementToken, databaseIdentity } = params;
+): RenameRunDirectoryResult {
+	const { driver, runDir, runId, retirementToken, incarnationId } = params;
 	const dbPath = path.join(runDir, RUN_DB_FILENAME);
-	const retiredRoot = path.join(path.dirname(runDir), RETIRED_DIR_NAME);
+	const orchestratorBaseDir = path.dirname(runDir);
+	const retiredRoot = path.join(orchestratorBaseDir, RETIRED_DIR_NAME);
+	const retiredPayloadDir = path.join(retiredRoot, RETIRED_PAYLOAD_DIR_NAME);
 	const retiredPath = path.join(
-		retiredRoot,
+		retiredPayloadDir,
 		retiredDirectoryName(runId, retirementToken),
 	);
 	// Identity evidence is mandatory: without it, the rename cannot be
 	// bound to the claimed object — fail closed.
-	if (databaseIdentity === null) {
+	if (params.databaseIdentity === null) {
 		return { kind: "MISMATCH" };
 	}
 	if (!fs.existsSync(runDir)) {
@@ -231,15 +237,32 @@ export function renameRunDirectoryToRetiredInternal(
 		// handled by the .retired sweep, nothing to rename here.
 		return { kind: "MISMATCH" };
 	}
-	if (!pathIdentityMatches(runDir, dbPath, databaseIdentity)) {
+	if (!pathIdentityMatches(runDir, dbPath, params.databaseIdentity)) {
 		return { kind: "MISMATCH" };
 	}
-	if (readRetirementTokenFromDb(driver, dbPath, runId) !== retirementToken) {
+	// Strict read-only database verification — never creates/migrates.
+	const preInspection = inspectRetiredRunAuthority({
+		driver,
+		dbPath,
+		expectedRunId: runId,
+		...(params.expectedOrchestratorName !== undefined
+			? { expectedOrchestratorName: params.expectedOrchestratorName }
+			: {}),
+		expectedRetirementToken: retirementToken,
+		expectedIncarnationId: incarnationId,
+	});
+	if (preInspection.kind !== "VALID_RETIRING") {
 		return { kind: "MISMATCH" };
 	}
-	fs.mkdirSync(retiredRoot, { recursive: true });
+	// Do not let an existing symlink redirect the retirement payload or
+	// READY journal outside this orchestrator namespace.
+	ensureDirectoryPathWithoutSymlinks(retiredPayloadDir, orchestratorBaseDir);
+	ensureDirectoryPathWithoutSymlinks(
+		path.join(retiredRoot, RETIRED_READY_DIR_NAME),
+		orchestratorBaseDir,
+	);
 	if (fs.existsSync(retiredPath)) {
-		// Ambiguous: both the canonical path and a retired path for the
+		// Ambiguous: both the canonical path and a retired payload for the
 		// same identity exist — fail closed and let the sweep handle the
 		// retired side.
 		return { kind: "MISMATCH" };
@@ -249,25 +272,44 @@ export function renameRunDirectoryToRetiredInternal(
 	dependencies.onFaultPoint?.("AFTER_PRE_RENAME_VERIFICATION");
 	fs.renameSync(runDir, retiredPath);
 	// Test-only fault point: fires immediately after the atomic rename
-	// completed and BEFORE the post-rename token verification (and any
-	// possible restoration) gets a chance to observe the mismatch.
+	// completed and BEFORE the post-rename verification (and any possible
+	// restoration) gets a chance to observe the mismatch.
 	dependencies.onFaultPoint?.("AFTER_RENAME_BEFORE_POSTCHECK");
-	// Post-rename self-check: if the renamed directory does not carry our
-	// retirement token, restore it to the canonical path if possible and
-	// NEVER delete it.
-	const postToken = readRetirementTokenFromDb(
+	// Durability of the detach: the rename is the filesystem namespace
+	// linearization point — its directory entries must survive power
+	// loss.  A failed fsync means NO READY, NO DELETE.
+	try {
+		fsyncDirectory(orchestratorBaseDir);
+		fsyncDirectory(retiredPayloadDir);
+	} catch {
+		return { kind: "DETACHED_UNREADY", retiredPath };
+	}
+	// Post-rename strict verification (defense in depth — the namespace
+	// mutex is the primary serialization mechanism).
+	const postInspection = inspectRetiredRunAuthority({
 		driver,
-		path.join(retiredPath, RUN_DB_FILENAME),
-		runId,
-	);
-	if (postToken !== retirementToken) {
+		dbPath: path.join(retiredPath, RUN_DB_FILENAME),
+		expectedRunId: runId,
+		...(params.expectedOrchestratorName !== undefined
+			? { expectedOrchestratorName: params.expectedOrchestratorName }
+			: {}),
+		expectedRetirementToken: retirementToken,
+		expectedIncarnationId: incarnationId,
+	});
+	if (postInspection.kind !== "VALID_RETIRING") {
+		// Mismatch under mutex: NEVER READY, NEVER DELETE.  If the
+		// canonical pathname is absent, restore the moved object while the
+		// mutex is still held — a compliant initial cannot race this
+		// restoration.  If restoration is impossible, the payload stays
+		// untouched and the sweep decides (a wrong object fails the
+		// read-only inspection and is kept forever).
 		try {
 			if (!fs.existsSync(runDir)) {
 				fs.renameSync(retiredPath, runDir);
 			}
 		} catch {
 			// Restore failed — leave the directory untouched under the
-			// retired path; the sweep validates tokens before deleting.
+			// retired path; the sweep validates before deleting.
 		}
 		return { kind: "MISMATCH" };
 	}
@@ -275,8 +317,10 @@ export function renameRunDirectoryToRetiredInternal(
 }
 
 /** Delete a retirement-specific directory.  The directory must already
- *  have passed token validation; deletion failure leaves the retired
- *  files in place for a later sweep. */
+ *  have passed destructive-authorization validation (READY marker
+ *  identity match or strict read-only VALID_RETIRING inspection);
+ *  deletion failure leaves the retired files in place for a later
+ *  sweep. */
 export function deleteRetiredRunDirectory(retiredPath: string):
 	| {
 			readonly kind: "DELETED";
@@ -290,83 +334,83 @@ export function deleteRetiredRunDirectory(retiredPath: string):
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Recovery sweep
+// ---------------------------------------------------------------------------
 /** Sweep the .retired area of one orchestrator namespace.
  *
- *  Entries there have already crossed the irreversible retirement
- *  frontier: their deletion requires no ownership acquisition.  Each
- *  entry is still validated — well-formed `<runId>--<retirementToken>`
- *  name (no symlinks, no malformed pathnames) and a database whose
- *  persisted retirement token matches the name — before any deletion.
- *  Returns the number of fully deleted entries. */
+ *  Phase A (READY markers first): each durable marker is strictly
+ *  validated and its payload deleted on payload-root identity match —
+ *  WITHOUT opening the payload's turnlock.sqlite3.  Payload-absent
+ *  markers are cleaned up; ambiguous markers keep everything.
+ *
+ *  Phase B (UNREADY payloads): entries without a marker are re-validated
+ *  through the strict READ-ONLY database inspection; VALID_RETIRING
+ *  payloads get their READY marker durably published and are then treated
+ *  exactly like READY payloads.  Missing/invalid databases are kept and
+ *  never recreated.
+ *
+ *  Returns the number of fully completed deletions. */
 export function sweepRetiredRunDirectories(params: {
 	readonly driver: SqliteDriver;
 	readonly retiredRoot: string;
+	readonly orchestratorName?: string;
 }): number {
 	const { driver, retiredRoot } = params;
 	if (!fs.existsSync(retiredRoot)) return 0;
-	let deleted = 0;
-	let entries: fs.Dirent[];
-	try {
-		entries = fs.readdirSync(retiredRoot, { withFileTypes: true });
-	} catch {
-		return 0;
-	}
-	for (const entry of entries) {
-		if (!entry.isDirectory()) continue;
-		const name = entry.name;
-		if (!isValidRetiredEntryName(name)) continue;
-		const separator = name.lastIndexOf("--");
-		const runId = name.slice(0, separator);
-		const token = name.slice(separator + 2);
-		const retiredPath = path.join(retiredRoot, name);
-		// Re-validate identity through the database content: a directory
-		// whose DB token does not match its name is NEVER deleted.
-		if (
-			readRetirementTokenFromDb(
-				driver,
-				path.join(retiredPath, RUN_DB_FILENAME),
-				runId,
-			) !== token
-		) {
-			continue;
-		}
-		const result = deleteRetiredRunDirectory(retiredPath);
-		if (result.kind === "DELETED") deleted++;
-	}
-	return deleted;
+	let completed = 0;
+	// Phase A — READY markers.
+	completed += sweepReadyRetirementMarkers({
+		retiredRoot,
+		orchestratorName: params.orchestratorName ?? null,
+	});
+	// Phase B — UNREADY payloads.
+	completed += sweepUnreadyRetiredPayloads({
+		driver,
+		retiredRoot,
+		...(params.orchestratorName !== undefined
+			? { expectedOrchestratorName: params.orchestratorName }
+			: {}),
+	});
+	return completed;
 }
 
 // ---------------------------------------------------------------------------
 // Full retirement flow
 // ---------------------------------------------------------------------------
-/** Retire and delete one canonical RUN_DIR candidate.
- *
- *  claim → (identity verify) → atomic rename → delete retired path.
- *  Only CLAIMED / ALREADY_RETIRING authorize the filesystem phase; every
- *  other claim result or verification failure keeps the canonical path. */
-export function retireRunDirectory(params: {
+type KeptReason = Extract<RunRetirementOutcome, { kind: "KEPT" }>["reason"];
+
+interface RetiredUnderMutex {
+	readonly kind: "KEPT";
+	readonly reason: KeptReason;
+}
+interface DetachedUnderMutex {
+	readonly kind: "DETACHED";
+	readonly retiredPath: string;
+	readonly retirementToken: string;
+	readonly readyPublished: boolean;
+}
+type RetireUnderMutexResult = RetiredUnderMutex | DetachedUnderMutex;
+
+/** Claim → verify → rename → fsync → post-check → READY.  Runs entirely
+ *  while the per-run namespace mutex is held.  NEVER performs recursive
+ *  deletion. */
+function retireUnderMutex(params: {
 	readonly driver: SqliteDriver;
 	readonly runDir: string;
 	readonly runId: string;
-}): RunRetirementOutcome {
-	return retireRunDirectoryInternal(params, productionRetirementDependencies);
-}
-
-/** Internal variant of {@link retireRunDirectory} with test-only fault
- *  injection.  NEVER exposed on the public package API. */
-export function retireRunDirectoryInternal(
-	params: {
-		readonly driver: SqliteDriver;
-		readonly runDir: string;
-		readonly runId: string;
-	},
-	dependencies: RunRetirementInternalDependencies,
-): RunRetirementOutcome {
-	const { driver, runDir, runId } = params;
+	readonly orchestratorName?: string;
+	readonly orchestratorBaseDir: string;
+	readonly dependencies: RunRetirementInternalDependencies;
+}): RetireUnderMutexResult {
+	const { driver, runDir, runId, orchestratorBaseDir, dependencies } = params;
 	const claim = claimRunForRetentionDeletion({
 		driver,
 		dbPath: path.join(runDir, RUN_DB_FILENAME),
 		runId,
+		...(params.orchestratorName !== undefined
+			? { expectedOrchestratorName: params.orchestratorName }
+			: {}),
 		busyTimeoutMs: 2000,
 		contentionDeadlineMs: 5000,
 	});
@@ -389,28 +433,176 @@ export function retireRunDirectoryInternal(
 			runDir,
 			runId,
 			retirementToken: claim.retirementToken,
+			incarnationId: claim.incarnationId,
+			...(params.orchestratorName !== undefined
+				? { expectedOrchestratorName: params.orchestratorName }
+				: {}),
 			databaseIdentity: claim.databaseIdentity,
 		},
 		dependencies,
 	);
-	if (rename.kind !== "RENAMED") {
+	if (rename.kind === "MISMATCH") {
 		return { kind: "KEPT", reason: "IDENTITY_MISMATCH" };
 	}
-	const deletion = deleteRetiredRunDirectory(rename.retiredPath);
-	if (deletion.kind !== "DELETED") {
-		// The retirement stays committed and the retired files remain
-		// under .retired for a later sweep — never reactivated.
-		return { kind: "KEPT", reason: "FILESYSTEM_FAILURE" };
+	if (rename.kind === "DETACHED_UNREADY") {
+		return {
+			kind: "DETACHED",
+			retiredPath: rename.retiredPath,
+			retirementToken: claim.retirementToken,
+			readyPublished: false,
+		};
 	}
-	return { kind: "DELETED" };
+	// RENAMED: publish the durable READY marker BEFORE releasing the
+	// namespace mutex — after this point, deletion no longer depends on
+	// any file inside the payload.
+	const payloadIdentity = captureRetiredPayloadIdentity(rename.retiredPath);
+	if (payloadIdentity === null) {
+		return {
+			kind: "DETACHED",
+			retiredPath: rename.retiredPath,
+			retirementToken: claim.retirementToken,
+			readyPublished: false,
+		};
+	}
+	const marker: RetirementReadyMarkerV1 = {
+		version: RETIREMENT_READY_MARKER_VERSION,
+		orchestratorName: claim.orchestratorName,
+		runId: claim.runId,
+		incarnationId: claim.incarnationId,
+		retirementToken: claim.retirementToken,
+		retirementClaimedAtEpochMs: claim.retirementClaimedAtEpochMs,
+		retiredEntryName: retiredDirectoryName(runId, claim.retirementToken),
+		payloadIdentity,
+	};
+	const publish = publishRetirementReadyMarker({
+		retiredRoot: path.join(orchestratorBaseDir, RETIRED_DIR_NAME),
+		marker,
+	});
+	return {
+		kind: "DETACHED",
+		retiredPath: rename.retiredPath,
+		retirementToken: claim.retirementToken,
+		readyPublished:
+			publish.kind === "PUBLISHED" ||
+			publish.kind === "ALREADY_PUBLISHED_IDENTICAL",
+	};
+}
+
+/** Retire and delete one canonical RUN_DIR candidate.
+ *
+ *  namespace mutex → claim → verify → atomic rename → fsync →
+ *  post-check → READY durable → release mutex → rm retired payload.
+ *  Only CLAIMED / ALREADY_RETIRING authorize the filesystem phase; every
+ *  other claim result or verification failure keeps the canonical path.
+ *  The recursive rm NEVER runs while the namespace mutex is held. */
+export function retireRunDirectory(params: {
+	readonly driver: SqliteDriver;
+	readonly runDir: string;
+	readonly runId: string;
+	/** Namespace identity used to bind the run-local database to this
+	 *  canonical path.  Production callers always provide it. */
+	readonly orchestratorName?: string;
+}): RunRetirementOutcome {
+	return retireRunDirectoryInternal(params, productionRetirementDependencies);
+}
+
+/** Internal variant of {@link retireRunDirectory} with test-only fault
+ *  injection.  NEVER exposed on the public package API. */
+export function retireRunDirectoryInternal(
+	params: {
+		readonly driver: SqliteDriver;
+		readonly runDir: string;
+		readonly runId: string;
+		/** Namespace identity used to bind the run-local database to this
+		 *  canonical path.  Production callers always provide it. */
+		readonly orchestratorName?: string;
+	},
+	dependencies: RunRetirementInternalDependencies,
+): RunRetirementOutcome {
+	const { driver, runDir, runId } = params;
+	// Path safety: the namespace mutex sidecar path is derived from the
+	// runId — refuse malformed candidate names before touching anything.
+	if (!isValidRunId(runId)) {
+		return { kind: "KEPT", reason: "UNKNOWN" };
+	}
+	const orchestratorBaseDir = path.dirname(runDir);
+	const mutexPath = resolveNamespaceMutexPath(orchestratorBaseDir, runId);
+	const acquired = acquireRunNamespaceMutex({
+		driver,
+		mutexPath,
+		busyTimeoutMs: NAMESPACE_MUTEX_BUSY_TIMEOUT_MS,
+	});
+	if (acquired.kind !== "ACQUIRED") {
+		return {
+			kind: "KEPT",
+			reason:
+				acquired.kind === "CONTENTION_TIMEOUT"
+					? "DB_CONTENTION_TIMEOUT"
+					: "NAMESPACE_MUTEX_FAILURE",
+		};
+	}
+	let underMutex: RetireUnderMutexResult;
+	try {
+		underMutex = retireUnderMutex({
+			driver,
+			runDir,
+			runId,
+			...(params.orchestratorName !== undefined
+				? { orchestratorName: params.orchestratorName }
+				: {}),
+			orchestratorBaseDir,
+			dependencies,
+		});
+	} catch (error) {
+		acquired.handle.rollbackAndRelease();
+		throw error;
+	}
+	// Namespace mutex released BEFORE any recursive deletion — a new
+	// initial can establish a new incarnation at the canonical pathname
+	// while the old payload is being physically removed.
+	acquired.handle.release();
+	switch (underMutex.kind) {
+		case "KEPT":
+			return { kind: "KEPT", reason: underMutex.reason };
+		case "DETACHED": {
+			if (!underMutex.readyPublished) {
+				// READY publication failed after a verified rename: never
+				// reactivate, never rm — the UNREADY sweep re-establishes
+				// READY from the intact database.
+				return {
+					kind: "DETACHED_PENDING_SWEEP",
+					retirementToken: underMutex.retirementToken,
+				};
+			}
+			const deletion = deleteRetiredRunDirectory(underMutex.retiredPath);
+			if (deletion.kind !== "DELETED") {
+				// The READY marker stays durable — the future sweep
+				// completes the deletion without the payload's DB.
+				return {
+					kind: "DETACHED_PENDING_SWEEP",
+					retirementToken: underMutex.retirementToken,
+				};
+			}
+			removeRetirementReadyMarkerDurably({
+				retiredRoot: path.join(orchestratorBaseDir, RETIRED_DIR_NAME),
+				entryName: retiredDirectoryName(runId, underMutex.retirementToken),
+			});
+			return { kind: "DELETED" };
+		}
+	}
 }
 
 /** Build the production filesystem-retirement delegate for a driver. */
 export function buildRunRetirement(driver: SqliteDriver): RunDirRetirement {
 	return {
-		retireRunDirectory: (runDir, runId) =>
-			retireRunDirectory({ driver, runDir, runId }),
-		sweepRetiredDirectories: (retiredRoot) =>
-			sweepRetiredRunDirectories({ driver, retiredRoot }),
+		retireRunDirectory: (runDir, runId, orchestratorName) =>
+			retireRunDirectory({
+				driver,
+				runDir,
+				runId,
+				...(orchestratorName !== undefined ? { orchestratorName } : {}),
+			}),
+		sweepRetiredDirectories: (retiredRoot, orchestratorName) =>
+			sweepRetiredRunDirectories({ driver, retiredRoot, orchestratorName }),
 	};
 }

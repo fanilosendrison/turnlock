@@ -47,11 +47,20 @@ import {
 	projectAuthoritativeStateFenced,
 	type StateRecord,
 } from "../../src/persistence/sqlite/run-state-store.js";
+import {
+	captureRetiredPayloadIdentity,
+	publishRetirementReadyMarker,
+	RETIREMENT_READY_MARKER_VERSION,
+	type RetirementReadyMarkerV1,
+	retiredDirectoryName,
+} from "../../src/services/retirement-journal.js";
 import { cleanupOldRuns } from "../../src/services/run-dir.js";
 import {
 	buildRunRetirement,
 	deleteRetiredRunDirectory,
 	RETIRED_DIR_NAME,
+	RETIRED_PAYLOAD_DIR_NAME,
+	RETIRED_READY_DIR_NAME,
 	renameRunDirectoryToRetired,
 } from "../../src/services/run-retirement.js";
 import type { OrchestratorConfig } from "../../src/types/config.js";
@@ -280,6 +289,7 @@ describe("retention cleanup safety", () => {
 					join(
 						dirname(runBDir),
 						RETIRED_DIR_NAME,
+						RETIRED_PAYLOAD_DIR_NAME,
 						`${RUN_B}--${claim.retirementToken}`,
 					),
 				),
@@ -424,6 +434,7 @@ describe("retention cleanup safety", () => {
 				runDir,
 				runId: RUN_B,
 				retirementToken: claim.retirementToken,
+				incarnationId: claim.incarnationId,
 				databaseIdentity: claim.databaseIdentity,
 			});
 			assert.strictEqual(rename.kind, "RENAMED");
@@ -464,6 +475,7 @@ describe("retention cleanup safety", () => {
 				runDir,
 				runId: RUN_B,
 				retirementToken: claim.retirementToken,
+				incarnationId: claim.incarnationId,
 				databaseIdentity: claim.databaseIdentity,
 			});
 			assert.strictEqual(rename.kind, "RENAMED");
@@ -598,8 +610,11 @@ describe("retention cleanup safety", () => {
 					retirements++;
 					return productionRetirement.retireRunDirectory(runDir, runId);
 				},
-				sweepRetiredDirectories: (retiredRoot) =>
-					productionRetirement.sweepRetiredDirectories(retiredRoot),
+				sweepRetiredDirectories: (retiredRoot, orchestratorName) =>
+					productionRetirement.sweepRetiredDirectories(
+						retiredRoot,
+						orchestratorName,
+					),
 			};
 			const deleted = cleanupOldRuns(
 				root,
@@ -697,8 +712,11 @@ describe("retention cleanup safety", () => {
 					// to act on the new incarnation.
 					return productionRetirement.retireRunDirectory(runDir, runId);
 				},
-				sweepRetiredDirectories: (retiredRoot) =>
-					productionRetirement.sweepRetiredDirectories(retiredRoot),
+				sweepRetiredDirectories: (retiredRoot, orchestratorName) =>
+					productionRetirement.sweepRetiredDirectories(
+						retiredRoot,
+						orchestratorName,
+					),
 			};
 			const deleted = cleanupOldRuns(
 				root,
@@ -758,8 +776,11 @@ describe("retention cleanup safety", () => {
 					newIncarnationBootstrapped = true;
 					return productionRetirement.retireRunDirectory(runDir, runId);
 				},
-				sweepRetiredDirectories: (retiredRoot) =>
-					productionRetirement.sweepRetiredDirectories(retiredRoot),
+				sweepRetiredDirectories: (retiredRoot, orchestratorName) =>
+					productionRetirement.sweepRetiredDirectories(
+						retiredRoot,
+						orchestratorName,
+					),
 			};
 			const deleted = cleanupOldRuns(
 				root,
@@ -805,6 +826,7 @@ describe("retention cleanup safety", () => {
 				runDir,
 				runId: RUN_B,
 				retirementToken: claim.retirementToken,
+				incarnationId: claim.incarnationId,
 				databaseIdentity: claim.databaseIdentity,
 			});
 			assert.strictEqual(rename.kind, "RENAMED");
@@ -851,6 +873,7 @@ describe("retention cleanup safety", () => {
 				runDir,
 				runId: RUN_B,
 				retirementToken: claim.retirementToken,
+				incarnationId: claim.incarnationId,
 				databaseIdentity: claim.databaseIdentity,
 			});
 			assert.strictEqual(rename.kind, "MISMATCH");
@@ -867,12 +890,12 @@ describe("retention cleanup safety", () => {
 		}
 	});
 
-	test("partial retired deletion with the SQLite DB already gone is permanently unrecoverable (RED)", () => {
+	test("partial rm with the SQLite DB already gone finishes via the durable READY marker", () => {
 		const root = makeTempDir();
 		try {
 			const runDirRoot = join(root, "runs");
 			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
-			// 1. Create a genuine retired payload through the production flow.
+			// 1. Genuine retired payload through the production flow.
 			bootstrapForeignRun(runBDir, RUN_B);
 			expireLease(runBDir);
 			ageDir(runBDir, 100);
@@ -884,12 +907,14 @@ describe("retention cleanup safety", () => {
 				runDir: runBDir,
 				runId: RUN_B,
 				retirementToken: claim.retirementToken,
+				incarnationId: claim.incarnationId,
 				databaseIdentity: claim.databaseIdentity,
 			});
 			assert.strictEqual(rename.kind, "RENAMED");
 			if (rename.kind !== "RENAMED") throw new Error("setup");
 			const retiredPath = rename.retiredPath;
-			// 2. Establish that the payload was legitimately RETIRING.
+			// 2. Establish the payload was legitimately RETIRING, then publish
+			//    the durable READY marker (exactly what the full flow does).
 			const checkDb = openRunDatabase({
 				driver: nodeSqliteDriver,
 				dbPath: join(retiredPath, "turnlock.sqlite3"),
@@ -903,10 +928,27 @@ describe("retention cleanup safety", () => {
 			} finally {
 				checkDb.close();
 			}
-			// 3. The payload lives in the current .retired structure.
-			assert.ok(retiredPath.includes(RETIRED_DIR_NAME));
-			// 4. Delete the internal SQLite authority and its sidecars
-			//    while at least one other file remains in the payload.
+			const identity = captureRetiredPayloadIdentity(retiredPath);
+			assert.ok(identity, "payload identity must be capturable");
+			const marker: RetirementReadyMarkerV1 = {
+				version: RETIREMENT_READY_MARKER_VERSION,
+				orchestratorName: claim.orchestratorName,
+				runId: claim.runId,
+				incarnationId: claim.incarnationId,
+				retirementToken: claim.retirementToken,
+				retirementClaimedAtEpochMs: claim.retirementClaimedAtEpochMs,
+				retiredEntryName: retiredDirectoryName(RUN_B, claim.retirementToken),
+				payloadIdentity: identity,
+			};
+			const published = publishRetirementReadyMarker({
+				retiredRoot: join(dirname(runBDir), RETIRED_DIR_NAME),
+				marker,
+			});
+			assert.strictEqual(published.kind, "PUBLISHED");
+			// 3. The payload lives in .retired/payload.
+			assert.ok(retiredPath.includes(RETIRED_PAYLOAD_DIR_NAME));
+			// 4. Delete the internal SQLite authority and its sidecars while
+			//    at least one other file remains in the payload.
 			const leftoversDir = join(retiredPath, "leftovers");
 			mkdirSync(leftoversDir);
 			writeFileSync(join(leftoversDir, "keep.txt"), "leftover");
@@ -914,7 +956,8 @@ describe("retention cleanup safety", () => {
 			rmSync(join(retiredPath, "turnlock.sqlite3-wal"), { force: true });
 			rmSync(join(retiredPath, "turnlock.sqlite3-shm"), { force: true });
 			assert.strictEqual(existsSync(join(leftoversDir, "keep.txt")), true);
-			// 6. Run the current sweep.
+			// 5. The sweep finishes the destruction via the READY marker —
+			//    without the DB, and without recreating it.
 			const deleted = cleanupOldRuns(
 				root,
 				ORCHESTRATOR_NAME,
@@ -923,15 +966,29 @@ describe("retention cleanup safety", () => {
 				productionRetirement,
 				runDirRoot,
 			);
-			// Desired invariant: a retirement whose destructive permission
-			// was already established must complete its destruction even
-			// though its internal DB no longer exists.
+			assert.strictEqual(deleted, 1);
 			assert.strictEqual(
 				existsSync(retiredPath),
 				false,
 				"expected: partial retired payload with DB gone is fully deleted; actual: unrecoverable orphan",
 			);
-			assert.strictEqual(deleted, 1);
+			assert.strictEqual(
+				existsSync(join(retiredPath, "turnlock.sqlite3")),
+				false,
+				"the sweep must never recreate the payload database",
+			);
+			// The READY marker is consumed with the payload.
+			assert.strictEqual(
+				existsSync(
+					join(
+						dirname(runBDir),
+						RETIRED_DIR_NAME,
+						RETIRED_READY_DIR_NAME,
+						`${marker.retiredEntryName}.json`,
+					),
+				),
+				false,
+			);
 		} finally {
 			cleanupTempDir(root);
 		}
@@ -1097,6 +1154,127 @@ describe("retention cleanup safety", () => {
 			// directory and its authority are untouched.
 			assert.strictEqual(existsSync(runDir), true);
 			assert.strictEqual(existsSync(join(runDir, "turnlock.sqlite3")), true);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("crash C | after READY before rm: the sweep deletes the payload via the marker", () => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runBDir, RUN_B);
+			expireLease(runBDir);
+			ageDir(runBDir, 100);
+			const claim = claimB(runBDir);
+			assert.strictEqual(claim.kind, "CLAIMED");
+			if (claim.kind !== "CLAIMED") throw new Error("setup");
+			const rename = renameRunDirectoryToRetired({
+				driver: nodeSqliteDriver,
+				runDir: runBDir,
+				runId: RUN_B,
+				retirementToken: claim.retirementToken,
+				incarnationId: claim.incarnationId,
+				databaseIdentity: claim.databaseIdentity,
+			});
+			assert.strictEqual(rename.kind, "RENAMED");
+			if (rename.kind !== "RENAMED") throw new Error("setup");
+			const identity = captureRetiredPayloadIdentity(rename.retiredPath);
+			assert.ok(identity, "payload identity must be capturable");
+			const marker: RetirementReadyMarkerV1 = {
+				version: RETIREMENT_READY_MARKER_VERSION,
+				orchestratorName: claim.orchestratorName,
+				runId: claim.runId,
+				incarnationId: claim.incarnationId,
+				retirementToken: claim.retirementToken,
+				retirementClaimedAtEpochMs: claim.retirementClaimedAtEpochMs,
+				retiredEntryName: retiredDirectoryName(RUN_B, claim.retirementToken),
+				payloadIdentity: identity,
+			};
+			assert.strictEqual(
+				publishRetirementReadyMarker({
+					retiredRoot: join(dirname(runBDir), RETIRED_DIR_NAME),
+					marker,
+				}).kind,
+				"PUBLISHED",
+			);
+			// Crash before rm: READY + full payload.
+			const deleted = cleanupOldRuns(
+				root,
+				ORCHESTRATOR_NAME,
+				7,
+				RUN_A,
+				productionRetirement,
+				runDirRoot,
+			);
+			assert.strictEqual(deleted, 1);
+			assert.strictEqual(existsSync(rename.retiredPath), false);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("crash E | after payload gone before READY removal: the sweep removes the marker", () => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runBDir, RUN_B);
+			expireLease(runBDir);
+			ageDir(runBDir, 100);
+			const claim = claimB(runBDir);
+			assert.strictEqual(claim.kind, "CLAIMED");
+			if (claim.kind !== "CLAIMED") throw new Error("setup");
+			const rename = renameRunDirectoryToRetired({
+				driver: nodeSqliteDriver,
+				runDir: runBDir,
+				runId: RUN_B,
+				retirementToken: claim.retirementToken,
+				incarnationId: claim.incarnationId,
+				databaseIdentity: claim.databaseIdentity,
+			});
+			assert.strictEqual(rename.kind, "RENAMED");
+			if (rename.kind !== "RENAMED") throw new Error("setup");
+			const identity = captureRetiredPayloadIdentity(rename.retiredPath);
+			assert.ok(identity, "payload identity must be capturable");
+			const marker: RetirementReadyMarkerV1 = {
+				version: RETIREMENT_READY_MARKER_VERSION,
+				orchestratorName: claim.orchestratorName,
+				runId: claim.runId,
+				incarnationId: claim.incarnationId,
+				retirementToken: claim.retirementToken,
+				retirementClaimedAtEpochMs: claim.retirementClaimedAtEpochMs,
+				retiredEntryName: retiredDirectoryName(RUN_B, claim.retirementToken),
+				payloadIdentity: identity,
+			};
+			assert.strictEqual(
+				publishRetirementReadyMarker({
+					retiredRoot: join(dirname(runBDir), RETIRED_DIR_NAME),
+					marker,
+				}).kind,
+				"PUBLISHED",
+			);
+			// Crash state: rm completed but the marker removal did not.
+			const deletion = deleteRetiredRunDirectory(rename.retiredPath);
+			assert.strictEqual(deletion.kind, "DELETED");
+			const markerPath = join(
+				dirname(runBDir),
+				RETIRED_DIR_NAME,
+				RETIRED_READY_DIR_NAME,
+				`${marker.retiredEntryName}.json`,
+			);
+			assert.strictEqual(existsSync(markerPath), true);
+			const deleted = cleanupOldRuns(
+				root,
+				ORCHESTRATOR_NAME,
+				7,
+				RUN_A,
+				productionRetirement,
+				runDirRoot,
+			);
+			assert.strictEqual(deleted, 1);
+			assert.strictEqual(existsSync(markerPath), false);
 		} finally {
 			cleanupTempDir(root);
 		}

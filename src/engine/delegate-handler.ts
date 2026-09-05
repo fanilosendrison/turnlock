@@ -6,10 +6,7 @@ import {
 	DEFAULT_TIMEOUT_MS,
 } from "../constants.js";
 import { InvalidConfigError, ProtocolError } from "../errors/concrete.js";
-import {
-	installPreparedArtifact,
-	prepareJsonArtifact,
-} from "../services/artifact-store.js";
+import { prepareJsonArtifact } from "../services/artifact-store.js";
 import { clock } from "../services/clock.js";
 import type {
 	PendingDelegationRecord,
@@ -19,6 +16,7 @@ import type {
 	BatchDelegationRequest,
 	DelegationRequest,
 } from "../types/delegation.js";
+import { installPreparedArtifactFenced } from "./artifact-commit.js";
 import { type DispatchContext, doExit } from "./context.js";
 import { clearPendingYield } from "./pending-yield.js";
 import { writeProtocolStdout } from "./protocol-stdout.js";
@@ -124,7 +122,7 @@ export async function handleDelegate<S extends object>(
 		manifest,
 	);
 	// 2. Install immutable blob (may be orphaned if commit fails — acceptable).
-	installPreparedArtifact(ctx.runDir, prepared);
+	installPreparedArtifactFenced(ctx, prepared);
 	// 3. Build pending delegation record with ArtifactRef.
 	const pendingDelegation: PendingDelegationRecord = {
 		label,

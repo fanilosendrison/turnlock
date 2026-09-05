@@ -23,6 +23,7 @@ import {
 	refreshOwnership,
 	releaseOwnership,
 	rollback,
+	verifyLiveOwnershipInTransaction,
 } from "../persistence/sqlite/ownership.js";
 import type { RunDatabase } from "../persistence/sqlite/run-database.js";
 import {
@@ -34,6 +35,7 @@ import {
 } from "../persistence/sqlite/run-state-store.js";
 import { readAndVerifyArtifact } from "../services/artifact-store.js";
 import { clock as defaultClock } from "../services/clock.js";
+import { ensureDirectoryPathWithoutSymlinks } from "../services/durable-fs.js";
 import type { StateFile } from "../services/state-io.js";
 import type { ArtifactRef } from "../types/artifacts.js";
 
@@ -451,7 +453,6 @@ export function projectCanonicalArtifactFenced(
 	canonicalPath: string,
 ): void {
 	const db = ctx.runDb.connection;
-	const nowEpochMs = defaultClock.nowEpochMs();
 	try {
 		beginImmediate(db);
 	} catch (error) {
@@ -464,91 +465,28 @@ export function projectCanonicalArtifactFenced(
 			},
 		);
 	}
+	// Capture the lease clock only after BEGIN IMMEDIATE acquires the
+	// transaction lock; time spent waiting for another writer must not
+	// make a live handle look fresher than it is.
+	const nowEpochMs = defaultClock.nowEpochMs();
 	try {
-		// Step 1 — Verify ownership including lease expiration.
-		const ownershipRow = db
-			.prepare(`SELECT ownership_status, incarnation_id, owner_token,
-				        fence_token, lease_until_epoch_ms
-				 FROM run_ownership WHERE singleton = 1`)
-			.get() as
-			| {
-					ownership_status: string;
-					incarnation_id: string;
-					owner_token: string;
-					fence_token: number | bigint;
-					lease_until_epoch_ms: number | null;
-			  }
-			| undefined;
-		if (ownershipRow === undefined) {
+		// Step 1 — Verify ownership including lease expiration, via the
+		// single shared live-ownership predicate.
+		const verification = verifyLiveOwnershipInTransaction(
+			db,
+			ctx.handle,
+			nowEpochMs,
+		);
+		if (verification.kind !== "LIVE") {
 			rollback(db);
 			throw new AuthorityLostError(
-				"Canonical projection rejected: ownership row missing",
+				`Canonical projection rejected: ${verification.kind === "EXPIRED_HANDLE" ? "lease expired" : "ownership not live"}`,
 				{
 					operation: "state_commit",
-					reason: "STALE_HANDLE",
-					...errorOpts(ctx),
-				},
-			);
-		}
-		if (ownershipRow.ownership_status !== "HELD") {
-			rollback(db);
-			throw new AuthorityLostError(
-				"Canonical projection rejected: ownership not held",
-				{
-					operation: "state_commit",
-					reason: "STALE_HANDLE",
-					...errorOpts(ctx),
-				},
-			);
-		}
-		if (ownershipRow.incarnation_id !== ctx.handle.incarnationId) {
-			rollback(db);
-			throw new AuthorityLostError(
-				"Canonical projection rejected: incarnation mismatch",
-				{
-					operation: "state_commit",
-					reason: "STALE_HANDLE",
-					...errorOpts(ctx),
-				},
-			);
-		}
-		if (ownershipRow.owner_token !== ctx.handle.ownerToken) {
-			rollback(db);
-			throw new AuthorityLostError(
-				"Canonical projection rejected: owner token mismatch",
-				{
-					operation: "state_commit",
-					reason: "STALE_HANDLE",
-					...errorOpts(ctx),
-				},
-			);
-		}
-		const rowFence =
-			typeof ownershipRow.fence_token === "bigint"
-				? ownershipRow.fence_token
-				: BigInt(ownershipRow.fence_token);
-		if (rowFence !== ctx.handle.fenceToken) {
-			rollback(db);
-			throw new AuthorityLostError(
-				"Canonical projection rejected: fence token mismatch",
-				{
-					operation: "state_commit",
-					reason: "STALE_HANDLE",
-					...errorOpts(ctx),
-				},
-			);
-		}
-		// Lease check — lease is expired at the exact instant now >= leaseUntil.
-		if (
-			ownershipRow.lease_until_epoch_ms === null ||
-			nowEpochMs >= ownershipRow.lease_until_epoch_ms
-		) {
-			rollback(db);
-			throw new AuthorityLostError(
-				"Canonical projection rejected: lease expired",
-				{
-					operation: "state_commit",
-					reason: "EXPIRED_HANDLE",
+					reason:
+						verification.kind === "RETIRING"
+							? "STALE_HANDLE"
+							: verification.kind,
 					...errorOpts(ctx),
 				},
 			);
@@ -626,7 +564,7 @@ export function projectCanonicalArtifactFenced(
 		const bytes = readAndVerifyArtifact(ctx.runDir, expectedPlacement.artifact);
 		// Step 5 — Write canonical projection atomically.
 		const parentDir = path.dirname(canonicalPath);
-		fs.mkdirSync(parentDir, { recursive: true });
+		ensureDirectoryPathWithoutSymlinks(parentDir, ctx.runDir);
 		const tmpPath = `${canonicalPath}.tmp-${process.pid}`;
 		fs.writeFileSync(tmpPath, bytes);
 		fs.renameSync(tmpPath, canonicalPath);

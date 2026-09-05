@@ -33,9 +33,15 @@ import {
 	type StateRecord,
 } from "../persistence/sqlite/run-state-store.js";
 import { clock } from "../services/clock.js";
+import { ensureDirectoryPathWithoutSymlinks } from "../services/durable-fs.js";
 import { createLogger } from "../services/logger.js";
 import { cleanupOldRuns, resolveRunDir } from "../services/run-dir.js";
 import { generateRunId } from "../services/run-id.js";
+import {
+	acquireRunNamespaceMutex,
+	NAMESPACE_MUTEX_BUSY_TIMEOUT_MS,
+	resolveNamespaceMutexPath,
+} from "../services/run-namespace-mutex.js";
 import { buildRunRetirement } from "../services/run-retirement.js";
 import {
 	migrateV3ToV4,
@@ -45,6 +51,7 @@ import {
 import { summarizeZodError, validateResult } from "../services/validator.js";
 import type { TerminalDoneRecord } from "../types/artifacts.js";
 import type { OrchestratorConfig } from "../types/config.js";
+import { installPreparedArtifactFenced } from "./artifact-commit.js";
 import { type DispatchContext, doExit, isTestExitSignal } from "./context.js";
 import { runDispatchLoop } from "./dispatch-loop.js";
 import { emitRunLockedError, handleTopLevelError } from "./error-emitter.js";
@@ -62,6 +69,10 @@ import { claimInitialDispatchWithProjection } from "./state-commit.js";
 const DB_FILENAME = RUN_DB_FILENAME;
 export interface RunOrchestratorInternalHooks {
 	afterBootstrapResult?(): void;
+	/** Test-only: fires while the namespace mutex is held, immediately
+	 *  before the atomic bootstrap COMMIT.  NEVER part of the package
+	 *  public API. */
+	beforeRunBootstrapCommit?(): void;
 	beforeInitialProjection?(): void;
 	afterInitialProjection?(): void;
 	beforeInitialDispatchClaim?(): void;
@@ -249,18 +260,9 @@ async function runInitialMode<S extends object>(
 	}
 	const cwd = process.cwd();
 	const runDir = resolveRunDir(cwd, config.name, runId, config.runDirRoot);
-	fs.mkdirSync(runDir, { recursive: true });
-	fs.mkdirSync(path.join(runDir, "delegations"), { recursive: true });
-	fs.mkdirSync(path.join(runDir, "results"), { recursive: true });
-	fs.mkdirSync(path.join(runDir, "external-requests"), { recursive: true });
-	fs.mkdirSync(path.join(runDir, "external-results"), { recursive: true });
-	fs.mkdirSync(path.join(runDir, "accepted-external-resolutions"), {
-		recursive: true,
-	});
-	fs.mkdirSync(path.join(runDir, "artifacts", "sha256"), {
-		recursive: true,
-	});
 	const logger = createLogger(config.logging);
+	const nowEpoch = clock.nowEpochMs();
+	const nowIso = clock.nowWallIso();
 	if (config.stateSchema) {
 		const validation = validateResult(config.initialState, config.stateSchema);
 		if (!validation.ok) {
@@ -274,96 +276,169 @@ async function runInitialMode<S extends object>(
 			);
 		}
 	}
-	const nowEpoch = clock.nowEpochMs();
-	const nowIso = clock.nowWallIso();
-	// Guard: refuse to establish SQLite ownership if a legacy .lock exists.
-	// A reused runId may point to an existing RUN_DIR containing artifacts
-	// from a legacy process.  existsSync is a defensive best-effort check;
-	// the exclusive upgrade window is an operational precondition.
-	const dbPath = path.join(runDir, DB_FILENAME);
-	const dbExistsBeforeOpen = fs.existsSync(dbPath);
-	assertOwnershipStorageCompatibility({
-		runDir,
-		sqliteDatabaseExists: dbExistsBeforeOpen,
-		mode: "initial",
-		runId,
-		orchestratorName: config.name,
-	});
-	// Open SQLite database and bootstrap atomically.
-	// incarnation + ownership + state are established in a single
-	// BEGIN IMMEDIATE ... COMMIT.  The LockHandle is only returned
-	// after the COMMIT succeeds.
-	const runDb = openRunDatabase({
+	// NAMESPACE MUTEX — the per-run namespace mutex serializes canonical
+	// RUN_DIR creation against retention cleanup for the same runId.
+	// NORMATIVE LOCK ORDERING: acquired BEFORE any run-local SQLite
+	// BEGIN IMMEDIATE, held until the bootstrap COMMIT publishes the
+	// LockHandle, and released before any projection/dispatch/cleanup.
+	// Never held during phase execution.
+	const orchestratorBaseDir = path.dirname(runDir);
+	const namespaceMutexResult = acquireRunNamespaceMutex({
 		driver: nodeSqliteDriver,
-		dbPath,
-		busyTimeoutMs: 2000,
+		mutexPath: resolveNamespaceMutexPath(orchestratorBaseDir, runId),
+		busyTimeoutMs: NAMESPACE_MUTEX_BUSY_TIMEOUT_MS,
 	});
-	const initialRecord: Record<string, unknown> = {
-		schemaVersion: STATE_SCHEMA_VERSION,
-		runId,
-		orchestratorName: config.name,
-		startedAt: nowIso,
-		startedAtEpochMs: nowEpoch,
-		lastTransitionAt: nowIso,
-		lastTransitionAtEpochMs: nowEpoch,
-		currentPhase: config.initial,
-		phasesExecuted: 0,
-		accumulatedDurationMs: 0,
-		data: config.initialState,
-		usedLabels: [],
-		[PENDING_INITIAL_DISPATCH_STATE_FIELD]: true,
-		[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD]:
-			PENDING_INITIAL_DISPATCH_VERSION,
-	};
-	const bootstrapResult = bootstrapNewRunAtomic({
-		db: runDb.connection,
-		runId,
-		orchestratorName: config.name,
-		nowEpochMs: nowEpoch,
-		nowIso,
-		leaseDurationMs: 30 * 60 * 1000,
-		initialState: initialRecord,
-		stateSchemaVersion: STATE_SCHEMA_VERSION,
-		contentionDeadlineMs: 5000,
-	});
-	if (bootstrapResult.kind !== "BOOTSTRAPPED") {
-		runDb.close();
-		if (bootstrapResult.kind === "ACTIVE_CONFLICT") {
-			emitRunLockedError(
-				new RunLockedError(
-					`Run is locked by another process, lease until ${new Date(bootstrapResult.leaseUntilEpochMs).toISOString()}`,
-					{
-						ownerPid: 0,
-						acquiredAtEpochMs: nowEpoch,
-						leaseUntilEpochMs: bootstrapResult.leaseUntilEpochMs,
-						runId,
-					},
-				),
-				config,
-				runId,
-				logger,
-			);
-			doExit(2);
-		}
-		if (bootstrapResult.kind === "ALREADY_ESTABLISHED") {
-			throw new ProtocolError("Run already established", {
-				runId,
-				orchestratorName: config.name,
-			});
-		}
-		if (bootstrapResult.kind === "RUN_RETIRING") {
-			throw new ProtocolError(
-				"Run is retired by retention cleanup — no new ownership may be acquired",
-				{ runId, orchestratorName: config.name },
-			);
-		}
+	if (namespaceMutexResult.kind !== "ACQUIRED") {
 		throw new ProtocolError(
-			`Failed to bootstrap run: ${bootstrapResult.kind}`,
+			`namespace mutex unavailable for runId ${runId}: ${namespaceMutexResult.kind}`,
 			{ runId, orchestratorName: config.name },
 		);
 	}
-	const handle = bootstrapResult.handle;
-	const committed = bootstrapResult.committed;
+	const namespaceMutex = namespaceMutexResult.handle;
+	let runDb: ReturnType<typeof openRunDatabase> | null = null;
+	let bootstrappedHandle:
+		| import("../persistence/sqlite/ownership.js").LockHandle
+		| null = null;
+	let bootstrappedCommitted: CommittedState | null = null;
+	try {
+		ensureDirectoryPathWithoutSymlinks(runDir, path.dirname(runDir));
+		ensureDirectoryPathWithoutSymlinks(
+			path.join(runDir, "delegations"),
+			runDir,
+		);
+		ensureDirectoryPathWithoutSymlinks(path.join(runDir, "results"), runDir);
+		ensureDirectoryPathWithoutSymlinks(
+			path.join(runDir, "external-requests"),
+			runDir,
+		);
+		ensureDirectoryPathWithoutSymlinks(
+			path.join(runDir, "external-results"),
+			runDir,
+		);
+		ensureDirectoryPathWithoutSymlinks(
+			path.join(runDir, "accepted-external-resolutions"),
+			runDir,
+		);
+		ensureDirectoryPathWithoutSymlinks(
+			path.join(runDir, "artifacts", "sha256"),
+			runDir,
+		);
+		// Guard: refuse to establish SQLite ownership if a legacy .lock exists.
+		// A reused runId may point to an existing RUN_DIR containing artifacts
+		// from a legacy process.  existsSync is a defensive best-effort check;
+		// the exclusive upgrade window is an operational precondition.
+		const dbPath = path.join(runDir, DB_FILENAME);
+		const dbExistsBeforeOpen = fs.existsSync(dbPath);
+		assertOwnershipStorageCompatibility({
+			runDir,
+			sqliteDatabaseExists: dbExistsBeforeOpen,
+			mode: "initial",
+			runId,
+			orchestratorName: config.name,
+		});
+		// Open SQLite database and bootstrap atomically.
+		// incarnation + ownership + state are established in a single
+		// BEGIN IMMEDIATE ... COMMIT.  The LockHandle is only returned
+		// after the COMMIT succeeds.
+		const opened = openRunDatabase({
+			driver: nodeSqliteDriver,
+			dbPath,
+			busyTimeoutMs: 2000,
+		});
+		runDb = opened;
+		const initialRecord: Record<string, unknown> = {
+			schemaVersion: STATE_SCHEMA_VERSION,
+			runId,
+			orchestratorName: config.name,
+			startedAt: nowIso,
+			startedAtEpochMs: nowEpoch,
+			lastTransitionAt: nowIso,
+			lastTransitionAtEpochMs: nowEpoch,
+			currentPhase: config.initial,
+			phasesExecuted: 0,
+			accumulatedDurationMs: 0,
+			data: config.initialState,
+			usedLabels: [],
+			[PENDING_INITIAL_DISPATCH_STATE_FIELD]: true,
+			[PENDING_INITIAL_DISPATCH_VERSION_STATE_FIELD]:
+				PENDING_INITIAL_DISPATCH_VERSION,
+		};
+		// Test-only hook: the namespace mutex is held here — a pause at
+		// this point proves a concurrent cleanup cannot detach the
+		// half-constructed canonical path.
+		dependencies.hooks?.beforeRunBootstrapCommit?.();
+		const bootstrapResult = bootstrapNewRunAtomic({
+			db: runDb.connection,
+			runId,
+			orchestratorName: config.name,
+			nowEpochMs: nowEpoch,
+			nowIso,
+			leaseDurationMs: 30 * 60 * 1000,
+			initialState: initialRecord,
+			stateSchemaVersion: STATE_SCHEMA_VERSION,
+			contentionDeadlineMs: 5000,
+		});
+		if (bootstrapResult.kind !== "BOOTSTRAPPED") {
+			runDb.close();
+			runDb = null;
+			if (bootstrapResult.kind === "ACTIVE_CONFLICT") {
+				emitRunLockedError(
+					new RunLockedError(
+						`Run is locked by another process, lease until ${new Date(bootstrapResult.leaseUntilEpochMs).toISOString()}`,
+						{
+							ownerPid: 0,
+							acquiredAtEpochMs: nowEpoch,
+							leaseUntilEpochMs: bootstrapResult.leaseUntilEpochMs,
+							runId,
+						},
+					),
+					config,
+					runId,
+					logger,
+				);
+				doExit(2);
+			}
+			if (bootstrapResult.kind === "ALREADY_ESTABLISHED") {
+				throw new ProtocolError("Run already established", {
+					runId,
+					orchestratorName: config.name,
+				});
+			}
+			if (bootstrapResult.kind === "RUN_RETIRING") {
+				throw new ProtocolError(
+					"Run is retired by retention cleanup — no new ownership may be acquired",
+					{ runId, orchestratorName: config.name },
+				);
+			}
+			throw new ProtocolError(
+				`Failed to bootstrap run: ${bootstrapResult.kind}`,
+				{ runId, orchestratorName: config.name },
+			);
+		}
+		bootstrappedHandle = bootstrapResult.handle;
+		bootstrappedCommitted = bootstrapResult.committed;
+	} catch (error) {
+		// Every exit releases the namespace mutex — no path may leave the
+		// sidecar transaction open.
+		namespaceMutex.rollbackAndRelease();
+		throw error;
+	}
+	// BOOTSTRAPPED COMMIT succeeded with a live LockHandle — release the
+	// namespace mutex NOW.  It is never held during projection, dispatch,
+	// delegation, or retention cleanup of foreign runs.
+	namespaceMutex.release();
+	if (
+		runDb === null ||
+		bootstrappedHandle === null ||
+		bootstrappedCommitted === null
+	) {
+		throw new ProtocolError(
+			"internal error: bootstrap artifacts missing after bootstrap",
+			{ runId, orchestratorName: config.name },
+		);
+	}
+	const handle = bootstrappedHandle;
+	const committed = bootstrappedCommitted;
 	// Build the dispatch state from the committed authoritative record, never
 	// from the pre-lock config values. The private initial-dispatch marker is
 	// intentionally omitted from StateFile and remains SQLite-only evidence.
@@ -490,177 +565,70 @@ async function runResumeMode<S extends object>(
 	validateExternalRunId(runId, config.name);
 	const cwd = process.cwd();
 	const runDir = resolveRunDir(cwd, config.name, runId, config.runDirRoot);
-	if (!fs.existsSync(runDir)) {
-		throw new StateMissingError(`RUN_DIR does not exist: ${runDir}`, {
+	// Resume can create the SQLite authority while migrating a legacy
+	// state.json and can establish a fresh ownership handle.  It therefore
+	// participates in the same per-run namespace mutex as initial bootstrap
+	// and retention cleanup, before inspecting or opening the canonical path.
+	const namespaceMutexResult = acquireRunNamespaceMutex({
+		driver: nodeSqliteDriver,
+		mutexPath: resolveNamespaceMutexPath(path.dirname(runDir), runId),
+		busyTimeoutMs: NAMESPACE_MUTEX_BUSY_TIMEOUT_MS,
+	});
+	if (namespaceMutexResult.kind !== "ACQUIRED") {
+		throw new ProtocolError(
+			`namespace mutex unavailable for runId ${runId}: ${namespaceMutexResult.kind}`,
+			{ runId, orchestratorName: config.name },
+		);
+	}
+	const namespaceMutex = namespaceMutexResult.handle;
+	const logger = createLogger(config.logging);
+	let runDb: ReturnType<typeof openRunDatabase> | null = null;
+	let handle: import("../persistence/sqlite/ownership.js").LockHandle | null =
+		null;
+	try {
+		let runDirStat: fs.Stats;
+		try {
+			runDirStat = fs.lstatSync(runDir);
+		} catch (error) {
+			throw new StateMissingError(`RUN_DIR does not exist: ${runDir}`, {
+				runId,
+				orchestratorName: config.name,
+				cause: error,
+			});
+		}
+		if (runDirStat.isSymbolicLink() || !runDirStat.isDirectory()) {
+			throw new StateMissingError(
+				`RUN_DIR is not a real directory: ${runDir}`,
+				{ runId, orchestratorName: config.name },
+			);
+		}
+		const dbPath = path.join(runDir, DB_FILENAME);
+		const dbExists = fs.existsSync(dbPath);
+		// Centralized ownership-storage compatibility guard.
+		// Applied BEFORE any DB creation, ownership acquisition, fence token
+		// increment, state projection, or phase execution.
+		//
+		// existsSync(".lock") is a defensive best-effort check, NOT an atomic
+		// inter-version lock.  A legacy process starting concurrently with
+		// migration is an operational concern (see docs/sqlite-ownership-migration.md).
+		assertOwnershipStorageCompatibility({
+			runDir,
+			sqliteDatabaseExists: dbExists,
+			mode: "resume",
 			runId,
 			orchestratorName: config.name,
 		});
-	}
-	const logger = createLogger(config.logging);
-	const dbPath = path.join(runDir, DB_FILENAME);
-	const dbExists = fs.existsSync(dbPath);
-	// Centralized ownership-storage compatibility guard.
-	// Applied BEFORE any DB creation, ownership acquisition, fence token
-	// increment, state projection, or phase execution.
-	//
-	// existsSync(".lock") is a defensive best-effort check, NOT an atomic
-	// inter-version lock.  A legacy process starting concurrently with
-	// migration is an operational concern (see docs/sqlite-ownership-migration.md).
-	assertOwnershipStorageCompatibility({
-		runDir,
-		sqliteDatabaseExists: dbExists,
-		mode: "resume",
-		runId,
-		orchestratorName: config.name,
-	});
-	let runDb: ReturnType<typeof openRunDatabase>;
-	let handle: import("../persistence/sqlite/ownership.js").LockHandle;
-	if (!dbExists) {
-		// Legacy migration path: state.json exists but no SQLite DB.
-		// readStateSnapshot now throws StateMigrationBlockedError with the
-		// specific reason when v3→v4 migration cannot complete.
-		let snapshot: ReturnType<typeof readStateSnapshot<S>>;
-		try {
-			snapshot = readStateSnapshot<S>(runDir, config.stateSchema);
-		} catch (err) {
-			if (err instanceof StateMigrationBlockedError) {
-				throw new StateMigrationBlockedError(
-					`v3→v4 migration incomplete — cannot create authoritative SQLite DB: ${err.message}`,
-					{
-						reason: err.reason,
-						runId,
-						orchestratorName: config.name,
-					},
-				);
-			}
-			throw err;
-		}
-		if (snapshot.state === null) {
-			throw new StateMissingError("state.json missing at RUN_DIR", {
-				runId,
-				orchestratorName: config.name,
-			});
-		}
-		// Validate identity BEFORE creating the DB — a mismatched legacy
-		// state.json must not be silently reassigned to a different run.
-		if (snapshot.state.runId !== runId) {
-			throw new ProtocolError(
-				`RUN_DIR mismatch — state.runId=${snapshot.state.runId}, argv.runId=${runId}`,
-				{ runId, orchestratorName: config.name },
-			);
-		}
-		if (snapshot.state.orchestratorName !== config.name) {
-			throw new ProtocolError(
-				`orchestrator name mismatch — state.orchestratorName=${snapshot.state.orchestratorName}, config.name=${config.name}`,
-				{ runId, orchestratorName: config.name },
-			);
-		}
-		// snapshot.state.schemaVersion is guaranteed to be STATE_SCHEMA_VERSION
-		// because readStateSnapshot now throws on blocked migration.
-		//
-		// seedLegacyStateToSqlite opens the DB, pre-creates the incarnation
-		// with the legacy startedAt, acquires ownership at the current time,
-		// seeds the state, and returns the open connection + active handle.
-		// We continue with the same connection — no double open/acquire cycle.
-		const seeded = seedLegacyStateToSqlite(runDir, runId, snapshot.state);
-		runDb = seeded.runDb;
-		handle = seeded.handle;
-	} else {
-		// DB file exists — open it first to determine whether the bootstrap
-		// completed or was interrupted by a crash.  The DB file can exist
-		// without an authoritative state row if the previous process crashed
-		// between schema creation and the fenced initial state establishment.
-		runDb = openRunDatabase({
-			driver: nodeSqliteDriver,
-			dbPath,
-			busyTimeoutMs: 2000,
-		});
-		const preRead = readAuthoritativeState<S>(runDb.connection);
-		if (preRead.state !== null) {
-			// Validate identity BEFORE acquiring ownership — a DB placed
-			// in the wrong RUN_DIR must be rejected before we take the
-			// lock and before we project state.json.
-			if (preRead.state.runId !== runId) {
-				runDb.close();
-				throw new ProtocolError(
-					`DB identity mismatch — incarnation runId=${preRead.state.runId}, argv.runId=${runId}`,
-					{ runId, orchestratorName: config.name },
-				);
-			}
-			if (preRead.state.orchestratorName !== config.name) {
-				runDb.close();
-				throw new ProtocolError(
-					`DB identity mismatch — incarnation orchestratorName=${preRead.state.orchestratorName}, config.name=${config.name}`,
-					{ runId, orchestratorName: config.name },
-				);
-			}
-			// Fully bootstrapped — acquire ownership normally.
-			const nowEpoch = clock.nowEpochMs();
-			const nowIso = clock.nowWallIso();
-			const acquireResult = acquireOwnership({
-				db: runDb.connection,
-				runId,
-				orchestratorName: config.name,
-				nowEpochMs: nowEpoch,
-				nowIso,
-				leaseDurationMs: 30 * 60 * 1000,
-				contentionDeadlineMs: 5000,
-			});
-			if (acquireResult.kind === "ACTIVE_CONFLICT") {
-				runDb.close();
-				emitRunLockedError(
-					new RunLockedError(
-						`Run is locked by PID ${acquireResult.ownerPid}, lease until ${new Date(acquireResult.leaseUntilEpochMs).toISOString()}`,
-						{
-							ownerPid: acquireResult.ownerPid,
-							acquiredAtEpochMs: nowEpoch,
-							leaseUntilEpochMs: acquireResult.leaseUntilEpochMs,
-							runId,
-						},
-					),
-					config,
-					runId,
-					logger,
-				);
-				doExit(2);
-			}
-			if (acquireResult.kind === "RUN_RETIRING") {
-				runDb.close();
-				throw new ProtocolError(
-					"Run is retired by retention cleanup — no new ownership may be acquired",
-					{ runId, orchestratorName: config.name },
-				);
-			}
-			if (acquireResult.kind !== "ACQUIRED") {
-				runDb.close();
-				throw new ProtocolError(
-					`Failed to acquire ownership: ${acquireResult.kind}`,
-					{ runId, orchestratorName: config.name },
-				);
-			}
-			handle = acquireResult.handle;
-		} else {
-			// Incomplete bootstrap — the DB has schema tables but no
-			// authoritative state row.  Close this connection and recover
-			// via the legacy seed path, which is idempotent: the incarnation
-			// pre-creation uses INSERT OR IGNORE, acquireOwnership handles
-			// existing ownership rows via CAS, and seedLegacyStateToSqlite
-			// is idempotent (INSERT OR IGNORE).
-			runDb.close();
-			const legacyStatePath = path.join(runDir, "state.json");
-			if (!fs.existsSync(legacyStatePath)) {
-				throw new StateMissingError(
-					"SQLite DB exists but has no state row, and state.json is also missing",
-					{ runId, orchestratorName: config.name },
-				);
-			}
+		if (!dbExists) {
+			// Legacy migration path: state.json exists but no SQLite DB.
+			// readStateSnapshot now throws StateMigrationBlockedError with the
+			// specific reason when v3→v4 migration cannot complete.
 			let snapshot: ReturnType<typeof readStateSnapshot<S>>;
 			try {
 				snapshot = readStateSnapshot<S>(runDir, config.stateSchema);
 			} catch (err) {
 				if (err instanceof StateMigrationBlockedError) {
 					throw new StateMigrationBlockedError(
-						`v3→v4 migration incomplete — cannot recover incomplete SQLite bootstrap: ${err.message}`,
+						`v3→v4 migration incomplete — cannot create authoritative SQLite DB: ${err.message}`,
 						{
 							reason: err.reason,
 							runId,
@@ -671,12 +639,13 @@ async function runResumeMode<S extends object>(
 				throw err;
 			}
 			if (snapshot.state === null) {
-				throw new StateMissingError(
-					"state.json missing — cannot recover incomplete SQLite bootstrap",
-					{ runId, orchestratorName: config.name },
-				);
+				throw new StateMissingError("state.json missing at RUN_DIR", {
+					runId,
+					orchestratorName: config.name,
+				});
 			}
-			// Validate identity before seed.
+			// Validate identity BEFORE creating the DB — a mismatched legacy
+			// state.json must not be silently reassigned to a different run.
 			if (snapshot.state.runId !== runId) {
 				throw new ProtocolError(
 					`RUN_DIR mismatch — state.runId=${snapshot.state.runId}, argv.runId=${runId}`,
@@ -689,14 +658,172 @@ async function runResumeMode<S extends object>(
 					{ runId, orchestratorName: config.name },
 				);
 			}
-			// seedLegacyStateToSqlite is idempotent — it opens the DB,
-			// pre-creates the incarnation (INSERT OR IGNORE), acquires
-			// ownership (CAS), seeds the state (INSERT OR IGNORE), and
-			// returns the open connection + active handle.
+			// snapshot.state.schemaVersion is guaranteed to be STATE_SCHEMA_VERSION
+			// because readStateSnapshot now throws on blocked migration.
+			//
+			// seedLegacyStateToSqlite opens the DB, pre-creates the incarnation
+			// with the legacy startedAt, acquires ownership at the current time,
+			// seeds the state, and returns the open connection + active handle.
+			// We continue with the same connection — no double open/acquire cycle.
 			const seeded = seedLegacyStateToSqlite(runDir, runId, snapshot.state);
 			runDb = seeded.runDb;
 			handle = seeded.handle;
+		} else {
+			// DB file exists — open it first to determine whether the bootstrap
+			// completed or was interrupted by a crash.  The DB file can exist
+			// without an authoritative state row if the previous process crashed
+			// between schema creation and the fenced initial state establishment.
+			runDb = openRunDatabase({
+				driver: nodeSqliteDriver,
+				dbPath,
+				busyTimeoutMs: 2000,
+			});
+			const preRead = readAuthoritativeState<S>(runDb.connection);
+			if (preRead.state !== null) {
+				// Validate identity BEFORE acquiring ownership — a DB placed
+				// in the wrong RUN_DIR must be rejected before we take the
+				// lock and before we project state.json.
+				if (preRead.state.runId !== runId) {
+					runDb.close();
+					throw new ProtocolError(
+						`DB identity mismatch — incarnation runId=${preRead.state.runId}, argv.runId=${runId}`,
+						{ runId, orchestratorName: config.name },
+					);
+				}
+				if (preRead.state.orchestratorName !== config.name) {
+					runDb.close();
+					throw new ProtocolError(
+						`DB identity mismatch — incarnation orchestratorName=${preRead.state.orchestratorName}, config.name=${config.name}`,
+						{ runId, orchestratorName: config.name },
+					);
+				}
+				// Fully bootstrapped — acquire ownership normally.
+				const nowEpoch = clock.nowEpochMs();
+				const nowIso = clock.nowWallIso();
+				const acquireResult = acquireOwnership({
+					db: runDb.connection,
+					runId,
+					orchestratorName: config.name,
+					nowEpochMs: nowEpoch,
+					nowIso,
+					leaseDurationMs: 30 * 60 * 1000,
+					contentionDeadlineMs: 5000,
+				});
+				if (acquireResult.kind === "ACTIVE_CONFLICT") {
+					runDb.close();
+					emitRunLockedError(
+						new RunLockedError(
+							`Run is locked by PID ${acquireResult.ownerPid}, lease until ${new Date(acquireResult.leaseUntilEpochMs).toISOString()}`,
+							{
+								ownerPid: acquireResult.ownerPid,
+								acquiredAtEpochMs: nowEpoch,
+								leaseUntilEpochMs: acquireResult.leaseUntilEpochMs,
+								runId,
+							},
+						),
+						config,
+						runId,
+						logger,
+					);
+					doExit(2);
+				}
+				if (acquireResult.kind === "RUN_RETIRING") {
+					runDb.close();
+					throw new ProtocolError(
+						"Run is retired by retention cleanup — no new ownership may be acquired",
+						{ runId, orchestratorName: config.name },
+					);
+				}
+				if (acquireResult.kind !== "ACQUIRED") {
+					runDb.close();
+					throw new ProtocolError(
+						`Failed to acquire ownership: ${acquireResult.kind}`,
+						{ runId, orchestratorName: config.name },
+					);
+				}
+				handle = acquireResult.handle;
+			} else {
+				// Incomplete bootstrap — the DB has schema tables but no
+				// authoritative state row.  Close this connection and recover
+				// via the legacy seed path, which is idempotent: the incarnation
+				// pre-creation uses INSERT OR IGNORE, acquireOwnership handles
+				// existing ownership rows via CAS, and seedLegacyStateToSqlite
+				// is idempotent (INSERT OR IGNORE).
+				runDb.close();
+				const legacyStatePath = path.join(runDir, "state.json");
+				if (!fs.existsSync(legacyStatePath)) {
+					throw new StateMissingError(
+						"SQLite DB exists but has no state row, and state.json is also missing",
+						{ runId, orchestratorName: config.name },
+					);
+				}
+				let snapshot: ReturnType<typeof readStateSnapshot<S>>;
+				try {
+					snapshot = readStateSnapshot<S>(runDir, config.stateSchema);
+				} catch (err) {
+					if (err instanceof StateMigrationBlockedError) {
+						throw new StateMigrationBlockedError(
+							`v3→v4 migration incomplete — cannot recover incomplete SQLite bootstrap: ${err.message}`,
+							{
+								reason: err.reason,
+								runId,
+								orchestratorName: config.name,
+							},
+						);
+					}
+					throw err;
+				}
+				if (snapshot.state === null) {
+					throw new StateMissingError(
+						"state.json missing — cannot recover incomplete SQLite bootstrap",
+						{ runId, orchestratorName: config.name },
+					);
+				}
+				// Validate identity before seed.
+				if (snapshot.state.runId !== runId) {
+					throw new ProtocolError(
+						`RUN_DIR mismatch — state.runId=${snapshot.state.runId}, argv.runId=${runId}`,
+						{ runId, orchestratorName: config.name },
+					);
+				}
+				if (snapshot.state.orchestratorName !== config.name) {
+					throw new ProtocolError(
+						`orchestrator name mismatch — state.orchestratorName=${snapshot.state.orchestratorName}, config.name=${config.name}`,
+						{ runId, orchestratorName: config.name },
+					);
+				}
+				// seedLegacyStateToSqlite is idempotent — it opens the DB,
+				// pre-creates the incarnation (INSERT OR IGNORE), acquires
+				// ownership (CAS), seeds the state (INSERT OR IGNORE), and
+				// returns the open connection + active handle.
+				const seeded = seedLegacyStateToSqlite(runDir, runId, snapshot.state);
+				runDb = seeded.runDb;
+				handle = seeded.handle;
+			}
 		}
+	} catch (setupError) {
+		// No resume path may leave the namespace mutex open.  If ownership
+		// was already published, release it before closing the run database;
+		// otherwise only the partially opened database needs closing.
+		if (runDb !== null && handle !== null) {
+			releaseOwnership({ db: runDb.connection, handle });
+			runDb.close();
+		} else {
+			runDb?.close();
+		}
+		namespaceMutex.rollbackAndRelease();
+		throw setupError;
+	}
+	// The namespace mutex remains held through the complete resume setup
+	// below: v3→v4 migration may install artifacts and state projection may
+	// create canonical subdirectories.  It is released only immediately
+	// before phase execution; later filesystem writes are independently
+	// fenced by SQLite.
+	if (runDb === null || handle === null) {
+		throw new ProtocolError(
+			"internal error: resume artifacts missing after setup",
+			{ runId, orchestratorName: config.name },
+		);
 	}
 	// Read authoritative state from SQLite (defense-in-depth — should
 	// always succeed after the paths above).
@@ -723,6 +850,18 @@ async function runResumeMode<S extends object>(
 			const migrationResult = migrateV3ToV4(
 				readResult.state as unknown as Record<string, unknown>,
 				runDir,
+				(artifact) =>
+					installPreparedArtifactFenced(
+						{
+							runDb,
+							handle,
+							runDir,
+							runId,
+							config: { name: config.name },
+							currentPhase: readResult.state?.currentPhase ?? null,
+						},
+						artifact,
+					),
 			);
 			if (migrationResult.kind === "MIGRATED") {
 				const maybeMigrated = migrationResult.state;
@@ -803,15 +942,26 @@ async function runResumeMode<S extends object>(
 				{ runId, orchestratorName: config.name },
 			);
 		}
-		fs.mkdirSync(path.join(runDir, "external-requests"), { recursive: true });
-		fs.mkdirSync(path.join(runDir, "external-results"), { recursive: true });
-		fs.mkdirSync(path.join(runDir, "accepted-external-resolutions"), {
-			recursive: true,
-		});
-		fs.mkdirSync(path.join(runDir, "artifacts", "sha256"), {
-			recursive: true,
-		});
+		ensureDirectoryPathWithoutSymlinks(
+			path.join(runDir, "external-requests"),
+			runDir,
+		);
+		ensureDirectoryPathWithoutSymlinks(
+			path.join(runDir, "external-results"),
+			runDir,
+		);
+		ensureDirectoryPathWithoutSymlinks(
+			path.join(runDir, "accepted-external-resolutions"),
+			runDir,
+		);
+		ensureDirectoryPathWithoutSymlinks(
+			path.join(runDir, "artifacts", "sha256"),
+			runDir,
+		);
 		logger.enableDiskEmit(path.join(runDir, "events.ndjson"));
+		// All canonical-path establishment and setup I/O is complete.  Do
+		// not hold the namespace mutex during phase execution.
+		namespaceMutex.release();
 		const abortController = new AbortController();
 		const ctx: DispatchContext<S> = {
 			config,
@@ -833,6 +983,9 @@ async function runResumeMode<S extends object>(
 		// Internal branches MUST NOT release or close; they just throw.
 		const releaseResult = releaseOwnership({ db: runDb.connection, handle });
 		runDb.close();
+		// Idempotent after the normal pre-dispatch release; this also closes
+		// the mutex when setup failed before reaching that boundary.
+		namespaceMutex.rollbackAndRelease();
 		if (
 			releaseResult.kind !== "SUCCESS" &&
 			releaseResult.kind !== "STALE_HANDLE"

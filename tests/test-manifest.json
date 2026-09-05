@@ -1,6 +1,6 @@
 {
 	"version": 1,
-	"expectedFiles": 51,
+	"expectedFiles": 54,
 	"testFiles": [
 		"tests/bindings/batch-binding.test.ts",
 		"tests/bindings/external-request-binding.test.ts",
@@ -39,6 +39,7 @@
 		"tests/persistence/node-sqlite-driver.test.ts",
 		"tests/persistence/ownership-refresh-release.test.ts",
 		"tests/persistence/ownership.test.ts",
+		"tests/persistence/retired-run-inspection.test.ts",
 		"tests/persistence/run-state-store.test.ts",
 		"tests/persistence/v3v4-migration.test.ts",
 		"tests/services/abortable-sleep.test.ts",
@@ -48,9 +49,11 @@
 		"tests/services/immutable-file.test.ts",
 		"tests/services/json-value.test.ts",
 		"tests/services/protocol.test.ts",
+		"tests/services/retirement-journal.test.ts",
 		"tests/services/retry-resolver.test.ts",
 		"tests/services/run-dir.test.ts",
 		"tests/services/run-id.test.ts",
+		"tests/services/run-namespace-mutex.test.ts",
 		"tests/services/state-io.test.ts",
 		"tests/services/validator.test.ts"
 	]

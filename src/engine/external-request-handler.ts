@@ -1,16 +1,14 @@
 import * as path from "node:path";
 import { externalRequestBinding } from "../bindings/external-request.js";
 import { ProtocolError } from "../errors/concrete.js";
-import {
-	installPreparedArtifact,
-	prepareJsonArtifact,
-} from "../services/artifact-store.js";
+import { prepareJsonArtifact } from "../services/artifact-store.js";
 import { clock } from "../services/clock.js";
 import type {
 	PendingExternalRequestRecord,
 	StateFile,
 } from "../services/state-io.js";
 import type { PhaseResult } from "../types/phase.js";
+import { installPreparedArtifactFenced } from "./artifact-commit.js";
 import { type DispatchContext, doExit, isTestExitSignal } from "./context.js";
 import { assertExternalRequest } from "./external-request-validation.js";
 import { clearPendingYield } from "./pending-yield.js";
@@ -74,7 +72,7 @@ export async function handleExternalRequest<S extends object>(
 			manifest,
 		);
 		// 2. Install immutable blob.
-		installPreparedArtifact(ctx.runDir, prepared);
+		installPreparedArtifactFenced(ctx, prepared);
 		// 3. Build the protocol block in memory (not emitted yet).
 		const canonicalManifestPath = path.join(
 			ctx.runDir,

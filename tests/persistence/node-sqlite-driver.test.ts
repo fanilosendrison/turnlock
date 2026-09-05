@@ -111,6 +111,7 @@ describe("run-database", () => {
 		};
 		const driver: SqliteDriver = {
 			open: () => connection,
+			openReadOnly: () => connection,
 		};
 		const runDb = openRunDatabase({
 			driver,
@@ -144,6 +145,79 @@ describe("run-database", () => {
 			assert.strictEqual(jm?.journal_mode, "wal");
 			assert.strictEqual(sync?.synchronous, 2); // FULL = 2
 			runDb.close();
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+});
+
+describe("openReadOnly", () => {
+	test("missing database → open fails and the file is never created", () => {
+		const dir = makeTempDir();
+		const dbPath = join(dir, "missing.sqlite3");
+		try {
+			assert.strictEqual(existsSync(dbPath), false);
+			assert.throws(() => nodeSqliteDriver.openReadOnly(dbPath));
+			assert.strictEqual(
+				existsSync(dbPath),
+				false,
+				"read-only open must never create the database file",
+			);
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("reads an existing database and refuses mutations", () => {
+		const dir = makeTempDir();
+		const dbPath = join(dir, "test.sqlite3");
+		try {
+			const writable = nodeSqliteDriver.open(dbPath);
+			writable.exec("CREATE TABLE t (x INTEGER)");
+			writable.prepare("INSERT INTO t (x) VALUES (?) ").run(7);
+			writable.close();
+			const readOnly = nodeSqliteDriver.openReadOnly(dbPath);
+			try {
+				const row = readOnly.prepare("SELECT x FROM t").get() as
+					| {
+							x: number;
+					  }
+					| undefined;
+				assert.strictEqual(row?.x, 7);
+				assert.throws(() =>
+					readOnly.prepare("INSERT INTO t (x) VALUES (8)").run(),
+				);
+			} finally {
+				readOnly.close();
+			}
+			// The database content is unchanged.
+			const probe = nodeSqliteDriver.openReadOnly(dbPath);
+			try {
+				const count = probe.prepare("SELECT COUNT(*) AS n FROM t").get() as
+					| { n: number }
+					| undefined;
+				assert.strictEqual(count?.n, 1);
+			} finally {
+				probe.close();
+			}
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+
+	test("journal_mode pragma cannot be mutated through the read-only channel", () => {
+		const dir = makeTempDir();
+		const dbPath = join(dir, "test.sqlite3");
+		try {
+			const writable = nodeSqliteDriver.open(dbPath);
+			writable.exec("CREATE TABLE t (x INTEGER)");
+			writable.close();
+			const readOnly = nodeSqliteDriver.openReadOnly(dbPath);
+			try {
+				assert.throws(() => readOnly.exec("PRAGMA journal_mode = WAL"));
+			} finally {
+				readOnly.close();
+			}
 		} finally {
 			cleanupTempDir(dir);
 		}

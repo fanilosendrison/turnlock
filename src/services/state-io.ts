@@ -12,7 +12,11 @@ import {
 	StateMigrationBlockedError,
 	StateVersionMismatchError,
 } from "../errors/concrete.js";
-import type { ArtifactRef, TerminalDoneRecord } from "../types/artifacts.js";
+import type {
+	ArtifactRef,
+	PreparedArtifact,
+	TerminalDoneRecord,
+} from "../types/artifacts.js";
 import { installPreparedArtifact } from "./artifact-store.js";
 import { contentDigest, isContentDigest } from "./content-digest.js";
 import { summarizeZodError } from "./validator.js";
@@ -580,6 +584,8 @@ export type MigrationResult =
 export function migrateV3ToV4(
 	parsed: Record<string, unknown>,
 	runDir: string,
+	installArtifact: (artifact: PreparedArtifact) => void = (artifact) =>
+		installArtifactBlob(runDir, artifact),
 ): MigrationResult {
 	const migrated: Record<string, unknown> = {
 		...parsed,
@@ -608,7 +614,7 @@ export function migrateV3ToV4(
 						digest,
 						readResult.bytes,
 					);
-					installArtifactBlob(runDir, ref, readResult.bytes);
+					installArtifact({ ref, bytes: readResult.bytes });
 					pd.manifestArtifact = ref;
 					delete pd.manifestPath;
 				} else {
@@ -653,7 +659,7 @@ export function migrateV3ToV4(
 							digest,
 							readResult.bytes,
 						);
-						installArtifactBlob(runDir, ref, readResult.bytes);
+						installArtifact({ ref, bytes: readResult.bytes });
 						per.manifestArtifact = ref;
 						delete per.manifestPath;
 						delete per.manifestDigest;
@@ -740,12 +746,8 @@ function tryReadManifestBytesWithReason(filePath: string): ManifestReadResult {
 }
 /** Install artifact bytes as an immutable blob.  Delegates to the
  *  canonical artifact-store primitive.  Idempotent. */
-function installArtifactBlob(
-	runDir: string,
-	ref: ArtifactRef,
-	bytes: Uint8Array,
-): void {
-	installPreparedArtifact(runDir, { ref, bytes });
+function installArtifactBlob(runDir: string, artifact: PreparedArtifact): void {
+	installPreparedArtifact(runDir, artifact);
 }
 /** Build an ArtifactRef from content bytes without performing I/O.
  *  The relativePath is derived from the digest. */

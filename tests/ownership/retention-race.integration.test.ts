@@ -12,8 +12,13 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import { STATE_SCHEMA_VERSION } from "../../src/constants.js";
 import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
+import { claimRunForRetentionDeletion } from "../../src/persistence/sqlite/retention-claim.js";
 import { bootstrapNewRunAtomic } from "../../src/persistence/sqlite/run-bootstrap.js";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
+import {
+	renameRunDirectoryToRetired,
+	retireRunDirectory,
+} from "../../src/services/run-retirement.js";
 import { spawnNode } from "../helpers/node-subprocess.js";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
@@ -81,7 +86,58 @@ function spawnWorker(
 }
 
 describe("retention cleanup vs takeover race", () => {
-	test("exactly one side wins; ACQUIRED and deletion are mutually exclusive", {
+	test("retries a durable claim after filesystem identity verification defers cleanup", () => {
+		const root = makeTempDir();
+		const runDir = join(root, "runs", ORCHESTRATOR_NAME, RUN_ID);
+		try {
+			seedExpiredForeignRun(runDir);
+			const claim = claimRunForRetentionDeletion({
+				driver: nodeSqliteDriver,
+				dbPath: join(runDir, "turnlock.sqlite3"),
+				runId: RUN_ID,
+				expectedOrchestratorName: ORCHESTRATOR_NAME,
+				busyTimeoutMs: 2000,
+				contentionDeadlineMs: 5000,
+			});
+			assert.strictEqual(claim.kind, "CLAIMED");
+			if (claim.kind !== "CLAIMED" || claim.databaseIdentity === null) {
+				throw new Error("retention claim did not capture filesystem identity");
+			}
+			const staleIdentity = {
+				...claim.databaseIdentity,
+				dbIno: (BigInt(claim.databaseIdentity.dbIno) + 1n).toString(),
+			};
+
+			assert.deepStrictEqual(
+				renameRunDirectoryToRetired({
+					driver: nodeSqliteDriver,
+					runDir,
+					runId: RUN_ID,
+					retirementToken: claim.retirementToken,
+					incarnationId: claim.incarnationId,
+					expectedOrchestratorName: ORCHESTRATOR_NAME,
+					databaseIdentity: staleIdentity,
+				}),
+				{ kind: "MISMATCH" },
+			);
+			assert.strictEqual(existsSync(runDir), true);
+
+			assert.deepStrictEqual(
+				retireRunDirectory({
+					driver: nodeSqliteDriver,
+					runDir,
+					runId: RUN_ID,
+					orchestratorName: ORCHESTRATOR_NAME,
+				}),
+				{ kind: "DELETED" },
+			);
+			assert.strictEqual(existsSync(runDir), false);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("exactly one durable side wins and deferred cleanup completes", {
 		timeout: 120000,
 	}, async () => {
 		const ROUNDS = 5;
@@ -106,6 +162,8 @@ describe("retention cleanup vs takeover race", () => {
 					spawnWorker(workerScript, ["--cleanup"], env),
 					spawnWorker(workerScript, ["--resume"], env),
 				]);
+				assert.strictEqual(cleanupProc.exitCode, 0);
+				assert.strictEqual(resumeProc.exitCode, 0);
 				const cleanupReport = JSON.parse(cleanupProc.stdout.trim()) as {
 					outcome: string;
 					reason?: string;
@@ -121,25 +179,41 @@ describe("retention cleanup vs takeover race", () => {
 					!(resumeReport.result === "ACQUIRED" && !dirExists),
 					`round ${round}: ACQUIRED LockHandle + RUN_DIR deleted — forbidden: ${JSON.stringify({ cleanupReport, resumeReport })}`,
 				);
-				// Exactly one side wins.
-				const resumeWon = resumeReport.result === "ACQUIRED";
-				const cleanupWon = cleanupReport.outcome === "DELETED";
-				assert.ok(
-					resumeWon !== cleanupWon,
-					`round ${round}: exactly one side must win — resume=${resumeReport.result} cleanup=${JSON.stringify(cleanupReport)}`,
+
+				const resumeWon =
+					resumeReport.result === "ACQUIRED" &&
+					cleanupReport.outcome === "KEPT" &&
+					cleanupReport.reason === "LIVE_OWNER";
+				const cleanupCompleted =
+					cleanupReport.outcome === "DELETED" &&
+					["RUN_RETIRING", "MISSING"].includes(resumeReport.result);
+				const cleanupDeferred =
+					resumeReport.result === "RUN_RETIRING" &&
+					cleanupReport.outcome === "KEPT" &&
+					cleanupReport.reason === "IDENTITY_MISMATCH";
+				assert.strictEqual(
+					[resumeWon, cleanupCompleted, cleanupDeferred].filter(Boolean).length,
+					1,
+					`round ${round}: exactly one recognized durable outcome is required — resume=${resumeReport.result} cleanup=${JSON.stringify(cleanupReport)}`,
 				);
-				if (cleanupWon) {
-					assert.ok(
-						!dirExists,
-						`round ${round}: cleanup won, canonical path must be vacated`,
-					);
+
+				if (cleanupCompleted) {
+					assert.strictEqual(dirExists, false);
 					assert.strictEqual(cleanupReport.canonicalExists, false);
 				} else {
-					assert.ok(
-						dirExists,
-						`round ${round}: resume won, directory must survive: ${JSON.stringify({ cleanupReport, resumeReport })}`,
-					);
-					assert.strictEqual(cleanupReport.outcome, "KEPT");
+					assert.strictEqual(dirExists, true);
+					assert.strictEqual(cleanupReport.canonicalExists, true);
+				}
+
+				if (cleanupDeferred) {
+					const retry = retireRunDirectory({
+						driver: nodeSqliteDriver,
+						runDir,
+						runId: RUN_ID,
+						orchestratorName: ORCHESTRATOR_NAME,
+					});
+					assert.deepStrictEqual(retry, { kind: "DELETED" });
+					assert.strictEqual(existsSync(runDir), false);
 				}
 			} finally {
 				cleanupTempDir(root);

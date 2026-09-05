@@ -51,10 +51,12 @@ import type { SqliteDriver } from "./sqlite-driver.js";
 /** Filesystem identity (dev/ino) of the directory and database a claim
  *  referred to.  Captured while the SQLite connection was still open. */
 export interface RunDatabaseFilesystemIdentity {
-	readonly dirDev: number;
-	readonly dirIno: number;
-	readonly dbDev: number;
-	readonly dbIno: number;
+	/** Decimal strings keep filesystem identities exact on platforms where
+	 *  inode/device values exceed JavaScript's safe-integer range. */
+	readonly dirDev: string;
+	readonly dirIno: string;
+	readonly dbDev: string;
+	readonly dbIno: string;
 }
 
 /** Typed result of attempting the durable retirement claim. */
@@ -66,7 +68,11 @@ export type RunRetentionClaimResult =
 			 *  the identified directory object. */
 			readonly kind: "CLAIMED";
 			readonly fenceToken: bigint;
+			readonly runId: string;
+			readonly incarnationId: string;
+			readonly orchestratorName: string;
 			readonly retirementToken: string;
+			readonly retirementClaimedAtEpochMs: number;
 			readonly databaseIdentity: RunDatabaseFilesystemIdentity | null;
 	  }
 	| {
@@ -75,7 +81,11 @@ export type RunRetentionClaimResult =
 			 *  Filesystem retirement may be resumed.  The persisted
 			 *  retirement token was validated. */
 			readonly kind: "ALREADY_RETIRING";
+			readonly runId: string;
+			readonly incarnationId: string;
+			readonly orchestratorName: string;
 			readonly retirementToken: string;
+			readonly retirementClaimedAtEpochMs: number;
 			readonly databaseIdentity: RunDatabaseFilesystemIdentity | null;
 	  }
 	| {
@@ -101,6 +111,9 @@ export interface ClaimRunForRetentionDeletionParams {
 	readonly driver: SqliteDriver;
 	readonly dbPath: string;
 	readonly runId: string;
+	/** The namespace that owns the canonical path.  When supplied, the
+	 *  database incarnation must prove this exact orchestrator name. */
+	readonly expectedOrchestratorName?: string;
 	readonly busyTimeoutMs: number;
 	readonly contentionDeadlineMs: number;
 	/** Optional clock for lease-critical timestamp capture after
@@ -112,18 +125,30 @@ function captureDatabaseIdentity(
 	dbPath: string,
 ): RunDatabaseFilesystemIdentity | null {
 	try {
-		const dbStat = fs.lstatSync(dbPath);
-		const dirStat = fs.lstatSync(path.dirname(dbPath));
+		const dbStat = fs.lstatSync(dbPath, { bigint: true });
+		const dirStat = fs.lstatSync(path.dirname(dbPath), { bigint: true });
 		if (dbStat.isSymbolicLink() || dirStat.isSymbolicLink()) return null;
 		return {
-			dirDev: dirStat.dev,
-			dirIno: dirStat.ino,
-			dbDev: dbStat.dev,
-			dbIno: dbStat.ino,
+			dirDev: dirStat.dev.toString(),
+			dirIno: dirStat.ino.toString(),
+			dbDev: dbStat.dev.toString(),
+			dbIno: dbStat.ino.toString(),
 		};
 	} catch {
 		return null;
 	}
+}
+
+function databaseIdentitiesEqual(
+	left: RunDatabaseFilesystemIdentity,
+	right: RunDatabaseFilesystemIdentity,
+): boolean {
+	return (
+		left.dirDev === right.dirDev &&
+		left.dirIno === right.dirIno &&
+		left.dbDev === right.dbDev &&
+		left.dbIno === right.dbIno
+	);
 }
 
 /** Validate an already-RETIRING database before authorizing filesystem
@@ -135,7 +160,8 @@ function captureDatabaseIdentity(
  *  integrity failure: the caller must KEEP, never delete. */
 function validateRetiredStateInTransaction(
 	db: Parameters<typeof readOwnershipPredecessor>[0],
-): string | null {
+	expectedIncarnationId: string,
+): { token: string; claimedAtEpochMs: number } | null {
 	const retention = readRetentionRow(db);
 	if (
 		retention === null ||
@@ -152,30 +178,19 @@ function validateRetiredStateInTransaction(
 	const ownership = readOwnershipPredecessor(db);
 	if (ownership === null) return null;
 	if (
+		ownership.incarnationId !== expectedIncarnationId ||
 		ownership.status !== "FREE" ||
 		ownership.ownerToken !== null ||
+		ownership.ownerPid !== null ||
+		ownership.acquiredAtEpochMs !== null ||
 		ownership.leaseUntilEpochMs !== null
 	) {
 		return null;
 	}
-	const ownerMeta = db
-		.prepare(
-			"SELECT owner_pid, acquired_at_epoch_ms FROM run_ownership WHERE singleton = 1",
-		)
-		.get() as
-		| {
-				owner_pid: number | null;
-				acquired_at_epoch_ms: number | null;
-		  }
-		| undefined;
-	if (
-		ownerMeta === undefined ||
-		ownerMeta.owner_pid !== null ||
-		ownerMeta.acquired_at_epoch_ms !== null
-	) {
-		return null;
-	}
-	return retention.retirementToken;
+	return {
+		token: retention.retirementToken,
+		claimedAtEpochMs: retention.retirementClaimedAtEpochMs,
+	};
 }
 
 /** Atomically claim a run for retention deletion.
@@ -206,6 +221,18 @@ export function claimRunForRetentionDeletion(
 			reason: "no SQLite authority — legacy RUN_DIR kept (fail-closed)",
 		};
 	}
+	// Check the canonical database path before opening it.  A symlink or
+	// non-regular file could otherwise redirect openRunDatabase() to a
+	// different valid authority and let this claim fence that foreign run
+	// before the later rename identity check rejects deletion.
+	const identityBeforeOpen = captureDatabaseIdentity(params.dbPath);
+	if (identityBeforeOpen === null) {
+		return {
+			kind: "UNKNOWN",
+			reason:
+				"SQLite authority path is unsafe or has no stable filesystem identity",
+		};
+	}
 	let runDb: ReturnType<typeof openRunDatabase> | undefined;
 	try {
 		runDb = openRunDatabase({
@@ -217,6 +244,20 @@ export function claimRunForRetentionDeletion(
 		return { kind: "DB_FAILURE", cause: error };
 	}
 	const db = runDb.connection;
+	// Opening may run the normal schema setup pragmas.  Before entering the
+	// retirement transaction, ensure the path still denotes the same regular
+	// database and canonical directory observed above.
+	const identityAfterOpen = captureDatabaseIdentity(params.dbPath);
+	if (
+		identityAfterOpen === null ||
+		!databaseIdentitiesEqual(identityBeforeOpen, identityAfterOpen)
+	) {
+		runDb.close();
+		return {
+			kind: "UNKNOWN",
+			reason: "SQLite authority filesystem identity changed before claim",
+		};
+	}
 	try {
 		const deadlineMs = performance.now() + params.contentionDeadlineMs;
 		for (;;) {
@@ -240,10 +281,14 @@ export function claimRunForRetentionDeletion(
 			// 1. Identity — a DB claiming a different run must never be
 			//    retired as if it belonged to this directory.
 			const incarnationRow = db
-				.prepare("SELECT run_id FROM run_incarnation WHERE singleton = 1")
+				.prepare(
+					"SELECT run_id, incarnation_id, orchestrator_name FROM run_incarnation WHERE singleton = 1",
+				)
 				.get() as
 				| {
 						run_id: string;
+						incarnation_id: string;
+						orchestrator_name: string;
 				  }
 				| undefined;
 			if (incarnationRow === undefined) {
@@ -255,6 +300,23 @@ export function claimRunForRetentionDeletion(
 				return {
 					kind: "UNKNOWN",
 					reason: `run identity mismatch: directory ${params.runId}, database ${incarnationRow.run_id}`,
+				};
+			}
+			if (
+				params.expectedOrchestratorName !== undefined &&
+				incarnationRow.orchestrator_name !== params.expectedOrchestratorName
+			) {
+				rollback(db);
+				return {
+					kind: "UNKNOWN",
+					reason: `orchestrator identity mismatch: expected ${params.expectedOrchestratorName}, database ${incarnationRow.orchestrator_name}`,
+				};
+			}
+			if (!incarnationRow.incarnation_id || !incarnationRow.orchestrator_name) {
+				rollback(db);
+				return {
+					kind: "UNKNOWN",
+					reason: "run incarnation identity incomplete",
 				};
 			}
 			// 2. Retention state.
@@ -273,9 +335,12 @@ export function claimRunForRetentionDeletion(
 			if (retention.retentionStatus === RETENTION_STATUS_RETIRING) {
 				// Already retired — validate the persisted state BEFORE
 				// authorizing a filesystem retirement resume.
-				const persistedToken = validateRetiredStateInTransaction(db);
+				const persisted = validateRetiredStateInTransaction(
+					db,
+					incarnationRow.incarnation_id,
+				);
 				rollback(db);
-				if (persistedToken === null) {
+				if (persisted === null) {
 					return {
 						kind: "UNKNOWN",
 						reason: "incoherent RETIRING state — deletion not authorized",
@@ -283,7 +348,11 @@ export function claimRunForRetentionDeletion(
 				}
 				return {
 					kind: "ALREADY_RETIRING",
-					retirementToken: persistedToken,
+					runId: incarnationRow.run_id,
+					incarnationId: incarnationRow.incarnation_id,
+					orchestratorName: incarnationRow.orchestrator_name,
+					retirementToken: persisted.token,
+					retirementClaimedAtEpochMs: persisted.claimedAtEpochMs,
 					databaseIdentity: captureDatabaseIdentity(params.dbPath),
 				};
 			}
@@ -301,14 +370,33 @@ export function claimRunForRetentionDeletion(
 					leaseUntilEpochMs: ownership.leaseUntilEpochMs,
 				};
 			}
-			const deletable =
-				ownership.status === "FREE" ||
-				(ownership.status === "HELD" && ownership.leaseUntilEpochMs !== null);
-			if (!deletable) {
+			const freeIsCoherent =
+				ownership.status === "FREE" &&
+				ownership.ownerToken === null &&
+				ownership.ownerPid === null &&
+				ownership.acquiredAtEpochMs === null &&
+				ownership.leaseUntilEpochMs === null;
+			const expiredHeldOwner =
+				ownership.status === "HELD" && ownership.leaseUntilEpochMs !== null;
+			if (!freeIsCoherent && !expiredHeldOwner) {
 				rollback(db);
 				return {
 					kind: "UNKNOWN",
 					reason: `incoherent ownership state: status=${ownership.status}, lease=${String(ownership.leaseUntilEpochMs)}`,
+				};
+			}
+			// Re-check the path immediately before the irreversible claim.
+			// Production callers hold the namespace mutex, while this second
+			// identity check also fails closed for direct/adversarial callers.
+			const identityBeforeClaim = captureDatabaseIdentity(params.dbPath);
+			if (
+				identityBeforeClaim === null ||
+				!databaseIdentitiesEqual(identityBeforeOpen, identityBeforeClaim)
+			) {
+				rollback(db);
+				return {
+					kind: "UNKNOWN",
+					reason: "SQLite authority filesystem identity changed before claim",
 				};
 			}
 			// 4. Irreversible retirement claim: fence the stale owner and
@@ -322,7 +410,11 @@ export function claimRunForRetentionDeletion(
 			return {
 				kind: "CLAIMED",
 				fenceToken,
+				runId: incarnationRow.run_id,
+				incarnationId: incarnationRow.incarnation_id,
+				orchestratorName: incarnationRow.orchestrator_name,
 				retirementToken,
+				retirementClaimedAtEpochMs: nowEpochMs,
 				// Captured while the connection is still open, after the
 				// COMMIT that made RETIRING durable.
 				databaseIdentity: captureDatabaseIdentity(params.dbPath),

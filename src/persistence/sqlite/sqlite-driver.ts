@@ -21,4 +21,15 @@ export type SqliteDriver = {
 	 * owned by the caller and must be closed explicitly.
 	 */
 	open(path: string): SqliteConnection;
+	/**
+	 * Open a database at `path` strictly READ-ONLY.
+	 *
+	 * Contract:
+	 *   - a missing file makes the open FAIL (never creates the file);
+	 *   - the connection can never run schema DDL, migrations, or
+	 *     pragma mutations.
+	 *
+	 * Used exclusively to inspect retired payload databases.
+	 */
+	openReadOnly(path: string): SqliteConnection;
 };

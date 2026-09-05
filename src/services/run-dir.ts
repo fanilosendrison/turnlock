@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { InvalidConfigError } from "../errors/concrete.js";
+import { RUN_NAMESPACE_DIR_NAME } from "./run-namespace-mutex.js";
 import {
 	RETIRED_DIR_NAME,
 	type RunRetirementOutcome,
@@ -44,14 +45,20 @@ export interface RunDirRetirement {
 	readonly retireRunDirectory: (
 		runDir: string,
 		runId: string,
+		orchestratorName?: string,
 	) => RunRetirementOutcome;
 	/**
 	 * Sweep the `.retired` area of one orchestrator namespace, finishing
 	 * or retrying deletions of already-retired incarnations.
 	 *
 	 * @param retiredRoot absolute path of the `.retired` directory
+	 * @param orchestratorName name of the owning orchestrator — used to
+	 *   cross-validate READY markers (foreign markers are kept)
 	 */
-	readonly sweepRetiredDirectories: (retiredRoot: string) => number;
+	readonly sweepRetiredDirectories: (
+		retiredRoot: string,
+		orchestratorName: string,
+	) => number;
 }
 export function resolveRunDir(
 	cwd: string,
@@ -80,8 +87,12 @@ export function cleanupOldRuns(
 	let deleted = 0;
 	const entries = fs.readdirSync(baseDir, { withFileTypes: true });
 	for (const entry of entries) {
-		// The retirement area is never a run candidate.
+		// The retirement area and namespace-mutex sidecars are never run
+		// candidates.  Sidecars are intentionally retained: unlinking a
+		// mutex while another process has an open handle would let a new
+		// inode bypass that handle and break serialization.
 		if (entry.name === RETIRED_DIR_NAME) continue;
+		if (entry.name === RUN_NAMESPACE_DIR_NAME) continue;
 		if (!entry.isDirectory()) continue;
 		if (entry.name === currentRunId) continue;
 		const runDir = path.join(baseDir, entry.name);
@@ -94,7 +105,11 @@ export function cleanupOldRuns(
 		if (stat.mtimeMs < thresholdEpoch) {
 			let outcome: RunRetirementOutcome;
 			try {
-				outcome = retirement.retireRunDirectory(runDir, entry.name);
+				outcome = retirement.retireRunDirectory(
+					runDir,
+					entry.name,
+					orchestratorName,
+				);
 			} catch {
 				// A retirement failure is an ambiguous state — fail closed
 				// and keep the directory rather than delete it.
@@ -108,7 +123,10 @@ export function cleanupOldRuns(
 	// deleted, or partially deleted).
 	const retiredRoot = path.join(baseDir, RETIRED_DIR_NAME);
 	try {
-		deleted += retirement.sweepRetiredDirectories(retiredRoot);
+		deleted += retirement.sweepRetiredDirectories(
+			retiredRoot,
+			orchestratorName,
+		);
 	} catch {
 		// best-effort — the sweep retries on the next cleanup
 	}

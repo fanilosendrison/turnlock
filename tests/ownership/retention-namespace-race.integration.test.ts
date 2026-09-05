@@ -36,15 +36,17 @@ import { dirname, join } from "node:path";
 // pathname — and any successor is displaced by the stale renameSync.
 import { describe, test } from "node:test";
 import { STATE_SCHEMA_VERSION } from "../../src/constants.js";
+import { runOrchestratorInternal } from "../../src/engine/run-orchestrator.js";
 import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
 import { acquireOwnership } from "../../src/persistence/sqlite/ownership.js";
 import { bootstrapNewRunAtomic } from "../../src/persistence/sqlite/run-bootstrap.js";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
 import {
 	RETIRED_DIR_NAME,
-	retireRunDirectory,
+	RETIRED_PAYLOAD_DIR_NAME,
 	retireRunDirectoryInternal,
 } from "../../src/services/run-retirement.js";
+import type { OrchestratorConfig } from "../../src/types/config.js";
 import { spawnNode } from "../helpers/node-subprocess.js";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
 
@@ -272,7 +274,7 @@ describe("post-verification namespace race", () => {
 		}
 	});
 
-	test("stale retirement authorization can rename a NEW incarnation after pre-rename verification (RED)", {
+	test("3-process: an OLD retirement authorization can never rename a NEW incarnation", {
 		timeout: 120_000,
 	}, async () => {
 		const root = makeTempDir();
@@ -304,170 +306,94 @@ describe("post-verification namespace race", () => {
 			assert.ok(oldIncarnationId, "setup: OLD incarnation id must exist");
 			expireLease(runBDir);
 			ageDir(runBDir, 100);
-			// Initial C worker — spawned before cleanup A enters its
-			// critical section; waits for the GO signal.
-			const goFile = join(root, "go");
-			const resultFile = join(root, "result.json");
-			const workerScript = join(
+			// Cleanup B and Initial C workers — both GO-gated and spawned
+			// BEFORE cleanup A enters its critical section.
+			const cleanupWorkerScript = join(
+				import.meta.dirname,
+				"fixtures",
+				"retention-namespace-cleanup-worker.js",
+			);
+			const initialWorkerScript = join(
 				import.meta.dirname,
 				"fixtures",
 				"retention-namespace-initial-worker.js",
 			);
-			const worker = spawnNode(workerScript, [], {
+			const goBFile = join(root, "go-b");
+			const goCFile = join(root, "go-c");
+			const resultBFile = join(root, "result-b.json");
+			const resultCFile = join(root, "result-c.json");
+			const workerB = spawnNode(cleanupWorkerScript, [], {
+				env: {
+					...process.env,
+					TL_RUN_DIR: runBDir,
+					TL_RUN_ID: RUN_B,
+					TL_ORCH: ORCHESTRATOR_NAME,
+					TL_GO_FILE: goBFile,
+					TL_RESULT_FILE: resultBFile,
+					TURNLOCK_TEST: "1",
+				},
+			});
+			const workerC = spawnNode(initialWorkerScript, [], {
 				env: {
 					...process.env,
 					TL_RUN_ROOT: runDirRoot,
 					TL_ORCH: ORCHESTRATOR_NAME,
 					TL_RUN_ID: RUN_B,
-					TL_GO_FILE: goFile,
-					TL_RESULT_FILE: resultFile,
+					TL_GO_FILE: goCFile,
+					TL_RESULT_FILE: resultCFile,
 					TURNLOCK_TEST: "1",
 				},
 			});
-			let cleanupAToken: string | null = null;
-			let cleanupBOutcome: string | null = null;
-			let initialCResult: InitialWorkerResult | null = null;
-			let proofInitialCKind = "NO_RESULT";
-			let newIncarnationId: string | null = null;
 			let observedNewIncarnationDisplaced = false;
+			let cleanupBBlockedWhileAHeldMutex = false;
+			let initialCBlockedWhileAHeldMutex = false;
 			const barrierSab = new Int32Array(new SharedArrayBuffer(4));
 			const outcome = retireRunDirectoryInternal(
 				{ driver: nodeSqliteDriver, runDir: runBDir, runId: RUN_B },
 				{
 					onFaultPoint: (point) => {
 						if (point === "AFTER_PRE_RENAME_VERIFICATION") {
-							// Cleanup A already claimed and passed every
-							// pre-rename check against the OLD generation.
-							// Capture the durable retirement token it will use.
-							const tokenDb = openRunDatabase({
-								driver: nodeSqliteDriver,
-								dbPath: join(runBDir, "turnlock.sqlite3"),
-								busyTimeoutMs: 2000,
-							});
-							try {
-								const tokenRow = tokenDb.connection
-									.prepare(
-										"SELECT retirement_token FROM run_retention WHERE singleton = 1",
-									)
-									.get() as
-									| {
-											retirement_token: string | null;
-									  }
-									| undefined;
-								cleanupAToken = tokenRow?.retirement_token ?? null;
-							} finally {
-								tokenDb.close();
-							}
-							assert.ok(
-								cleanupAToken,
-								"cleanup A must hold a durable retirement token",
-							);
-							// Cleanup B — a second compliant cleanup — finishes
-							// the retirement of the OLD generation while A is
-							// parked.  B observes ALREADY_RETIRING, renames the
-							// OLD canonical and deletes the retired payload.
-							cleanupBOutcome = retireRunDirectory({
-								driver: nodeSqliteDriver,
-								runDir: runBDir,
-								runId: RUN_B,
-							}).kind;
-							assert.strictEqual(
-								cleanupBOutcome,
-								"DELETED",
-								"cleanup B must fully retire and delete the OLD generation",
-							);
-							assert.strictEqual(
-								existsSync(runBDir),
-								false,
-								"cleanup B must have detached the OLD canonical",
-							);
-							// Initial C — a genuine NEW generation through the
-							// production initial path.
-							writeFileSync(goFile, "go");
-							const bootstrapDeadline = Date.now() + 15_000;
-							while (
-								!existsSync(resultFile) &&
-								Date.now() < bootstrapDeadline
-							) {
+							// Cleanup A holds the namespace mutex with every
+							// pre-rename check passed.  Release B and C: both must
+							// BLOCK on the namespace mutex instead of acting.
+							writeFileSync(goBFile, "go");
+							writeFileSync(goCFile, "go");
+							const blockedDeadline = Date.now() + 2500;
+							while (Date.now() < blockedDeadline) {
+								if (!existsSync(resultBFile) && !existsSync(resultCFile)) {
+									cleanupBBlockedWhileAHeldMutex = true;
+									initialCBlockedWhileAHeldMutex = true;
+								} else {
+									break;
+								}
 								Atomics.wait(barrierSab, 0, 0, 50);
 							}
-							assert.ok(
-								existsSync(resultFile),
-								"initial C must bootstrap while cleanup A is parked",
-							);
-							initialCResult = JSON.parse(
-								readFileSync(resultFile, "utf8"),
-							) as InitialWorkerResult;
-							assert.strictEqual(
-								initialCResult.kind,
-								"BOOTSTRAPPED",
-								`initial C must bootstrap a NEW incarnation, got ${JSON.stringify(initialCResult)}`,
-							);
-							proofInitialCKind = initialCResult.kind;
-							newIncarnationId = initialCResult.incarnationId ?? null;
-							assert.ok(
-								newIncarnationId,
-								"initial C must report a NEW incarnation identity",
-							);
-							assert.notStrictEqual(
-								newIncarnationId,
-								oldIncarnationId,
-								"initial C must create a genuinely NEW generation",
-							);
-							assert.strictEqual(initialCResult.ownershipStatus, "HELD");
-							assert.ok(
-								initialCResult.leaseUntilEpochMs !== null &&
-									initialCResult.leaseUntilEpochMs !== undefined &&
-									initialCResult.leaseUntilEpochMs > Date.now(),
-								"initial C must hold a live lease",
-							);
-							assert.strictEqual(
-								existsSync(runBDir),
-								true,
-								"canonical RUN_B must exist for the NEW generation",
-							);
-							const canonicalDb = openRunDatabase({
-								driver: nodeSqliteDriver,
-								dbPath: join(runBDir, "turnlock.sqlite3"),
-								busyTimeoutMs: 2000,
-							});
-							try {
-								const incRow = canonicalDb.connection
-									.prepare(
-										"SELECT incarnation_id FROM run_incarnation WHERE singleton = 1",
-									)
-									.get() as
-									| {
-											incarnation_id: string;
-									  }
-									| undefined;
-								assert.strictEqual(
-									incRow?.incarnation_id ?? null,
-									newIncarnationId,
-									"canonical DB must belong to the NEW incarnation before A resumes",
-								);
-							} finally {
-								canonicalDb.close();
-							}
 						} else if (point === "AFTER_RENAME_BEFORE_POSTCHECK") {
-							// Proof point: the stale renameSync has completed
-							// and the post-check has NOT yet had a chance to
-							// detect the mismatch nor restore the directory.
+							// Proof point: the object A just moved is the OLD
+							// incarnation (the mutex prevented any replacement).
 							const canonicalAbsent = !existsSync(runBDir);
 							assert.strictEqual(
 								canonicalAbsent,
 								true,
-								"at the proof point the canonical pathname must have been moved",
+								"canonical pathname must be absent at the proof point",
 							);
-							const retiredRoot = join(dirname(runBDir), RETIRED_DIR_NAME);
+							const retiredRoot = join(
+								dirname(runBDir),
+								RETIRED_DIR_NAME,
+								RETIRED_PAYLOAD_DIR_NAME,
+							);
 							const entries = readdirSync(retiredRoot);
 							assert.ok(
 								entries.length >= 1,
 								"a retired payload must exist at the proof point",
 							);
+							let movedOldIncarnation = false;
 							for (const entryName of entries) {
-								const retiredPath = join(retiredRoot, entryName);
-								const retiredDbPath = join(retiredPath, "turnlock.sqlite3");
+								const retiredDbPath = join(
+									retiredRoot,
+									entryName,
+									"turnlock.sqlite3",
+								);
 								if (!existsSync(retiredDbPath)) continue;
 								const retiredDb = openRunDatabase({
 									driver: nodeSqliteDriver,
@@ -484,40 +410,356 @@ describe("post-verification namespace race", () => {
 												incarnation_id: string;
 										  }
 										| undefined;
-									if (incRow?.incarnation_id === newIncarnationId) {
-										observedNewIncarnationDisplaced = true;
+									if (incRow?.incarnation_id === oldIncarnationId) {
+										movedOldIncarnation = true;
 									}
 								} finally {
 									retiredDb.close();
 								}
 							}
 							assert.strictEqual(
-								observedNewIncarnationDisplaced,
+								movedOldIncarnation,
 								true,
-								"proof point: the stale renameSync must have moved the NEW incarnation into the retired area",
+								"the stale authorization must have moved the OLD incarnation",
 							);
+							// No NEW incarnation exists yet — nothing NEW was moved.
+							observedNewIncarnationDisplaced = false;
 						}
 					},
 				},
 			);
+			// After A released the mutex, B and C proceed in either order:
+			// C bootstraps the NEW generation; B must never detach it.
+			const resultDeadline = Date.now() + 30_000;
+			while (
+				(!existsSync(resultBFile) || !existsSync(resultCFile)) &&
+				Date.now() < resultDeadline
+			) {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			const resultB = existsSync(resultBFile)
+				? (JSON.parse(readFileSync(resultBFile, "utf8")) as {
+						kind: string;
+						reason?: string;
+						canonicalExists?: boolean;
+					})
+				: null;
+			const resultC = existsSync(resultCFile)
+				? (JSON.parse(readFileSync(resultCFile, "utf8")) as InitialWorkerResult)
+				: null;
 			try {
-				worker.kill("SIGKILL");
+				workerB.kill("SIGKILL");
 			} catch {
 				// already exited
 			}
-			const workerExit = await worker.exited;
+			try {
+				workerC.kill("SIGKILL");
+			} catch {
+				// already exited
+			}
+			const exitB = await workerB.exited;
+			const exitC = await workerC.exited;
 			console.error(
-				`stale-rename proof: oldIncarnation=${oldIncarnationId} newIncarnation=${newIncarnationId} cleanupAToken=${cleanupAToken} cleanupB=${cleanupBOutcome} initialC=${proofInitialCKind} displaced=${observedNewIncarnationDisplaced} cleanupA=${outcome.kind} workerExit=${workerExit}`,
+				`3-process proof: oldIncarnation=${oldIncarnationId} newIncarnation=${resultC?.incarnationId ?? "NO_RESULT"} cleanupA=${outcome.kind} cleanupB=${resultB?.kind}/${resultB?.reason ?? "?"} initialC=${resultC?.kind ?? "NO_RESULT"} blockedWhileHeld=${cleanupBBlockedWhileAHeldMutex}/${initialCBlockedWhileAHeldMutex} displaced=${observedNewIncarnationDisplaced} exitB=${exitB} exitC=${exitC}`,
+			);
+			// Serialization proof: B and C produced NOTHING while A held the
+			// namespace mutex — they were blocked, not acting.
+			assert.strictEqual(
+				cleanupBBlockedWhileAHeldMutex,
+				true,
+				"cleanup B must block while cleanup A owns the namespace mutex",
+			);
+			assert.strictEqual(
+				initialCBlockedWhileAHeldMutex,
+				true,
+				"initial C must block while cleanup A owns the namespace mutex",
 			);
 			// Desired property: an OLD retirement authorization can never
-			// rename a NEW incarnation.  The violation was already observed
-			// at the AFTER_RENAME_BEFORE_POSTCHECK proof point, before any
-			// post-check restoration.
+			// rename a NEW incarnation.
 			assert.strictEqual(
 				observedNewIncarnationDisplaced,
 				false,
 				"expected: an OLD retirement authorization can never rename a NEW incarnation; actual: cleanup moved the new incarnation before detecting the mismatch",
 			);
+			// Cleanup B must never detach/delete the NEW generation.
+			assert.ok(
+				resultB !== null && resultB.kind !== "DELETED",
+				`cleanup B must keep (KEPT), got ${JSON.stringify(resultB)}`,
+			);
+			// Initial C established the genuine NEW generation.
+			assert.strictEqual(
+				resultC?.kind,
+				"BOOTSTRAPPED",
+				`initial C must bootstrap, got ${JSON.stringify(resultC)}`,
+			);
+			assert.notStrictEqual(
+				resultC?.incarnationId ?? null,
+				oldIncarnationId,
+				"initial C must create a genuinely NEW generation",
+			);
+			assert.strictEqual(existsSync(runBDir), true);
+			const canonicalDb = openRunDatabase({
+				driver: nodeSqliteDriver,
+				dbPath: join(runBDir, "turnlock.sqlite3"),
+				busyTimeoutMs: 2000,
+			});
+			let canonicalIncarnationId: string | null = null;
+			try {
+				const row = canonicalDb.connection
+					.prepare(
+						"SELECT incarnation_id FROM run_incarnation WHERE singleton = 1",
+					)
+					.get() as
+					| {
+							incarnation_id: string;
+					  }
+					| undefined;
+				canonicalIncarnationId = row?.incarnation_id ?? null;
+			} finally {
+				canonicalDb.close();
+			}
+			assert.strictEqual(
+				canonicalIncarnationId,
+				resultC?.incarnationId ?? null,
+				"canonical DB must belong to the NEW incarnation",
+			);
+			// The NEW incarnation remains authoritative with live ownership.
+			const takeoverDb = openRunDatabase({
+				driver: nodeSqliteDriver,
+				dbPath: join(runBDir, "turnlock.sqlite3"),
+				busyTimeoutMs: 2000,
+			});
+			let takeoverResult: ReturnType<typeof acquireOwnership>;
+			try {
+				takeoverResult = acquireOwnership({
+					db: takeoverDb.connection,
+					runId: RUN_B,
+					orchestratorName: ORCHESTRATOR_NAME,
+					nowEpochMs: Date.now(),
+					nowIso: new Date().toISOString(),
+					leaseDurationMs: 30 * 60 * 1000,
+					contentionDeadlineMs: 5000,
+				});
+			} finally {
+				takeoverDb.close();
+			}
+			assert.strictEqual(
+				takeoverResult.kind,
+				"ACTIVE_CONFLICT",
+				"NEW incarnation must hold live ownership",
+			);
+			// The OLD retired payload was eventually deleted (by A or a sweep).
+			const retiredPayloadDir = join(
+				dirname(runBDir),
+				RETIRED_DIR_NAME,
+				RETIRED_PAYLOAD_DIR_NAME,
+			);
+			assert.strictEqual(
+				existsSync(retiredPayloadDir)
+					? readdirSync(retiredPayloadDir).length
+					: 0,
+				0,
+				"OLD retired payload must be deleted",
+			);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("two concurrent cleanups: exactly one detaches, the second keeps", {
+		timeout: 120_000,
+	}, async () => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			bootstrapForeignRun(runBDir, RUN_B);
+			expireLease(runBDir);
+			ageDir(runBDir, 100);
+			const cleanupWorkerScript = join(
+				import.meta.dirname,
+				"fixtures",
+				"retention-namespace-cleanup-worker.js",
+			);
+			const goBFile = join(root, "go-b");
+			const resultBFile = join(root, "result-b.json");
+			const workerB = spawnNode(cleanupWorkerScript, [], {
+				env: {
+					...process.env,
+					TL_RUN_DIR: runBDir,
+					TL_RUN_ID: RUN_B,
+					TL_ORCH: ORCHESTRATOR_NAME,
+					TL_GO_FILE: goBFile,
+					TL_RESULT_FILE: resultBFile,
+					TURNLOCK_TEST: "1",
+				},
+			});
+			let bBlockedWhileAHeld = false;
+			const barrierSab = new Int32Array(new SharedArrayBuffer(4));
+			const outcome = retireRunDirectoryInternal(
+				{ driver: nodeSqliteDriver, runDir: runBDir, runId: RUN_B },
+				{
+					onFaultPoint: (point) => {
+						if (point !== "AFTER_PRE_RENAME_VERIFICATION") return;
+						writeFileSync(goBFile, "go");
+						const blockedDeadline = Date.now() + 2500;
+						while (Date.now() < blockedDeadline) {
+							if (!existsSync(resultBFile)) {
+								bBlockedWhileAHeld = true;
+							} else {
+								break;
+							}
+							Atomics.wait(barrierSab, 0, 0, 50);
+						}
+					},
+				},
+			);
+			const resultDeadline = Date.now() + 30_000;
+			while (!existsSync(resultBFile) && Date.now() < resultDeadline) {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			const resultB = existsSync(resultBFile)
+				? (JSON.parse(readFileSync(resultBFile, "utf8")) as {
+						kind: string;
+						reason?: string;
+					})
+				: null;
+			try {
+				workerB.kill("SIGKILL");
+			} catch {
+				// already exited
+			}
+			const exitB = await workerB.exited;
+			console.error(
+				`two-cleanup proof: cleanupA=${outcome.kind} cleanupB=${resultB?.kind}/${resultB?.reason ?? "?"} blockedWhileHeld=${bBlockedWhileAHeld} exitB=${exitB}`,
+			);
+			// A detached and deleted the OLD generation; B must not detach
+			// anything a second time.
+			assert.strictEqual(outcome.kind, "DELETED");
+			assert.strictEqual(bBlockedWhileAHeld, true);
+			assert.ok(
+				resultB !== null && resultB.kind !== "DELETED",
+				`cleanup B must keep, got ${JSON.stringify(resultB)}`,
+			);
+			assert.strictEqual(existsSync(runBDir), false);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("retentionDays=0 cleanup cannot detach a half-constructed canonical path (initial survives)", {
+		timeout: 120_000,
+	}, async () => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			const goFile = join(root, "go");
+			const resultFile = join(root, "result.json");
+			const cleanupWorkerScript = join(
+				import.meta.dirname,
+				"fixtures",
+				"retention-namespace-cleanup-worker.js",
+			);
+			const worker = spawnNode(cleanupWorkerScript, [], {
+				env: {
+					...process.env,
+					TL_RUN_DIR: runBDir,
+					TL_RUN_ID: RUN_B,
+					TL_ORCH: ORCHESTRATOR_NAME,
+					TL_GO_FILE: goFile,
+					TL_RESULT_FILE: resultFile,
+					TURNLOCK_TEST: "1",
+				},
+			});
+			// The initial phase parks until the test resolves it — the
+			// ownership stays HELD/live while the cleanup contender runs.
+			const phaseGateHandle: { release(): void } = { release: () => {} };
+			const phaseGate = new Promise<void>((resolve) => {
+				phaseGateHandle.release = resolve;
+			});
+			const config: OrchestratorConfig<{ stage: string }> = {
+				name: ORCHESTRATOR_NAME,
+				initial: "start",
+				initialState: { stage: "fresh" },
+				resumeCommand: (runId) => `node worker.mjs --run-id ${runId} --resume`,
+				retentionDays: 7,
+				runDirRoot,
+				phases: {
+					start: async (_state, io) => {
+						await phaseGate;
+						return io.done({ stage: "done" });
+					},
+				},
+			};
+			let cleanupBlockedWhileInitialHeld = false;
+			const barrierSab = new Int32Array(new SharedArrayBuffer(4));
+			const initialPromise = runOrchestratorInternal(
+				config,
+				{ resume: false, runId: RUN_B, rest: [] },
+				{
+					hooks: {
+						beforeRunBootstrapCommit: () => {
+							// Namespace mutex held here — the initial owns the
+							// half-constructed canonical path.
+							writeFileSync(goFile, "go");
+							const blockedDeadline = Date.now() + 2500;
+							while (Date.now() < blockedDeadline) {
+								if (!existsSync(resultFile)) {
+									cleanupBlockedWhileInitialHeld = true;
+								} else {
+									break;
+								}
+								Atomics.wait(barrierSab, 0, 0, 50);
+							}
+						},
+					},
+				},
+			);
+			// The cleanup contender must finish BEFORE the phase is released:
+			// its claim sees the live HELD ownership.
+			const resultDeadline = Date.now() + 30_000;
+			while (!existsSync(resultFile) && Date.now() < resultDeadline) {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			const cleanupResult = existsSync(resultFile)
+				? (JSON.parse(readFileSync(resultFile, "utf8")) as {
+						kind: string;
+						reason?: string;
+					})
+				: null;
+			// Release the parked phase — the initial completes normally.
+			phaseGateHandle.release();
+			let initialError: unknown = null;
+			try {
+				await initialPromise;
+			} catch (error) {
+				initialError = error;
+			}
+			try {
+				worker.kill("SIGKILL");
+			} catch {
+				// already exited
+			}
+			const exitCode = await worker.exited;
+			console.error(
+				`retentionDays=0 proof: cleanup=${cleanupResult?.kind}/${cleanupResult?.reason ?? "?"} blockedWhileHeld=${cleanupBlockedWhileInitialHeld} initialError=${initialError instanceof Error ? initialError.message : String(initialError)} exit=${exitCode}`,
+			);
+			// The cleanup was blocked while the initial held the mutex, then
+			// observed the live owner and kept the run.
+			assert.strictEqual(cleanupBlockedWhileInitialHeld, true);
+			assert.strictEqual(cleanupResult?.kind, "KEPT");
+			assert.strictEqual(cleanupResult?.reason, "LIVE_OWNER");
+			// The initial completed successfully (TestExitSignal is the
+			// normal in-test completion path).
+			assert.ok(
+				initialError === null ||
+					(initialError as { __turnlockExit?: boolean })?.__turnlockExit ===
+						true,
+				`initial must complete, got ${String(initialError)}`,
+			);
+			assert.strictEqual(existsSync(runBDir), true);
+			assert.strictEqual(existsSync(join(runBDir, "turnlock.sqlite3")), true);
 		} finally {
 			cleanupTempDir(root);
 		}

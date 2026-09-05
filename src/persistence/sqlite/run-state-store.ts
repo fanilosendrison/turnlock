@@ -24,6 +24,7 @@ import {
 	commit,
 	type LockHandle,
 	rollback,
+	verifyLiveOwnershipInTransaction,
 } from "./ownership.js";
 import type { SqliteConnection } from "./sqlite-driver.js";
 // ---------------------------------------------------------------------------
@@ -943,85 +944,23 @@ export function projectAuthoritativeStateFenced(
 	// Use the provided lease clock if available, otherwise the real clock.
 	const nowEpochMs = (leaseClockEpochMs ?? Date.now)();
 	try {
-		// Step 1 — Verify ownership including lease expiration.
-		const ownershipRow = db
-			.prepare(`SELECT ownership_status, incarnation_id, owner_token,
-				        fence_token, lease_until_epoch_ms
-				 FROM run_ownership WHERE singleton = 1`)
-			.get() as
-			| {
-					ownership_status: string;
-					incarnation_id: string;
-					owner_token: string;
-					fence_token: number | bigint;
-					lease_until_epoch_ms: number | null;
-			  }
-			| undefined;
-		if (ownershipRow === undefined) {
+		// Step 1 — Verify ownership including lease expiration, via the
+		// single shared live-ownership predicate.
+		const verification = verifyLiveOwnershipInTransaction(
+			db,
+			handle,
+			nowEpochMs,
+		);
+		if (verification.kind !== "LIVE") {
 			rollback(db);
 			throw new AuthorityLostError(
-				"Fenced state.json projection rejected: ownership row missing",
+				`Fenced state.json projection rejected: ${verification.kind === "EXPIRED_HANDLE" ? "lease expired" : "ownership not live"}`,
 				{
 					operation: "state_commit",
-					reason: "STALE_HANDLE",
-				},
-			);
-		}
-		if (ownershipRow.ownership_status !== "HELD") {
-			rollback(db);
-			throw new AuthorityLostError(
-				"Fenced state.json projection rejected: ownership not held",
-				{
-					operation: "state_commit",
-					reason: "STALE_HANDLE",
-				},
-			);
-		}
-		if (ownershipRow.incarnation_id !== handle.incarnationId) {
-			rollback(db);
-			throw new AuthorityLostError(
-				"Fenced state.json projection rejected: incarnation mismatch",
-				{
-					operation: "state_commit",
-					reason: "STALE_HANDLE",
-				},
-			);
-		}
-		if (ownershipRow.owner_token !== handle.ownerToken) {
-			rollback(db);
-			throw new AuthorityLostError(
-				"Fenced state.json projection rejected: owner token mismatch",
-				{
-					operation: "state_commit",
-					reason: "STALE_HANDLE",
-				},
-			);
-		}
-		const rowFence =
-			typeof ownershipRow.fence_token === "bigint"
-				? ownershipRow.fence_token
-				: BigInt(ownershipRow.fence_token);
-		if (rowFence !== handle.fenceToken) {
-			rollback(db);
-			throw new AuthorityLostError(
-				"Fenced state.json projection rejected: fence token mismatch",
-				{
-					operation: "state_commit",
-					reason: "STALE_HANDLE",
-				},
-			);
-		}
-		// Lease check — lease is expired at the exact instant now >= leaseUntil.
-		if (
-			ownershipRow.lease_until_epoch_ms === null ||
-			nowEpochMs >= ownershipRow.lease_until_epoch_ms
-		) {
-			rollback(db);
-			throw new AuthorityLostError(
-				"Fenced state.json projection rejected: lease expired",
-				{
-					operation: "state_commit",
-					reason: "EXPIRED_HANDLE",
+					reason:
+						verification.kind === "RETIRING"
+							? "STALE_HANDLE"
+							: verification.kind,
 				},
 			);
 		}

@@ -22,9 +22,13 @@ import { join } from "node:path";
 // BEFORE any filesystem I/O.
 import { describe, test } from "node:test";
 import { STATE_SCHEMA_VERSION } from "../../src/constants.js";
+import { installPreparedArtifactFenced } from "../../src/engine/artifact-commit.js";
 import type { DispatchContext } from "../../src/engine/context.js";
 import { handleDone } from "../../src/engine/terminal-handlers.js";
-import { AuthorityLostError } from "../../src/errors/concrete.js";
+import {
+	ArtifactIntegrityError,
+	AuthorityLostError,
+} from "../../src/errors/concrete.js";
 import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
 import { claimRunForRetentionDeletion } from "../../src/persistence/sqlite/retention-claim.js";
 import { bootstrapNewRunAtomic } from "../../src/persistence/sqlite/run-bootstrap.js";
@@ -135,11 +139,18 @@ describe("stale runtime filesystem writes", () => {
 			renameSync(runBDir, asidePath);
 			assert.strictEqual(existsSync(runBDir), false);
 			// The stale runtime performs a direct artifact installation at
-			// the canonical pathname.
+			// the canonical pathname — the generic install must never
+			// silently recreate the absent RUN_DIR root.
 			const prepared = prepareJsonArtifact(runBDir, "terminal-output", {
 				stage: "stale",
 			});
-			installPreparedArtifact(runBDir, prepared);
+			assert.throws(
+				() => installPreparedArtifact(runBDir, prepared),
+				(error: unknown) =>
+					error instanceof ArtifactIntegrityError &&
+					/refusing to recreate/.test(error.message),
+				"generic artifact install on a detached canonical path must throw",
+			);
 			// Desired: a stale runtime must never recreate the canonical
 			// RUN_DIR through an indirect recursive mkdir.
 			assert.strictEqual(
@@ -241,6 +252,99 @@ describe("stale runtime filesystem writes", () => {
 			);
 			// The NEW incarnation remains fully authoritative.
 			assert.strictEqual(existsSync(join(runBDir, "turnlock.sqlite3")), true);
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("normal authorized artifact installs still work (fenced wrapper)", () => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			const boot = bootstrapForeignRun(runBDir, RUN_B);
+			if (boot.kind !== "BOOTSTRAPPED") throw new Error("setup");
+			// A LIVE owner installs through the fenced wrapper.
+			const liveDb = openRunDatabase({
+				driver: nodeSqliteDriver,
+				dbPath: join(runBDir, "turnlock.sqlite3"),
+				busyTimeoutMs: 2000,
+			});
+			try {
+				const prepared = prepareJsonArtifact(runBDir, "terminal-output", {
+					stage: "ok",
+				});
+				installPreparedArtifactFenced(
+					{
+						runDb: liveDb,
+						handle: boot.handle,
+						runDir: runBDir,
+						runId: RUN_B,
+						config: { name: ORCHESTRATOR_NAME },
+					},
+					prepared,
+				);
+				assert.strictEqual(
+					existsSync(join(runBDir, prepared.ref.relativePath)),
+					true,
+					"authorized install must write the blob",
+				);
+			} finally {
+				liveDb.close();
+			}
+		} finally {
+			cleanupTempDir(root);
+		}
+	});
+
+	test("expired lease: fenced wrapper rejects with EXPIRED_HANDLE before any filesystem write", () => {
+		const root = makeTempDir();
+		try {
+			const runDirRoot = join(root, "runs");
+			const runBDir = join(runDirRoot, ORCHESTRATOR_NAME, RUN_B);
+			const boot = bootstrapForeignRun(runBDir, RUN_B);
+			if (boot.kind !== "BOOTSTRAPPED") throw new Error("setup");
+			// Expire the lease WITHOUT fencing: the handle is still the row's
+			// owner but its lease is dead.
+			const dbPath = join(runBDir, "turnlock.sqlite3");
+			const mutate = nodeSqliteDriver.open(dbPath);
+			mutate.exec(
+				`UPDATE run_ownership SET lease_until_epoch_ms = ${Date.now() - 1000} WHERE singleton = 1`,
+			);
+			mutate.close();
+			const prepared = prepareJsonArtifact(runBDir, "terminal-output", {
+				stage: "expired",
+			});
+			const expiredDb = openRunDatabase({
+				driver: nodeSqliteDriver,
+				dbPath: dbPath,
+				busyTimeoutMs: 2000,
+			});
+			let caught: unknown;
+			try {
+				installPreparedArtifactFenced(
+					{
+						runDb: expiredDb,
+						handle: boot.handle,
+						runDir: runBDir,
+						runId: RUN_B,
+					},
+					prepared,
+				);
+			} catch (error) {
+				caught = error;
+			} finally {
+				expiredDb.close();
+			}
+			assert.ok(caught instanceof AuthorityLostError, String(caught));
+			if (caught instanceof AuthorityLostError) {
+				assert.strictEqual(caught.reason, "EXPIRED_HANDLE");
+			}
+			assert.strictEqual(
+				existsSync(join(runBDir, prepared.ref.relativePath)),
+				false,
+				"no filesystem write may happen after the lease expired",
+			);
 		} finally {
 			cleanupTempDir(root);
 		}

@@ -31,6 +31,7 @@ if (MODE === "cleanup") {
 		driver: nodeSqliteDriver,
 		runDir: RUN_DIR,
 		runId: RUN_ID,
+		orchestratorName: ORCHESTRATOR_NAME,
 	});
 	out({
 		mode: MODE,
@@ -61,7 +62,8 @@ if (MODE === "cleanup") {
 	} catch (error) {
 		out({
 			mode: MODE,
-			result: "MISSING",
+			result:
+				!existsSync(RUN_DIR) || !existsSync(DB_PATH) ? "MISSING" : "ERROR",
 			reason: error instanceof Error ? error.message : String(error),
 		});
 	}

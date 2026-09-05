@@ -82,9 +82,11 @@ class NodeSqliteConnection implements SqliteConnection {
 	private readonly database: DatabaseSync;
 	private closed = false;
 
-	constructor(path: string) {
+	constructor(path: string, options?: { readonly readOnly?: boolean }) {
 		const Database = loadDatabaseSync();
-		this.database = new Database(path);
+		this.database = options?.readOnly
+			? new Database(path, { readOnly: true })
+			: new Database(path);
 	}
 
 	exec(sql: string): void {
@@ -105,5 +107,8 @@ class NodeSqliteConnection implements SqliteConnection {
 export const nodeSqliteDriver: SqliteDriver = {
 	open(path: string): SqliteConnection {
 		return new NodeSqliteConnection(path);
+	},
+	openReadOnly(path: string): SqliteConnection {
+		return new NodeSqliteConnection(path, { readOnly: true });
 	},
 };

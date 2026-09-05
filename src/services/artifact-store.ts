@@ -16,6 +16,7 @@ import type {
 	ArtifactRef,
 	PreparedArtifact,
 } from "../types/artifacts.js";
+import { ensureDirectoryPathWithoutSymlinks } from "./durable-fs.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -42,7 +43,13 @@ function artifactRelativePath(digest: string): string {
 function atomicInstallImmutable(
 	targetPath: string,
 	bytes: Uint8Array,
+	protectedFrom: string,
 ): "created" | "existing-match" {
+	const parentDir = path.dirname(targetPath);
+	// Validate the path before even reading an existing target: a symlinked
+	// artifact directory must not redirect this integrity check outside the
+	// live RUN_DIR.
+	ensureDirectoryPathWithoutSymlinks(parentDir, protectedFrom);
 	// Fast path: target already exists → verify integrity
 	try {
 		const existing = fs.readFileSync(targetPath);
@@ -64,9 +71,6 @@ function atomicInstallImmutable(
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 		// File doesn't exist — proceed with install
 	}
-	// Create parent directories if needed
-	const parentDir = path.dirname(targetPath);
-	fs.mkdirSync(parentDir, { recursive: true });
 	// Write to a unique temp file, then link atomically
 	const tmpPath = `${targetPath}.tmp-${process.pid}-${cryptoRandomSuffix()}`;
 	const fd = fs.openSync(
@@ -159,14 +163,41 @@ export function prepareJsonArtifact(
  *  - Never overwrites an existing blob.
  *  - If a blob already exists at the target path, verifies digest + size.
  *  - Throws ArtifactIntegrityError on collision with different content.
- */
+ *
+ *  Locale protection against canonical resurrection: the RUN_DIR root
+ *  must ALREADY exist (a real directory, not a symlink) — a generic
+ *  artifact install must never silently recreate an absent RUN_DIR root
+ *  through recursive mkdir.  The concurrency mechanism is the fenced
+ *  wrapper (`installPreparedArtifactFenced`); this check is defense in
+ *  depth against detached canonical paths. */
 export function installPreparedArtifact(
 	runDir: string,
 	artifact: PreparedArtifact,
 ): void {
+	assertRunDirRootPresent(runDir);
 	validateArtifactStructure(artifact.ref);
 	const targetPath = path.join(runDir, artifact.ref.relativePath);
-	atomicInstallImmutable(targetPath, artifact.bytes);
+	atomicInstallImmutable(targetPath, artifact.bytes, runDir);
+}
+
+/** The RUN_DIR root must exist, be a real directory, and not a symlink. */
+function assertRunDirRootPresent(runDir: string): void {
+	let stat: fs.Stats;
+	try {
+		stat = fs.lstatSync(runDir);
+		if (stat.isSymbolicLink() || !stat.isDirectory()) {
+			throw new Error("RUN_DIR is not a real directory");
+		}
+		// The canonical parent is part of the namespace identity too; reject
+		// an orchestrator directory redirected through a symlink while still
+		// allowing platform aliases such as macOS /var → /private/var.
+		ensureDirectoryPathWithoutSymlinks(runDir, path.dirname(runDir));
+	} catch (error) {
+		throw new ArtifactIntegrityError(
+			`RUN_DIR missing or unsafe — refusing to recreate or use it via artifact install: ${runDir}`,
+			{ cause: error },
+		);
+	}
 }
 /** Read an immutable blob and verify its integrity.
  *
@@ -183,7 +214,9 @@ export function readAndVerifyArtifact(
 ): Uint8Array {
 	// Structural validation — path confinement, digest format, etc.
 	validateArtifactStructure(ref);
+	assertRunDirRootPresent(runDir);
 	const targetPath = path.join(runDir, ref.relativePath);
+	ensureDirectoryPathWithoutSymlinks(path.dirname(targetPath), runDir);
 	let bytes: Buffer;
 	try {
 		bytes = fs.readFileSync(targetPath);

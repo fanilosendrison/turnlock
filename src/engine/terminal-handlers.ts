@@ -2,14 +2,12 @@ import * as path from "node:path";
 import { STATE_SCHEMA_VERSION } from "../constants.js";
 import { enrich, OrchestratorError } from "../errors/base.js";
 import { PhaseError } from "../errors/concrete.js";
-import {
-	installPreparedArtifact,
-	prepareJsonArtifact,
-} from "../services/artifact-store.js";
+import { prepareJsonArtifact } from "../services/artifact-store.js";
 import { clock } from "../services/clock.js";
 import { writeProtocolBlock } from "../services/protocol.js";
 import type { StateFile } from "../services/state-io.js";
 import type { TerminalDoneRecord } from "../types/artifacts.js";
+import { installPreparedArtifactFenced } from "./artifact-commit.js";
 import { type DispatchContext, doExit } from "./context.js";
 import { clearPendingYield } from "./pending-yield.js";
 import { writeProtocolStdout } from "./protocol-stdout.js";
@@ -97,7 +95,7 @@ export async function handleDone<S extends object>(
 		);
 	}
 	// 2. Install immutable blob (may be orphaned if commit fails — acceptable).
-	installPreparedArtifact(ctx.runDir, preparedOutput);
+	installPreparedArtifactFenced(ctx, preparedOutput);
 	// 3. Build state with ArtifactRef, commit fenced.
 	const nowEpochMs = clock.nowEpochMs();
 	const nowIso = clock.nowWallIso();

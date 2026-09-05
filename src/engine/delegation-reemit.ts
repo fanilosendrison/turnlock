@@ -4,7 +4,6 @@ import { MANIFEST_VERSION } from "../constants.js";
 import { AbortedError, ProtocolError } from "../errors/concrete.js";
 import { abortableSleep } from "../services/abortable-sleep.js";
 import {
-	installPreparedArtifact,
 	prepareJsonArtifact,
 	readAndVerifyArtifact,
 } from "../services/artifact-store.js";
@@ -13,6 +12,7 @@ import type {
 	PendingDelegationRecord,
 	StateFile,
 } from "../services/state-io.js";
+import { installPreparedArtifactFenced } from "./artifact-commit.js";
 import { type DispatchContext, doExit } from "./context.js";
 import { clearPendingYield } from "./pending-yield.js";
 import { writeProtocolStdout } from "./protocol-stdout.js";
@@ -96,7 +96,7 @@ export async function reemitDelegationAttempt<S extends object>(
 		"delegation-manifest",
 		newManifest,
 	);
-	installPreparedArtifact(ctx.runDir, prepared);
+	installPreparedArtifactFenced(ctx, prepared);
 	// 3. Build new state with updated ArtifactRef.
 	const newState: StateFile<S> = {
 		...clearPendingYield(state),
