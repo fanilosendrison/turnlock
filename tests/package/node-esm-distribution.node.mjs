@@ -1,58 +1,163 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-const REPO_ROOT = resolve(dirname(import.meta.filename), "../..");
-const packageEntryPointUrl = pathToFileURL(
-	resolve(REPO_ROOT, "dist/index.js"),
-).href;
+const REPOSITORY_ROOT = resolve(dirname(import.meta.filename), "../..");
+const TYPESCRIPT_ENTRYPOINT = join(
+	REPOSITORY_ROOT,
+	"node_modules",
+	"typescript",
+	"bin",
+	"tsc",
+);
 
-test("the built package entry point imports with Node ESM", () => {
-	const result = spawnSync(
-		process.execPath,
-		[
-			"--input-type=module",
-			"--eval",
-			`await import(${JSON.stringify(packageEntryPointUrl)})`,
-		],
-		{ encoding: "utf8" },
-	);
-
+function run(command, arguments_, options = {}) {
+	const result = spawnSync(command, arguments_, {
+		encoding: "utf8",
+		maxBuffer: 64 * 1024 * 1024,
+		shell: false,
+		...options,
+	});
 	assert.equal(result.signal, null);
-	assert.equal(result.status, 0, result.stderr);
-	assert.equal(result.stdout, "");
-	assert.equal(result.stderr, "");
-});
+	assert.equal(result.status, 0, result.stderr || result.stdout);
+	return result;
+}
 
-test("the packed artifact contains the consumer-facing documentation", () => {
-	// `--config.ignore-scripts=true` avoids re-running this test suite via
-	// the prepack lifecycle. `--dry-run --json` lists the packed contents
-	// without writing a tarball.
-	const result = spawnSync(
-		"pnpm",
-		["--config.ignore-scripts=true", "pack", "--dry-run", "--json"],
-		{ cwd: REPO_ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-	);
-	assert.equal(result.status, 0, result.stderr);
-	/** @type {{ version: string; files: Array<{ path: string }> }} */
-	const packed = JSON.parse(result.stdout);
-	assert.equal(packed.version, "0.11.0");
-	const paths = new Set(packed.files.map((f) => f.path));
-	for (const expected of [
-		"README.md",
-		"dist/index.js",
-		"dist/index.d.ts",
-		"docs/sqlite-ownership-migration.md",
-		"docs/adr/0001-logical-delegation-targets.md",
-		"docs/adr/README.md",
-		"docs/architecture/delegation-model.md",
-	]) {
-		assert.equal(
-			paths.has(expected),
-			true,
-			`packed artifact must include ${expected}`,
+test("the packed package resolves runtime and types from an isolated consumer", () => {
+	const root = mkdtempSync(join(tmpdir(), "turnlock-package-consumer-"));
+	const packDirectory = join(root, "packed");
+	const consumerDirectory = join(root, "consumer");
+	try {
+		writeFileSync(
+			join(root, "package.json"),
+			JSON.stringify({ private: true, type: "module" }),
 		);
+		run(
+			"pnpm",
+			[
+				"--config.ignore-scripts=true",
+				"pack",
+				"--pack-destination",
+				packDirectory,
+			],
+			{ cwd: REPOSITORY_ROOT },
+		);
+		const archives = readdirSync(packDirectory).filter((name) =>
+			name.endsWith(".tgz"),
+		);
+		assert.deepEqual(archives, ["turnlock-0.11.0.tgz"]);
+		const archivePath = join(packDirectory, archives[0]);
+
+		writeFileSync(
+			join(root, "pnpm-workspace.yaml"),
+			"packages:\n  - consumer\n",
+		);
+		mkdirSync(consumerDirectory);
+		writeFileSync(
+			join(consumerDirectory, "package.json"),
+			JSON.stringify({ private: true, type: "module" }),
+			{ flag: "wx" },
+		);
+		run(
+			"pnpm",
+			[
+				"add",
+				"--offline",
+				"--ignore-scripts",
+				"--dir",
+				consumerDirectory,
+				archivePath,
+			],
+			{ cwd: root },
+		);
+
+		const runtimePath = join(consumerDirectory, "runtime.mjs");
+		writeFileSync(
+			runtimePath,
+			[
+				'import { PROTOCOL_VERSION } from "turnlock";',
+				'if (PROTOCOL_VERSION !== 3) throw new Error("unexpected protocol version");',
+				'process.stdout.write(import.meta.resolve("turnlock"));',
+			].join("\n"),
+		);
+		const runtime = run(process.execPath, [runtimePath], {
+			cwd: consumerDirectory,
+		});
+		const resolvedEntrypoint = runtime.stdout;
+		assert.ok(
+			resolvedEntrypoint.startsWith(pathToFileURL(realpathSync(root)).href),
+			resolvedEntrypoint,
+		);
+		assert.ok(
+			resolvedEntrypoint.includes("/node_modules/.pnpm/turnlock@file+"),
+		);
+		assert.ok(resolvedEntrypoint.endsWith("/dist/index.js"));
+		assert.equal(
+			resolvedEntrypoint.includes(pathToFileURL(REPOSITORY_ROOT).href),
+			false,
+		);
+
+		const fixtureSource = readFileSync(
+			join(
+				REPOSITORY_ROOT,
+				"tests",
+				"package",
+				"fixtures",
+				"node-esm-consumer.mts",
+			),
+			"utf8",
+		);
+		writeFileSync(join(consumerDirectory, "consumer.mts"), fixtureSource);
+		writeFileSync(
+			join(consumerDirectory, "tsconfig.json"),
+			JSON.stringify({
+				compilerOptions: {
+					target: "ES2022",
+					module: "NodeNext",
+					moduleResolution: "NodeNext",
+					strict: true,
+					noEmit: true,
+					types: [],
+					skipLibCheck: true,
+				},
+				include: ["consumer.mts"],
+			}),
+		);
+		run(process.execPath, [TYPESCRIPT_ENTRYPOINT, "-p", "tsconfig.json"], {
+			cwd: consumerDirectory,
+		});
+
+		for (const relativePath of [
+			"README.md",
+			"dist/index.js",
+			"dist/index.d.ts",
+			"docs/sqlite-ownership-migration.md",
+			"docs/adr/0001-logical-delegation-targets.md",
+			"docs/adr/README.md",
+			"docs/architecture/delegation-model.md",
+		]) {
+			assert.equal(
+				existsSync(
+					join(consumerDirectory, "node_modules", "turnlock", relativePath),
+				),
+				true,
+				`installed package must include ${relativePath}`,
+			);
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
 	}
 });

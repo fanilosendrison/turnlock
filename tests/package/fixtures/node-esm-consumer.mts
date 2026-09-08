@@ -1,7 +1,4 @@
-import {
-	type OrchestratorConfig,
-	PROTOCOL_VERSION,
-} from "../../../dist/index.js";
+import { type OrchestratorConfig, PROTOCOL_VERSION } from "turnlock";
 
 const protocolVersion: number = PROTOCOL_VERSION;
 const configShape: OrchestratorConfig<Record<string, never>> | undefined =
