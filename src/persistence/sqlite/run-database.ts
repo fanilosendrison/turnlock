@@ -30,12 +30,12 @@ function configurePragmas(db: SqliteConnection, busyTimeoutMs: number): void {
 	db.exec(`PRAGMA synchronous = FULL`);
 	db.exec(`PRAGMA foreign_keys = ON`);
 }
-/** Schema metadata check and v1 → v2 migration.
+/** Atomic schema initialization, metadata check, and v1 → v2 migration.
  *
- *  The idempotent `SCHEMA_DDL` (CREATE TABLE IF NOT EXISTS) runs first —
- *  the atomicity of the very first concurrent schema initialization on a
- *  nonexistent database is a separate open backlog item.  The version
- *  check/migration itself runs inside its own BEGIN IMMEDIATE ... COMMIT:
+ *  `SCHEMA_DDL` and every metadata mutation share one
+ *  BEGIN IMMEDIATE ... COMMIT transaction. Concurrent first-open attempts
+ *  therefore serialize before creating any schema object, and a failure at
+ *  any initialization frontier rolls the complete schema back:
  *    - no metadata row        → fresh database: insert version 2 + ACTIVE
  *      retention row;
  *    - version 1              → v1→v2 migration: create the retention row
@@ -51,9 +51,9 @@ function configurePragmas(db: SqliteConnection, busyTimeoutMs: number): void {
  *  retention eligibility; a run can only ever be RETIRING through the
  *  transactional retirement claim. */
 function initializeSchema(db: SqliteConnection): void {
-	db.exec(SCHEMA_DDL);
 	beginImmediate(db);
 	try {
+		db.exec(SCHEMA_DDL);
 		const existing = db
 			.prepare("SELECT schema_version FROM schema_metadata WHERE singleton = 1")
 			.get() as
@@ -83,13 +83,11 @@ function initializeSchema(db: SqliteConnection): void {
 			// direction.
 			const retention = readRetentionRow(db);
 			if (retention === null) {
-				rollback(db);
 				throw new DbIntegrityError(
 					"schema v2 run_retention row missing — database integrity failure",
 				);
 			}
 			if (retention.retentionStatus === null) {
-				rollback(db);
 				throw new DbIntegrityError(
 					"schema v2 run_retention status unrecognized — database integrity failure",
 				);
@@ -99,13 +97,11 @@ function initializeSchema(db: SqliteConnection): void {
 				(retention.retirementToken === null ||
 					retention.retirementClaimedAtEpochMs === null)
 			) {
-				rollback(db);
 				throw new DbIntegrityError(
 					"schema v2 RETIRING row lacks retirement token/timestamp — database integrity failure",
 				);
 			}
 		} else {
-			rollback(db);
 			throw new Error(
 				`SQLite schema version mismatch: expected ${CURRENT_SCHEMA_VERSION}, got ${existing.schema_version}`,
 			);
