@@ -109,7 +109,21 @@ Every delegation manifest serializes an explicit target:
 }
 ```
 
-No newly-written manifest derives its destination from field absence.
+No newly-authored manifest derives its destination from field absence.
+A v3 manifest produced by migrating a v2 worker also carries the closed
+compatibility marker:
+
+```json
+{
+  "manifestVersion": 3,
+  "target": { "kind": "worker", "name": "Commit Msg [old]!" },
+  "targetCompatibility": "legacy-v2",
+  "...": "..."
+}
+```
+
+The marker records only the historical validation regime. It is not part of
+the logical target and does not describe physical execution.
 
 ## Target validation (fail-closed)
 
@@ -123,8 +137,14 @@ Rejected shapes include `{ kind: "worker", name: "" }`,
 `{ kind: "unknown" }`, and `{ kind: "host", name: "x" }` (extra fields on
 `host`). Invalid target input fails closed with a Turnlock error
 (`invalid_config`) instead of producing an ambiguous manifest. These
-constraints apply to new input; legacy v2 manifests are migrated
-byte-for-byte (see below).
+constraints apply to new input and unmarked v3 manifests.
+
+A v3 manifest marked `targetCompatibility: "legacy-v2"` uses the historical
+v2 name rule: the name may contain any characters and have any length, but it
+must remain a non-empty string in an exact worker target object. The marker is
+accepted only on worker targets. Unknown markers, host targets with a marker,
+empty names, and extra target fields fail closed. Provenance is explicit and
+is never inferred from whether a name happens to violate current syntax.
 
 ## Retry and re-emission
 
@@ -138,14 +158,21 @@ attempt 2: worker("reviewer")
 
 Only attempt-specific fields may change: `attempt`, `emittedAt`,
 `emittedAtEpochMs`, `deadlineAtEpochMs`, `resultPath`, `jobs[].resultPath`.
-Retry re-emission reconstructs the manifest from the stored artifact and
-preserves `target` exactly.
+Before announcing a retry or waiting for backoff, retry re-emission reads and
+digest-verifies the stored manifest artifact, parses it, and resolves the
+logical target. Only an executable retry produces `retry_scheduled`.
+Reconstruction preserves `target` exactly and also preserves an explicit
+`legacy-v2` compatibility marker across every descendant retry. The durable
+write, fenced state commit, canonical projection, and `delegation_emit`
+announcement still occur after backoff in that order.
 
 ## Legacy manifest v2 compatibility
 
 - **v2 with `worker` present** — deterministic migration:
   `worker: "reviewer"` → `target: { "kind": "worker", "name": "reviewer" }`
-  (name preserved byte-for-byte; v2 imposed no naming constraints).
+  plus `targetCompatibility: "legacy-v2"`. The name is preserved
+  byte-for-byte and the marker survives later retries, so serialization into
+  v3 cannot make the same accepted destination invalid.
 - **v2 without `worker`** — never interpreted as `host`.
   - If Turnlock only consumes already-written result files, resume
     completes without resolving the historical target (the result-consumption

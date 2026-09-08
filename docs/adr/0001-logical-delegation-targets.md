@@ -140,9 +140,11 @@ re-introduce the kind explosion this project already removed once.
   newly-written manifest whose destination depends on field absence.
 - **Legacy v2 manifests with `worker` present** migrate deterministically
   on re-emission: `worker: "reviewer"` becomes
-  `target: { "kind": "worker", "name": "reviewer" }`. The historical name
-  is preserved byte-for-byte (v2 imposed no naming constraints; migration
-  does not retroactively reject what v2 accepted).
+  `target: { "kind": "worker", "name": "reviewer" }` with
+  `targetCompatibility: "legacy-v2"`. The historical name is preserved
+  byte-for-byte because v2 imposed no naming constraints. The closed
+  compatibility marker preserves that validation regime through every
+  descendant retry; Turnlock never infers provenance from name syntax.
 - **Legacy v2 manifests without `worker` are never guessed to mean
   `host`.** If Turnlock only needs to consume already-written result
   files, resume completes without resolving the historical target. If the
@@ -150,9 +152,16 @@ re-introduce the kind explosion this project already removed once.
   ambiguous and Turnlock fails closed with
   `ambiguous_legacy_delegation_target` rather than inventing a destination.
 - **Worker name validation** (fail-closed, see
-  `docs/architecture/delegation-model.md`) applies to new input only:
-  non-empty, `^[a-z][a-z0-9-]*$`, at most `MAX_WORKER_NAME_LENGTH`
-  characters.
+  `docs/architecture/delegation-model.md`) applies to new input and unmarked
+  v3 manifests: non-empty, `^[a-z][a-z0-9-]*$`, at most
+  `MAX_WORKER_NAME_LENGTH` characters. A marked legacy-v2 target must still
+  be an exact `{ kind: "worker", name: string }` object with a non-empty
+  name. Host targets, extra target fields, empty names, and unknown
+  compatibility markers fail closed.
+- **Retry preflight precedes scheduling.** Turnlock reads and digest-verifies
+  the immutable source manifest, parses it, and resolves its target before
+  emitting `retry_scheduled` or waiting for backoff. A permanently ambiguous
+  v2 target therefore fails without announcing an executable retry.
 - Package identity: this is the third breaking contract batch since the
   last published release (`v0.9.1`); the package version is bumped to
   `0.11.0` so that two materially different persistence/public-API
