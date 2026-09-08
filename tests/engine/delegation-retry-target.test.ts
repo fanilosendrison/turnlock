@@ -168,6 +168,42 @@ describe("reconstructManifest preserves the logical target across retries", () =
 		});
 		assert.strictEqual("worker" in Object(next), false);
 	});
+	test("legacy compatibility provenance survives migration and a second retry", () => {
+		const legacy = {
+			...makePromptManifest(),
+			manifestVersion: 2,
+			worker: "Commit Msg [old]!",
+			target: undefined,
+		} as unknown as DelegationManifest & { readonly worker?: string };
+		const attempt1Updates = {
+			...updates(1),
+			label: "rev",
+			target: { kind: "worker" as const, name: "Commit Msg [old]!" },
+			targetCompatibility: "legacy-v2" as const,
+		};
+		const attempt1 = reconstructManifest(legacy, attempt1Updates) as
+			| DelegationManifest
+			| Record<string, unknown>;
+		const attempt2Updates = {
+			...updates(2),
+			label: "rev",
+			target: { kind: "worker" as const, name: "Commit Msg [old]!" },
+			targetCompatibility: "legacy-v2" as const,
+		};
+		const attempt2 = reconstructManifest(
+			attempt1 as DelegationManifest,
+			attempt2Updates,
+		) as DelegationManifest & { readonly targetCompatibility?: string };
+		assert.strictEqual(
+			(attempt1 as { readonly targetCompatibility?: string })
+				.targetCompatibility,
+			"legacy-v2",
+		);
+		assert.strictEqual(attempt2.targetCompatibility, "legacy-v2");
+		assert.deepStrictEqual(attempt2.target, attempt1.target);
+		assert.strictEqual("worker" in Object(attempt2), false);
+	});
+
 	test("reconstructed manifest never derives destination from absence", () => {
 		const old = makePromptManifest();
 		const next = reconstructManifest(old, {

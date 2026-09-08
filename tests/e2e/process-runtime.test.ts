@@ -534,7 +534,7 @@ await runOrchestrator<State>({
 					target: { kind: "host" },
 					prompt: "verdict",
 					label: "retryable",
-					retry: { maxAttempts: 2, backoffBaseMs: 1, maxBackoffMs: 1 },
+					retry: { maxAttempts: 2, backoffBaseMs: 100, maxBackoffMs: 100 },
 				},
 				"finish",
 				{ count: 1 },
@@ -619,7 +619,24 @@ await runOrchestrator<State>({
 			assert.strictEqual(emit1.attempt, 1);
 			assert.deepStrictEqual(emit0.target, { kind: "host" });
 			assert.deepStrictEqual(emit1.target, emit0.target);
-			assert.ok(eventTypes(readEvents(runDir)).includes("retry_scheduled"));
+			const retryEvents = readEvents(runDir);
+			const scheduledIndex = retryEvents.findIndex(
+				(event) => event.eventType === "retry_scheduled",
+			);
+			const retryEmitIndex = retryEvents.findIndex(
+				(event) => event.eventType === "delegation_emit" && event.attempt === 1,
+			);
+			assert.ok(scheduledIndex >= 0);
+			assert.ok(retryEmitIndex > scheduledIndex);
+			const scheduled = retryEvents[scheduledIndex];
+			if (scheduled?.eventType !== "retry_scheduled") {
+				assert.fail("expected retry_scheduled event");
+			}
+			assert.ok(
+				Date.parse(emit1.timestamp) - Date.parse(scheduled.timestamp) >=
+					scheduled.delayMs,
+				"retry re-emission must follow the complete configured backoff",
+			);
 			writePromptResult(runDir, "retryable", 0, { verdict: "stale" });
 			writePromptResult(runDir, "retryable", 1, { verdict: "fresh" });
 			const terminal = await workspace.runEntrypoint(entrypoint, [

@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 // Authority: ADR-0001 + docs/architecture/delegation-model.md — legacy
 // manifest v2 compatibility (deterministic worker migration, never guessing
 // host, fail-closed ambiguous re-emission).
 import { describe, test } from "node:test";
 import type { DelegationManifest } from "../../src/bindings/types.js";
-import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
 import type { ProtocolAction } from "../../src/services/protocol.js";
 import {
 	buildEntrypointSource,
@@ -21,6 +19,7 @@ import {
 	writeMalformedPromptResult,
 	writePromptResult,
 } from "../helpers/e2e-process.js";
+import { rewriteStoredManifestAsV2 } from "../helpers/legacy-delegation-manifest.js";
 
 function expectProtocol(stdout: string, action: ProtocolAction, runId: string) {
 	assert.strictEqual(countProtocolBlocks(stdout), 1);
@@ -39,7 +38,10 @@ const RUN_IDS = {
 function baseResumeCommandSource(): string {
 	return '(runId) => "node " + import.meta.filename + " --run-id " + runId + " --resume"';
 }
-function entrypointSource(orchestratorName: string): string {
+function entrypointSource(
+	orchestratorName: string,
+	backoffMilliseconds = 1,
+): string {
 	return buildEntrypointSource(`
 interface State { count: number }
 
@@ -56,7 +58,7 @@ await runOrchestrator<State>({
 					target: { kind: "worker", name: "reviewer" },
 					prompt: "verdict",
 					label: "retryable",
-					retry: { maxAttempts: 2, backoffBaseMs: 1, maxBackoffMs: 1 },
+					retry: { maxAttempts: 2, backoffBaseMs: ${backoffMilliseconds}, maxBackoffMs: ${backoffMilliseconds} },
 				},
 				"finish",
 				{ count: 1 },
@@ -69,84 +71,6 @@ await runOrchestrator<State>({
 	},
 });
 `);
-}
-/**
- * Rewrite the stored delegation manifest (canonical projection AND the
- * immutable artifact blob referenced by SQLite) to a legacy v2 shape.
- * Updates the authoritative SQLite state so resume reads the legacy ref.
- */
-function rewriteStoredManifestAsV2(
-	runDir: string,
-	label: string,
-	options: { readonly worker: string | undefined },
-): void {
-	const statePath = join(runDir, "state.json");
-	const state = readJsonFile<{
-		pendingDelegation?: {
-			manifestArtifact?: {
-				digest: string;
-				relativePath: string;
-				sizeBytes: number;
-			};
-		};
-	}>(statePath);
-	const artifact = state.pendingDelegation?.manifestArtifact;
-	if (artifact === undefined) {
-		assert.fail("expected a manifestArtifact in the initial state");
-	}
-	const current = readJsonFile<Record<string, unknown>>(
-		join(runDir, "delegations", `${label}-0.json`),
-	);
-	const legacy: Record<string, unknown> = {
-		...current,
-		manifestVersion: 2,
-	};
-	delete legacy.target;
-	if (options.worker !== undefined) {
-		legacy.worker = options.worker;
-	}
-	const bytes = Buffer.from(JSON.stringify(legacy), "utf-8");
-	const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-	const hex = digest.slice(7);
-	const relativePath = `artifacts/sha256/${hex.slice(0, 2)}/${hex.slice(2)}.json`;
-	const newRef = {
-		kind: "delegation-manifest",
-		digestAlgorithm: "sha256",
-		digest,
-		relativePath,
-		mediaType: "application/json",
-		sizeBytes: bytes.length,
-	};
-	// Immutable blob + canonical projection.
-	mkdirSync(join(runDir, "artifacts", "sha256", hex.slice(0, 2)), {
-		recursive: true,
-	});
-	writeFileSync(join(runDir, relativePath), bytes);
-	writeFileSync(
-		join(runDir, "delegations", `${label}-0.json`),
-		JSON.stringify(legacy, null, "\t"),
-	);
-	// Authoritative SQLite state.
-	const dbPath = join(runDir, "turnlock.sqlite3");
-	const db = nodeSqliteDriver.open(dbPath);
-	try {
-		const row = db
-			.prepare("SELECT state_json FROM run_state WHERE singleton = 1")
-			.get() as { state_json: string } | null;
-		if (row === null) assert.fail("expected run_state row");
-		const parsed = JSON.parse(row.state_json) as Record<string, unknown>;
-		const pending = parsed.pendingDelegation as Record<string, unknown>;
-		pending.manifestArtifact = newRef;
-		const newJson = JSON.stringify(parsed);
-		const newDigest = `sha256:${createHash("sha256").update(newJson).digest("hex")}`;
-		db.prepare(
-			"UPDATE run_state SET state_json = ?, state_digest = ? WHERE singleton = 1",
-		).run(newJson, newDigest);
-	} finally {
-		db.close();
-	}
-	// The projection is regenerated from SQLite on resume; drop the stale copy.
-	rmSync(statePath, { force: true });
 }
 describe("legacy manifest v2 delegation-target compatibility (ADR-0001)", () => {
 	test("v2 manifest with worker migrates deterministically on retry", async () => {
@@ -225,7 +149,7 @@ describe("legacy manifest v2 delegation-target compatibility (ADR-0001)", () => 
 		const workspace = createE2EWorkspace();
 		const entrypoint = workspace.writeEntrypoint(
 			"legacy-v2-ambiguous.ts",
-			entrypointSource("e2e-legacy-v2-ambiguous"),
+			entrypointSource("e2e-legacy-v2-ambiguous", 30_000),
 		);
 		try {
 			const initial = await workspace.runEntrypoint(entrypoint, [
@@ -241,11 +165,11 @@ describe("legacy manifest v2 delegation-target compatibility (ADR-0001)", () => 
 				worker: undefined,
 			});
 			writeMalformedPromptResult(runDir, "retryable", 0, "{not-json");
-			const resumed = await workspace.runEntrypoint(entrypoint, [
-				"--resume",
-				"--run-id",
-				RUN_IDS.ambiguousReemit,
-			]);
+			const resumed = await workspace.runEntrypoint(
+				entrypoint,
+				["--resume", "--run-id", RUN_IDS.ambiguousReemit],
+				{ timeoutMs: 10_000 },
+			);
 			assert.strictEqual(resumed.exitCode, 1);
 			const block = parseSingleProtocolBlock(resumed.stdout);
 			assert.strictEqual(block.action, "ERROR");
@@ -261,10 +185,13 @@ describe("legacy manifest v2 delegation-target compatibility (ADR-0001)", () => 
 				existsSync(join(runDir, "delegations", "retryable-1.json")),
 				false,
 			);
-			const emits = readEvents(runDir).filter(
-				(e) => e.eventType === "delegation_emit",
-			);
+			const events = readEvents(runDir);
+			const emits = events.filter((e) => e.eventType === "delegation_emit");
 			assert.strictEqual(emits.length, 1);
+			assert.strictEqual(
+				events.some((event) => event.eventType === "retry_scheduled"),
+				false,
+			);
 		} finally {
 			workspace.cleanup();
 		}

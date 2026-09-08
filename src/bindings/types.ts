@@ -1,9 +1,16 @@
+import type { LEGACY_V2_TARGET_COMPATIBILITY } from "../constants.js";
 import type {
 	DelegationRequest,
 	DelegationTarget,
 } from "../types/delegation.js";
 
 export { MANIFEST_VERSION } from "../constants.js";
+export type DelegationTargetCompatibility =
+	typeof LEGACY_V2_TARGET_COMPATIBILITY;
+export interface ResolvedManifestTarget {
+	readonly target: DelegationTarget;
+	readonly targetCompatibility?: DelegationTargetCompatibility;
+}
 export interface DelegationContext {
 	readonly runId: string;
 	readonly orchestratorName: string;
@@ -38,6 +45,8 @@ export interface DelegationManifest {
 	readonly maxAttempts: number;
 	/** Mandatory logical destination (ADR-0001). Never derived from absence. */
 	readonly target: DelegationTarget;
+	/** Present only when v2 compatibility rules established the target. */
+	readonly targetCompatibility?: DelegationTargetCompatibility;
 	readonly prompt?: string;
 	readonly jobs?: readonly DelegationManifestJob[];
 	readonly resultPath?: string;

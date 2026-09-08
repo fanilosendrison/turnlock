@@ -34,6 +34,30 @@ export async function reemitDelegationAttempt<S extends object>(
 	phase: string,
 	abortMessage = "aborted during retry sleep",
 ): Promise<never> {
+	// Establish that the immutable source can produce an executable retry
+	// before announcing or delaying it. Deterministic artifact, JSON, version,
+	// and target failures are permanent and must not emit retry_scheduled.
+	if (!pd.manifestArtifact) {
+		throw new ProtocolError("pending delegation has no manifest artifact", {
+			runId: ctx.runId,
+			orchestratorName: ctx.config.name,
+			phase,
+		});
+	}
+	const oldManifestBytes = readAndVerifyArtifact(
+		ctx.runDir,
+		pd.manifestArtifact,
+	);
+	const rawManifest = JSON.parse(
+		Buffer.from(oldManifestBytes).toString("utf-8"),
+	) as Record<string, unknown>;
+	const resolvedTarget = resolveManifestTarget(rawManifest, pd.label, {
+		runId: ctx.runId,
+		orchestratorName: ctx.config.name,
+		phase,
+	});
+	const oldManifest = rawManifest as unknown as DelegationManifest;
+
 	ctx.logger.emit({
 		eventType: "retry_scheduled",
 		runId: ctx.runId,
@@ -53,31 +77,6 @@ export async function reemitDelegationAttempt<S extends object>(
 			phase,
 		});
 	}
-	// 1. Read and verify the old manifest via ArtifactRef.
-	if (!pd.manifestArtifact) {
-		throw new ProtocolError("pending delegation has no manifest artifact", {
-			runId: ctx.runId,
-			orchestratorName: ctx.config.name,
-			phase,
-		});
-	}
-	const oldManifestBytes = readAndVerifyArtifact(
-		ctx.runDir,
-		pd.manifestArtifact,
-	);
-	const rawManifest = JSON.parse(
-		Buffer.from(oldManifestBytes).toString("utf-8"),
-	) as Record<string, unknown>;
-	// Resolve the logical target exactly once.  v3 manifests carry a
-	// validated mandatory target; v2 manifests with a worker migrate
-	// deterministically; v2 manifests without a worker fail closed (the
-	// historical target is ambiguous and is NEVER guessed as host).
-	const target = resolveManifestTarget(rawManifest, pd.label, {
-		runId: ctx.runId,
-		orchestratorName: ctx.config.name,
-		phase,
-	});
-	const oldManifest = rawManifest as unknown as DelegationManifest;
 	const newAttempt = pd.attempt + 1;
 	const newEmittedAtEpochMs = clock.nowEpochMs();
 	const newEmittedAt = clock.nowWallIso();
@@ -89,7 +88,10 @@ export async function reemitDelegationAttempt<S extends object>(
 		deadlineAtEpochMs: newDeadlineAtEpochMs,
 		label: pd.label,
 		runDir: ctx.runDir,
-		target,
+		target: resolvedTarget.target,
+		...(resolvedTarget.targetCompatibility === undefined
+			? {}
+			: { targetCompatibility: resolvedTarget.targetCompatibility }),
 	});
 	// 2. Prepare and install new immutable blob.
 	const prepared = prepareJsonArtifact(
@@ -134,7 +136,7 @@ export async function reemitDelegationAttempt<S extends object>(
 		phase,
 		label: pd.label,
 		kind: pd.kind,
-		target,
+		target: resolvedTarget.target,
 		attempt: newAttempt,
 		jobCount: pd.jobIds?.length ?? 1,
 		timestamp: newEmittedAt,

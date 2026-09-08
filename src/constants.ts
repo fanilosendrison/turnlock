@@ -43,5 +43,7 @@ export const DEFAULT_TIMEOUT_MS = 600000;
 export const DEFAULT_RETENTION_DAYS = 7;
 export const DEFAULT_IDLE_LEASE_MS = 30 * 60 * 1000;
 export const MANIFEST_VERSION = 3 as const;
+/** Marks a v3 target migrated under the historical manifest-v2 rules. */
+export const LEGACY_V2_TARGET_COMPATIBILITY = "legacy-v2" as const;
 /** Filename of the per-run SQLite authority, one per RUN_DIR. */
 export const RUN_DB_FILENAME = "turnlock.sqlite3" as const;

@@ -39,8 +39,11 @@ describe("manifest fixtures reflect the target contract", () => {
 			"manifests/legacy-v2-worker.json",
 		);
 		assert.strictEqual(raw.manifestVersion, 2);
-		const target = resolveManifestTarget(raw, "rev", CONTEXT);
-		assert.deepStrictEqual(target, { kind: "worker", name: "reviewer" });
+		const resolved = resolveManifestTarget(raw, "rev", CONTEXT);
+		assert.deepStrictEqual(resolved, {
+			target: { kind: "worker", name: "reviewer" },
+			targetCompatibility: "legacy-v2",
+		});
 	});
 	test("legacy v2 fixture without worker fails closed", () => {
 		const raw = loadJsonFixture<Record<string, unknown>>(
@@ -56,8 +59,11 @@ describe("manifest fixtures reflect the target contract", () => {
 		const raw = loadJsonFixture<Record<string, unknown>>(
 			"manifests/legacy-v2-batch-worker.json",
 		);
-		const target = resolveManifestTarget(raw, "batch", CONTEXT);
-		assert.deepStrictEqual(target, { kind: "worker", name: "reviewer" });
+		const resolved = resolveManifestTarget(raw, "batch", CONTEXT);
+		assert.deepStrictEqual(resolved, {
+			target: { kind: "worker", name: "reviewer" },
+			targetCompatibility: "legacy-v2",
+		});
 	});
 	test("legacy v2 batch fixture without worker fails closed", () => {
 		const raw = loadJsonFixture<Record<string, unknown>>(
@@ -180,7 +186,7 @@ describe("assertValidDelegationTarget (fail-closed)", () => {
 });
 describe("resolveManifestTarget (re-emission compatibility)", () => {
 	test("v3 manifest target is validated and returned", () => {
-		const target = resolveManifestTarget(
+		const resolved = resolveManifestTarget(
 			{
 				manifestVersion: 3,
 				target: { kind: "worker", name: "reviewer" },
@@ -188,15 +194,17 @@ describe("resolveManifestTarget (re-emission compatibility)", () => {
 			"l1",
 			CONTEXT,
 		);
-		assert.deepStrictEqual(target, { kind: "worker", name: "reviewer" });
+		assert.deepStrictEqual(resolved, {
+			target: { kind: "worker", name: "reviewer" },
+		});
 	});
 	test("v3 host target is validated and returned", () => {
-		const target = resolveManifestTarget(
+		const resolved = resolveManifestTarget(
 			{ manifestVersion: 3, target: { kind: "host" } },
 			"l1",
 			CONTEXT,
 		);
-		assert.deepStrictEqual(target, { kind: "host" });
+		assert.deepStrictEqual(resolved, { target: { kind: "host" } });
 	});
 	test("v3 manifest without target fails closed", () => {
 		assert.throws(
@@ -216,24 +224,30 @@ describe("resolveManifestTarget (re-emission compatibility)", () => {
 		);
 	});
 	test("v2 manifest with worker migrates deterministically to worker target", () => {
-		const target = resolveManifestTarget(
+		const resolved = resolveManifestTarget(
 			{ manifestVersion: 2, worker: "reviewer" },
 			"l1",
 			CONTEXT,
 		);
-		assert.deepStrictEqual(target, { kind: "worker", name: "reviewer" });
+		assert.deepStrictEqual(resolved, {
+			target: { kind: "worker", name: "reviewer" },
+			targetCompatibility: "legacy-v2",
+		});
 	});
 	test("v2 worker name is preserved byte-for-byte", () => {
 		// v2 imposed no naming constraints; migration must not reject
 		// historical names retroactively.
-		const target = resolveManifestTarget(
+		const resolved = resolveManifestTarget(
 			{ manifestVersion: 2, worker: "Commit Msg [old]!" },
 			"l1",
 			CONTEXT,
 		);
-		assert.deepStrictEqual(target, {
-			kind: "worker",
-			name: "Commit Msg [old]!",
+		assert.deepStrictEqual(resolved, {
+			target: {
+				kind: "worker",
+				name: "Commit Msg [old]!",
+			},
+			targetCompatibility: "legacy-v2",
 		});
 	});
 	test("v2 manifest without worker is NEVER guessed as host", () => {
