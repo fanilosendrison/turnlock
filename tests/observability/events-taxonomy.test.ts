@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-// NIB-T §23 — events taxonomy (T-OB-01..13, P-OB-a/b/c)
+// Authority: src/types/events.ts + ADR-0001 +
+// docs/architecture/delegation-model.md (delegation_emit records the logical
+// target and attempt; no physical runtime details).
 import { describe, test } from "node:test";
 import type { OrchestratorEvent } from "../../src/types/events.js";
 
@@ -12,7 +14,16 @@ const requiredFields: Record<string, string[]> = {
 	],
 	phase_start: ["runId", "phase", "attemptCount", "timestamp"],
 	phase_end: ["runId", "phase", "durationMs", "resultKind", "timestamp"],
-	delegation_emit: ["runId", "phase", "label", "kind", "jobCount", "timestamp"],
+	delegation_emit: [
+		"runId",
+		"phase",
+		"label",
+		"kind",
+		"target",
+		"attempt",
+		"jobCount",
+		"timestamp",
+	],
 	delegation_result_read: [
 		"runId",
 		"phase",
@@ -121,6 +132,8 @@ function sampleEvents(): Record<string, OrchestratorEvent> {
 			phase: "a",
 			label: "l",
 			kind: "prompt",
+			target: { kind: "worker", name: "reviewer" },
+			attempt: 0,
 			jobCount: 1,
 			timestamp: "2026-04-19T12:00:00.100Z",
 		},
@@ -260,6 +273,34 @@ describe("[GREEN-L1] events closed taxonomy (T-OB-12..13)", () => {
 		for (const ev of Object.values(events)) {
 			assert.notStrictEqual(ev.eventType, "unknown");
 		}
+	});
+	test("T-OB-14 | no physical runtime details leak into delegation_emit", () => {
+		const event = sampleEvents().delegation_emit;
+		if (event === undefined || event.eventType !== "delegation_emit") {
+			throw new Error("missing delegation_emit sample");
+		}
+		const forbidden = [
+			"provider",
+			"model",
+			"executionClass",
+			"piSession",
+			"subagent",
+		];
+		for (const field of forbidden) {
+			assert.strictEqual(
+				field in Object(event),
+				false,
+				`delegation_emit must not carry ${field}`,
+			);
+		}
+	});
+	test("T-OB-15 | delegation_emit target shape is host or worker", () => {
+		const event = sampleEvents().delegation_emit;
+		if (event === undefined || event.eventType !== "delegation_emit") {
+			throw new Error("missing delegation_emit sample");
+		}
+		assert.deepStrictEqual(event.target, { kind: "worker", name: "reviewer" });
+		assert.strictEqual(event.attempt, 0);
 	});
 });
 describe("[GREEN-L1] events properties (P-OB-a..c)", () => {

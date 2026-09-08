@@ -1,10 +1,10 @@
 # turnlock
 
-> **turnlock gives your scripts a deterministic spine with explicit agent yield points.**
-> It lets your scripts run the mechanical workflow in code, pause only when a Claude Code, Codex, or other coding harness must do semantic work, then resume automatically.
+> **turnlock gives scripts a deterministic spine with explicit semantic yield points.**
+> It lets scripts run mechanical workflow steps in code, pause only when a consumer runtime must resolve semantic work, then resume automatically.
 >
-> Write a pipeline where code handles the mechanical steps and the agent handles the rest.
-> No manual handoff, no polling, no restart from scratch — your script controls the flow, the agent only intervenes where it needs to.
+> Write a pipeline where code handles mechanical steps and every semantic delegation names its logical target.
+> No manual handoff, polling, or restart from scratch: the script controls the flow while the consumer chooses how to execute each target.
 
 ---
 
@@ -16,7 +16,7 @@ In Claude Code (or Codex, or Cursor), you can invoke a script from a skill:
 User types /lint-fix  →  skill launches lint-fix.sh  →  script runs
 ```
 
-But what about the reverse? **A script cannot invoke a skill or delegate back to the host agent.** While AI SDKs allow a script to spawn *isolated, amnesic sub-agents*, you cannot ask the **main session agent** (which holds the conversation history, user preferences, and full project context) to do semantic work for you. Once you're in a script, you're a blocked subprocess — the parent agent is waiting for you to finish.
+But what about the reverse? **A script cannot durably yield semantic work to a logical actor and later resume.** Calling the current host context is one important case; invoking a named worker that a runtime maps to an agent session, direct model call, service, or process is another. Without an explicit protocol, the script is a blocked subprocess and its launcher is waiting for it to finish.
 
 ```
 Without turnlock:
@@ -31,15 +31,16 @@ Without turnlock:
 
 With turnlock:
   ┌─────────────┐                          ┌──────────┐
-  │  Host Agent │────── launches ────────▶ │ script.ts│
+  │   Launcher  │────── launches ────────▶ │ script.ts│
   └─────────────┘                          └──────────┘
          ▲                                       │
-         │                                       │  delegates skill launch to turnlock
-         │               ┌──────────┐            │  (ex: /summarize-this-text)
-         └───────────────│ turnlock │◀───────────┘
-                         └──────────┘
-                           ✅
-                 turnlock calls /summarize-this-text
+         │                                       │  yields an explicit target
+         │               ┌──────────┐            │  host | worker(name)
+         └───────────────│ consumer │◀───────────┘
+                         │ runtime  │
+                         └────┬─────┘
+                              │ resolves target to
+                              ▼ agent | model | service | process
 ```
 
 And **leaving the orchestration to the agent is the problem**:
@@ -50,7 +51,7 @@ And **leaving the orchestration to the agent is the problem**:
 | **Context pollution** | The agent carries the entire pipeline logic in its context window — consuming tokens on mechanical decisions (retry? next phase? validate schema?) that code should handle. |
 | **Token waste** | Every mechanical decision the agent makes is a billed token. A 3-step pipeline with retries can burn thousands of tokens on flow control alone. |
 
-**turnlock solves this by inverting control.** You write a TypeScript pipeline where *you* decide when the agent is invoked. The pipeline is deterministic. Mechanical steps are code. Agent steps are delegated through a clean protocol. If the process crashes mid-pipeline, `--resume` picks up exactly where it stopped.
+**turnlock solves this by inverting control.** A TypeScript pipeline decides when semantic work is delegated and which logical target owns it. The pipeline is deterministic. Mechanical steps are code. Semantic steps cross a clean protocol whose physical execution is owned by the consumer runtime. If the process crashes mid-pipeline, `--resume` picks up exactly where it stopped.
 
 The useful mental model: turnlock is the mechanical spine of a workflow. A phase is a persisted, resumable transaction in that spine. A delegation is the explicit yield point where the workflow needs semantic judgment, host-agent tools, or another non-deterministic worker.
 
@@ -70,9 +71,9 @@ runOrchestrator({
   phases: {
     verify: async (state, io) => {
       // Mechanical: tests pass, lint passes, typecheck passes
-      // Delegate to a skill: write the commit message
+      // Delegate to a worker: write the commit message
       return io.delegate(
-        { kind: "prompt", worker: "commit-msg", prompt: "Write a conventional commit for the staged diff", label: "msg" },
+        { kind: "prompt", target: { kind: "worker", name: "commit-msg" }, prompt: "Write a conventional commit for the staged diff", label: "msg" },
         "commit",
         state,
       );
@@ -92,7 +93,7 @@ runOrchestrator({
 
 1. `verify` runs once. Checks pass, then it calls `io.delegate(...)`.
 2. The runtime snapshots state to disk, prints a `@@TURNLOCK@@` protocol block on stdout, and **exits**.
-3. The parent agent (Claude Code) reads the protocol block, invokes the `commit-msg` skill, waits for completion, then relaunches the binary with `--resume --run-id <id>`.
+3. The consumer runtime reads the protocol block, resolves the logical target (here: `worker("commit-msg")`) to its chosen physical execution mechanism, waits for completion, then relaunches the binary with `--resume --run-id <id>`. A Claude Code host agent is one possible consumer, not the only executor model.
 4. On resume, authoritative state is loaded from SQLite and `state.json` is repaired or regenerated as a projection. `commit` runs, consumes the skill's result, commits with the agent-written message, and emits `DONE`.
 
 Notice that a phase is not synonymous with an agent call. A phase can do as much mechanical work as it needs before yielding. Splitting into another phase is reserved for durable boundaries: `delegate(...)`, `delegateBatch(...)`, `requestExternal(...)`, `done(...)`, or `fail(...)`.
@@ -127,9 +128,9 @@ Turnlock itself runs on Node.js. `resumeCommand` remains opaque consumer data, s
 │          │         │                        │             │  │
 │          │         ▼                        │             │  │
 │          │  ┌────────────────────┐         │             │  │
-│          │  │  Parent agent      │         │             │  │
-│          │  │  executes skill    │         │             │  │
-│          │  │  or spawns agent   │         │             │  │
+│          │  │  Consumer runtime  │         │             │  │
+│          │  │  resolves target   │         │             │  │
+│          │  │  selects execution │         │             │  │
 │          │  │  writes result to  │         │             │  │
 │          │  │  $RUN_DIR/results/ │         │             │  │
 │          │  └────────┬───────────┘         │             │  │
@@ -137,7 +138,7 @@ Turnlock itself runs on Node.js. `resumeCommand` remains opaque consumer data, s
 │          │           ▼                     │             │  │
 │          │  ┌────────────────────┐         │             │  │
 │          │  │  Resume process    │─────────┼─────────────┘  │
-│          │  │  loads state.json  │         │                │
+│          │  │  loads SQLite state│         │                │
 │          │  │  consumes result   │─────────┘                │
 │          │  │  continues at      │                          │
 │          │  │  Phase 3           │                          │
@@ -146,7 +147,7 @@ Turnlock itself runs on Node.js. `resumeCommand` remains opaque consumer data, s
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**The key insight:** turnlock doesn't run a persistent server. It starts, executes mechanical phases until it hits a delegation, snapshots state, and **exits**. The parent agent does the delegated work, then relaunches. This means there's nothing running while the workflow is yielded — no memory leaks, no dangling processes, no port conflicts.
+**The key insight:** turnlock doesn't run a persistent server. It starts, executes mechanical phases until it hits a delegation, snapshots state, and **exits**. The consumer runtime resolves and executes the logical target, then relaunches Turnlock. This means Turnlock itself keeps nothing running while the workflow is yielded — no memory leaks, dangling Turnlock processes, or port conflicts.
 
 ---
 
@@ -174,16 +175,21 @@ const lint = async (state, io) => {
   const errors = findLintErrors(state.files);
   if (errors.length === 0) return io.done({ ok: true });
   return io.delegate(
-    { kind: "prompt", prompt: `Fix: ${JSON.stringify(errors)}`, label: "fix" },
+    {
+      kind: "prompt",
+      target: { kind: "host" },
+      prompt: `Fix: ${JSON.stringify(errors)}`,
+      label: "fix",
+    },
     "verify",
     { ...state, errors },
-  ); // ← suspends, agent runs, resumes at "verify"
+  ); // ← suspends; the runtime resolves host, then resumes at "verify"
 });
 ```
 
 | Concern | Bash script | turnlock |
 |---------|-------------|----------|
-| Invoke an agent from code | ❌ Impossible | ✅ `io.delegate(...)` |
+| Yield semantic work from code | ❌ Impossible | ✅ `io.delegate(...)` |
 | Crash recovery | ❌ Restart from scratch | ✅ embedded SQLite authority + `--resume` |
 | Structured audit trail | ❌ Ad-hoc `echo` | ✅ `events.ndjson` + manifests |
 | Retry on transient errors | ❌ Manual trap/retry | ✅ Built-in backoff + timeout |
@@ -196,7 +202,21 @@ Temporal is a fantastic workflow engine — for distributed systems with a serve
 
 ### ...an AI SDK (Vercel AI, LangChain)?
 
-AI SDKs are for chaining LLM calls. turnlock is for chaining **mechanical and agent steps** with reliability guarantees. Turnlock doesn't call LLMs directly — it delegates to the host agent, which has full session context (tools, memory, project knowledge). Different layer.
+AI SDKs are for chaining LLM calls. turnlock is for chaining **mechanical and agent steps** with reliability guarantees. Turnlock itself does not execute semantic workers: it emits durable delegation requests to logical targets (`host` or `worker(name)`). The surrounding runtime or consumer decides how each target is satisfied — by the current host agent, a child agent session, a direct model call, a remote service, or another execution mechanism.
+
+Turnlock knows:
+
+```text
+target = worker("reviewer")
+```
+
+Turnlock does NOT know:
+
+```text
+reviewer = Pi child using model X
+```
+
+That resolution belongs to the consumer runtime. Different layer.
 
 ### ...an in-process FSM library (XState, etc.)?
 
@@ -214,7 +234,35 @@ If you don't need crash recovery or auditability, a state-machine library in a l
 
 **Auditability.** Each run produces a SQLite-authoritative state store, a projected `state.json` snapshot, an append-only `events.ndjson` audit trail, and JSON manifests for yielded requests — all correlated by `run_id`. `state.json` is a readable projection; SQLite holds the authority.
 
-**Host-agnostic.** Delegation requests travel over stdout in a neutral protocol (`@@TURNLOCK@@ ... @@END@@`). Any host that can read them, execute the request, and relaunch the binary is a valid consumer. Claude Code is the reference integration; Codex, Cursor, and custom scripts are all valid.
+**Host-agnostic.** Delegation requests travel over stdout in a neutral protocol (`@@TURNLOCK@@ ... @@END@@`). Any host that can read them, resolve the logical target, execute the work, and relaunch the binary is a valid consumer. Claude Code is the reference integration; Codex, Cursor, and custom scripts are all valid.
+
+## Explicit orchestration: shape, target, execution
+
+Turnlock separates three orthogonal axes of delegation (see [ADR-0001](docs/adr/0001-logical-delegation-targets.md) and the [delegation model](docs/architecture/delegation-model.md)):
+
+| Axis | Meaning | Examples |
+| ---- | ------- | -------- |
+| Delegation shape | structure of semantic work | `prompt`, `batch` |
+| Logical target | who logically owns the work | `host`, `worker("reviewer")` |
+| Physical execution | how the runtime satisfies the target | Pi child, LLM API, service |
+
+`host` means the principal semantic actor of the harness that launched the workflow, in the current host context. `worker(name)` is a named logical execution capability — never a specific subprocess, session, model, or provider. The runtime resolves the target; Turnlock only records it.
+
+Delegation/orchestration is explicit in the workflow rather than emerging implicitly from the main agent's hidden behavior:
+
+```text
+deterministic phase
+    ↓
+worker("researcher") batch
+    ↓
+results collected
+    ↓
+host synthesis delegation
+    ↓
+deterministic phase
+    ↓
+worker("reviewer")
+```
 
 ---
 
@@ -277,7 +325,7 @@ At the first syntactically valid JSON resolution, Turnlock atomically preserves 
 
 The consumer should write the candidate resolution through a temporary file, flush it when required by its durability model, and atomically rename it to the manifest's `resultPath` before running `resume_cmd`. Turnlock owns the accepted copy and never executes the external effect.
 
-Turnlock 0.10.0 emits protocol version 3 and state schema version 3. It migrates state schema v2 snapshots to v3 during resume while preserving pending delegations. Older Turnlock releases cannot read a state v3 snapshot, and consumers must recognize `REQUEST_EXTERNAL` before handling this new yield type.
+Turnlock 0.11.0 emits protocol version 3, state schema version 4, and delegation manifest version 3. It migrates legacy state schema v2/v3 snapshots and legacy manifest v2 delegations during resume where the historical destination is unambiguous (a v2 manifest with a named worker migrates deterministically to `worker(name)`; a v2 manifest without a worker is never guessed — re-execution of such a delegation fails closed). Older Turnlock releases cannot read the newer snapshots, and consumers must recognize `REQUEST_EXTERNAL` before handling that yield type.
 
 > `requestExternal()` is optional. It should be used only when a consumer wants to suspend the workflow durably while waiting for an external resolution.
 
@@ -286,7 +334,7 @@ Turnlock 0.10.0 emits protocol version 3 and state schema version 3. It migrates
 - **Not a distributed workflow engine** — Temporal does that better at scale, with a server. turnlock runs where Temporal cannot: CI runners, laptops, inside agent sessions.
 - **Not an LLM router** — if you only need to chain a few LLM calls across providers, an AI SDK in a plain Node script is simpler. turnlock is worth it when you're orchestrating multiple phases, some mechanical and some agent-delegated, with reliability and audit guarantees.
 - **Not an in-process FSM library** — if neither reliability nor auditability matters, a state-machine lib in a long-running process is simpler.
-- **Not an agent framework** — turnlock doesn't decide anything. It constrains *when* and *how* the agent is invoked; the agent still does the work.
+- **Not an agent framework** — Turnlock does not choose a physical executor. It constrains when semantic work is yielded and records its logical target; the consumer runtime resolves and executes that target.
 
 One nice consequence: **testability comes for free.** Phases are pure TypeScript functions with declarative delegations, trivially unit-testable in isolation. Transition graphs can be property-tested with `fast-check` (see `tests/`).
 
@@ -327,11 +375,10 @@ pnpm run build     # emit ./dist from src/
 
 | Resource | Description |
 |----------|-------------|
-| [`docs/NX-TURNLOCK.md`](docs/NX-TURNLOCK.md) | Full architectural concept: invariants, layer model, contract, protocol |
-| [`docs/SEPARATION.md`](docs/SEPARATION.md) | Runtime / consumer architecture separation |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records (why decisions were made) |
+| [`docs/architecture/delegation-model.md`](docs/architecture/delegation-model.md) | Current delegation model: shape, logical target, runtime execution |
 | [`docs/sqlite-ownership-migration.md`](docs/sqlite-ownership-migration.md) | **Upgrade guide**: migrating from legacy `.lock` to SQLite ownership |
-| [`docs/consumers/claude-code/`](docs/consumers/claude-code/) | Claude Code integration (reference consumer) |
-| [`specs/briefs/`](specs/briefs/) | Immutable historical briefs documenting the original implementation intent; the current code is authoritative |
+| [`docs/migrations/node-pnpm/`](docs/migrations/node-pnpm/) | Bun → Node/pnpm migration notes and parity contract |
 
 ---
 

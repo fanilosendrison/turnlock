@@ -4,8 +4,13 @@ import { promptBinding } from "../bindings/prompt.js";
 import type {
 	DelegationBinding,
 	DelegationManifest,
+	DelegationTargetCompatibility,
 } from "../bindings/types.js";
-import type { DelegationRequest } from "../types/delegation.js";
+import { MANIFEST_VERSION } from "../constants.js";
+import type {
+	DelegationRequest,
+	DelegationTarget,
+} from "../types/delegation.js";
 /**
  * Shared engine utilities extracted from dispatch-loop.ts and handle-resume.ts
  * to eliminate cross-file duplication.
@@ -20,6 +25,20 @@ export function selectBinding(
 			return batchBinding as DelegationBinding<DelegationRequest>;
 	}
 }
+/**
+ * Reconstruct a manifest for a retry attempt.
+ *
+ * The logical target is IMMUTABLE across attempts (ADR-0001): the caller
+ * resolves it once (including deterministic legacy v2 migration) and passes
+ * it through `updates.target`.  Only attempt-specific fields change:
+ * attempt, emittedAt, emittedAtEpochMs, deadlineAtEpochMs, resultPath,
+ * jobs[].resultPath.
+ *
+ * Any legacy `worker` field carried by a v2 source manifest is stripped.
+ * The closed compatibility marker is preserved separately so the canonical
+ * v3 manifest retains the historical validation regime without deriving its
+ * destination from field presence or name syntax.
+ */
 export function reconstructManifest(
 	old: DelegationManifest,
 	updates: {
@@ -29,10 +48,24 @@ export function reconstructManifest(
 		deadlineAtEpochMs: number;
 		label: string;
 		runDir: string;
+		target: DelegationTarget;
+		targetCompatibility?: DelegationTargetCompatibility;
 	},
 ): DelegationManifest {
+	const {
+		worker: _legacyWorker,
+		targetCompatibility: _oldTargetCompatibility,
+		...stableFields
+	} = old as DelegationManifest & {
+		readonly worker?: string;
+	};
 	const base: DelegationManifest = {
-		...old,
+		...stableFields,
+		...(updates.targetCompatibility === undefined
+			? {}
+			: { targetCompatibility: updates.targetCompatibility }),
+		manifestVersion: MANIFEST_VERSION,
+		target: updates.target,
 		attempt: updates.attempt,
 		emittedAt: updates.emittedAt,
 		emittedAtEpochMs: updates.emittedAtEpochMs,

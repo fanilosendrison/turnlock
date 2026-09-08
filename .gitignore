@@ -98,4 +98,8 @@ AGENTS.md
 !/docs/sqlite-ownership-migration.md
 !/docs/migrations/
 !/docs/migrations/**
+!/docs/adr/
+!/docs/adr/**
+!/docs/architecture/
+!/docs/architecture/**
 /specs

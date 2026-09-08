@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-// NIB-T §24 — events.ndjson (T-EV-01..14, P-EV-a/b/c)
+// Authority: src/services/logger.ts + ADR-0001 (events remain valid JSON and
+// carry the logical target).
 import { describe, test } from "node:test";
 import { createLogger } from "../../src/services/logger.js";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
@@ -120,6 +121,55 @@ describe("events.ndjson format (T-EV-05..08)", () => {
 			logger.emit({ ...sampleEvent(), orchestratorName: "français-éé" });
 			const raw = readFileSync(path, "utf-8");
 			assert.ok(raw.includes("français"));
+		} finally {
+			cleanupTempDir(dir);
+		}
+	});
+});
+describe("delegation_emit serialization (ADR-0001)", () => {
+	function delegationEmitEvent(attempt: number) {
+		return {
+			eventType: "delegation_emit" as const,
+			runId: "01HX",
+			phase: "a",
+			label: "rev",
+			kind: "batch" as const,
+			target: { kind: "worker" as const, name: "reviewer" },
+			attempt,
+			jobCount: 3,
+			timestamp: "2026-04-19T12:00:00.100Z",
+		};
+	}
+	test("T-EV-15 | delegation_emit persists target and attempt as valid JSON", () => {
+		const dir = makeTempDir();
+		try {
+			const logger = createLogger({ enabled: true });
+			const path = join(dir, "events.ndjson");
+			logger.enableDiskEmit(path);
+			logger.emit(delegationEmitEvent(0));
+			logger.emit(delegationEmitEvent(1));
+			const lines = readFileSync(path, "utf-8")
+				.split("\n")
+				.filter((l) => l.length > 0);
+			assert.strictEqual(lines.length, 2);
+			const first = JSON.parse(lines[0] ?? "{}") as {
+				target: { kind: string; name: string };
+				attempt: number;
+			};
+			const second = JSON.parse(lines[1] ?? "{}") as {
+				target: { kind: string; name: string };
+				attempt: number;
+			};
+			assert.deepStrictEqual(first.target, {
+				kind: "worker",
+				name: "reviewer",
+			});
+			assert.strictEqual(first.attempt, 0);
+			assert.deepStrictEqual(second.target, {
+				kind: "worker",
+				name: "reviewer",
+			});
+			assert.strictEqual(second.attempt, 1);
 		} finally {
 			cleanupTempDir(dir);
 		}

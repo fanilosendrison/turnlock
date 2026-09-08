@@ -1,4 +1,5 @@
 import type { OrchestratorErrorKind } from "../errors/base.js";
+import type { DelegationTarget } from "./delegation.js";
 export interface OrchestratorLogger {
 	emit(event: OrchestratorEvent): void;
 }
@@ -31,6 +32,9 @@ export type OrchestratorEvent =
 			phase: string;
 			label: string;
 			kind: "prompt" | "batch";
+			/** Logical destination (ADR-0001). No physical runtime details. */
+			target: DelegationTarget;
+			attempt: number;
 			jobCount: number;
 			timestamp: string;
 	  }

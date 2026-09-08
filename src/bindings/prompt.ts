@@ -32,7 +32,7 @@ export const promptBinding: DelegationBinding<PromptDelegationRequest> = {
 			deadlineAtEpochMs: context.deadlineAtEpochMs,
 			attempt: context.attempt,
 			maxAttempts: context.maxAttempts,
-			...(request.worker !== undefined ? { worker: request.worker } : {}),
+			target: request.target,
 			prompt: request.prompt,
 			resultPath,
 		};

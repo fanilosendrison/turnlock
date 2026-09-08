@@ -9,11 +9,9 @@
 //       serializes retention deletion against ownership acquisition.
 export const CURRENT_SCHEMA_VERSION = 2;
 // DDL is idempotent (CREATE TABLE IF NOT EXISTS) and executed at every
-// database open.  The schema_metadata version check/migration itself runs
-// inside a dedicated BEGIN IMMEDIATE ... COMMIT transaction in
-// `run-database.ts` (v1 → v2 migration).  The atomicity of the very first
-// concurrent schema initialization on a nonexistent database is tracked
-// separately in the backlog (atomic cold-start schema init).
+// database open inside the same BEGIN IMMEDIATE ... COMMIT transaction as
+// the schema_metadata version check/migration. This makes first-open schema
+// creation atomic and serializes concurrent cold-start attempts.
 export const SCHEMA_DDL = `
 CREATE TABLE IF NOT EXISTS schema_metadata (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),

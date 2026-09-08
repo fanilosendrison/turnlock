@@ -251,7 +251,7 @@ await runOrchestrator<State>({
 	phases: {
 		request: definePhase<State>(async (_state, io) =>
 			io.delegate(
-				{ kind: "prompt", label: "review", prompt: "review" },
+				{ kind: "prompt", target: { kind: "host" }, label: "review", prompt: "review" },
 				"consume",
 				{ stage: "waiting" },
 			),
@@ -346,6 +346,7 @@ await runOrchestrator<State>({
 			io.delegate(
 				{
 					kind: "prompt",
+					target: { kind: "host" },
 					label: "review",
 					prompt: "review",
 					retry: { maxAttempts: 2, backoffBaseMs: 1, maxBackoffMs: 1 },

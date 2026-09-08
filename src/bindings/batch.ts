@@ -43,7 +43,7 @@ export const batchBinding: DelegationBinding<BatchDelegationRequest> = {
 			deadlineAtEpochMs: context.deadlineAtEpochMs,
 			attempt: context.attempt,
 			maxAttempts: context.maxAttempts,
-			...(request.worker !== undefined ? { worker: request.worker } : {}),
+			target: request.target,
 			jobs,
 		};
 	},

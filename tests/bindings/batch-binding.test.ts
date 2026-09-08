@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-// NIB-T §14 — BatchBinding (T-BT-01..08, P-BT-a/b/c)
+// Authority: public types + serialization contracts + tests + ADR-0001 +
+// docs/architecture/delegation-model.md
 import { describe, test } from "node:test";
 import { batchBinding } from "../../src/bindings/batch.js";
 import type {
@@ -35,7 +36,7 @@ function makeRequest(
 ): BatchDelegationRequest {
 	return {
 		kind: "batch",
-		worker: "reviewer",
+		target: { kind: "worker", name: "reviewer" },
 		jobs: Array.from({ length: jobCount }, (_, i) => ({
 			id: `j${i + 1}`,
 			prompt: `p${i + 1}`,
@@ -60,6 +61,34 @@ describe("BatchBinding.buildManifest (T-BT-01..05)", () => {
 			`${RUN_DIR}/results/batch-0/j1.json`,
 		);
 	});
+	test("T-BT-01h | host target preserved exactly", () => {
+		const m = batchBinding.buildManifest(
+			{ ...makeRequest(1), target: { kind: "host" } },
+			makeContext(),
+		);
+		assert.deepStrictEqual(m.target, { kind: "host" });
+	});
+	test("T-BT-01w | worker name preserved exactly", () => {
+		const m = batchBinding.buildManifest(
+			{
+				...makeRequest(1),
+				target: { kind: "worker", name: "multi-file-auditor" },
+			},
+			makeContext(),
+		);
+		assert.deepStrictEqual(m.target, {
+			kind: "worker",
+			name: "multi-file-auditor",
+		});
+	});
+	test("T-BT-01v | manifest is version 3", () => {
+		const m = batchBinding.buildManifest(makeRequest(1), makeContext());
+		assert.strictEqual(m.manifestVersion, 3);
+	});
+	test("T-BT-01l | no legacy worker field emitted", () => {
+		const m = batchBinding.buildManifest(makeRequest(1), makeContext());
+		assert.strictEqual("worker" in Object(m), false);
+	});
 	test("T-BT-02 | 3 jobs", () => {
 		const m = batchBinding.buildManifest(makeRequest(3), makeContext());
 		const jobs = expectJobs(m);
@@ -81,7 +110,7 @@ describe("BatchBinding.buildManifest (T-BT-01..05)", () => {
 	test("T-BT-04 | 0 jobs → InvalidConfigError", () => {
 		const req: BatchDelegationRequest = {
 			kind: "batch",
-			worker: "reviewer",
+			target: { kind: "host" },
 			jobs: [],
 			label: "batch",
 		};

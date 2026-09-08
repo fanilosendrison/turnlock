@@ -68,7 +68,7 @@ await runOrchestrator<State>({
   resumeCommand: (id) => \`node \${import.meta.filename} --run-id \${id} --resume\`,
   phases: {
     emit: definePhase<State>(async (_state, io) => {
-      return io.delegate({ kind: "prompt", prompt: "verify", label: "rev" }, "consume", { step: 1 });
+      return io.delegate({ kind: "prompt", target: { kind: "host" }, prompt: "verify", label: "rev" }, "consume", { step: 1 });
     }),
     consume: definePhase<State>(async (_state, io) => {
       await io.consumePendingResult(z.object({ verify: z.string() }));

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-// NIB-T §27.1-§27.5 — surface publique (C-GL-01..13)
+// Authority: src/index.ts public surface + ADR-0001.
 import { describe, test } from "node:test";
 import type {
 	ExternalRequest,
@@ -41,6 +41,9 @@ const EXPECTED_EXPORTS = new Set([
 	"PersistenceFailureError",
 	"StateRevisionConflictError",
 	"MixedOwnershipProtocolError",
+	"IndeterminatePhaseExecutionError",
+	"InitialDispatchAlreadyClaimedError",
+	"AmbiguousLegacyDelegationTargetError",
 	"PROTOCOL_VERSION",
 	"STATE_SCHEMA_VERSION",
 ]);
@@ -98,8 +101,8 @@ describe("[GREEN-L1] " + "constantes (C-GL-05..06)", () => {
 	test("C-GL-06 | STATE_SCHEMA_VERSION === 4", () => {
 		assert.strictEqual(publicApi.STATE_SCHEMA_VERSION, 4);
 	});
-	test("package version is 0.10.0", () => {
-		assert.strictEqual(pkg.version, "0.10.0");
+	test("package version is 0.11.0", () => {
+		assert.strictEqual(pkg.version, "0.11.0");
 	});
 });
 describe("[GREEN-L1] " + "dépendances (C-GL-07..08)", () => {
@@ -255,9 +258,13 @@ describe("[GREEN-L1] " + "OrchestratorErrorKind fermé (C-GL-12..13)", () => {
 			"mixed_ownership_protocol_detected",
 			() => new publicApi.MixedOwnershipProtocolError("x"),
 		],
+		[
+			"ambiguous_legacy_delegation_target",
+			() => new publicApi.AmbiguousLegacyDelegationTargetError("x"),
+		],
 	] as const;
-	test("C-GL-12 | 21 kind values", () => {
-		assert.strictEqual(errorCases.length, 21);
+	test("C-GL-12 | 22 kind values", () => {
+		assert.strictEqual(errorCases.length, 22);
 	});
 	test("C-GL-13 | each kind ↔ class mapping", () => {
 		for (const [kind, buildError] of errorCases) {
