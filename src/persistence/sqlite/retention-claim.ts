@@ -29,7 +29,6 @@
 // result (LIVE_OWNER, UNKNOWN, DB_CONTENTION_TIMEOUT, DB_FAILURE) keeps
 // the directory.
 import * as fs from "node:fs";
-import * as path from "node:path";
 import { generateRunId } from "../../services/run-id.js";
 import {
 	beginImmediate,
@@ -39,6 +38,10 @@ import {
 	readOwnershipPredecessor,
 	rollback,
 } from "./ownership.js";
+import type {
+	ClaimRunForRetentionDeletionParams,
+	RunRetentionClaimResult,
+} from "./retention-claim-contracts.js";
 import {
 	applyRetirementInTransaction,
 	fenceOwnershipForRetirementInTransaction,
@@ -46,110 +49,16 @@ import {
 	readRetentionRow,
 } from "./retention-state.js";
 import { openRunDatabase } from "./run-database.js";
-import type { SqliteDriver } from "./sqlite-driver.js";
+import {
+	captureDatabaseIdentity,
+	databaseIdentitiesEqual,
+} from "./run-database-filesystem-identity.js";
 
-/** Filesystem identity (dev/ino) of the directory and database a claim
- *  referred to.  Captured while the SQLite connection was still open. */
-export interface RunDatabaseFilesystemIdentity {
-	/** Decimal strings keep filesystem identities exact on platforms where
-	 *  inode/device values exceed JavaScript's safe-integer range. */
-	readonly dirDev: string;
-	readonly dirIno: string;
-	readonly dbDev: string;
-	readonly dbIno: string;
-}
-
-/** Typed result of attempting the durable retirement claim. */
-export type RunRetentionClaimResult =
-	| {
-			/** The retirement frontier was committed in this attempt.  The
-			 *  stale owner (if any) was fenced; the run can never be
-			 *  acquired again.  Filesystem retirement is authorized for
-			 *  the identified directory object. */
-			readonly kind: "CLAIMED";
-			readonly fenceToken: bigint;
-			readonly runId: string;
-			readonly incarnationId: string;
-			readonly orchestratorName: string;
-			readonly retirementToken: string;
-			readonly retirementClaimedAtEpochMs: number;
-			readonly databaseIdentity: RunDatabaseFilesystemIdentity | null;
-	  }
-	| {
-			/** A previous cleanup already committed the irreversible
-			 *  retirement (it may have crashed before the rename/delete).
-			 *  Filesystem retirement may be resumed.  The persisted
-			 *  retirement token was validated. */
-			readonly kind: "ALREADY_RETIRING";
-			readonly runId: string;
-			readonly incarnationId: string;
-			readonly orchestratorName: string;
-			readonly retirementToken: string;
-			readonly retirementClaimedAtEpochMs: number;
-			readonly databaseIdentity: RunDatabaseFilesystemIdentity | null;
-	  }
-	| {
-			/** Ownership is HELD with a live lease at the time of the claim
-			 *  (clock captured after BEGIN IMMEDIATE).  MUST KEEP. */
-			readonly kind: "LIVE_OWNER";
-			readonly leaseUntilEpochMs: number;
-	  }
-	| {
-			/** Cannot prove safe retirement — MUST KEEP (fail-closed). */
-			readonly kind: "UNKNOWN";
-			readonly reason: string;
-	  }
-	| {
-			readonly kind: "DB_CONTENTION_TIMEOUT";
-	  }
-	| {
-			readonly kind: "DB_FAILURE";
-			readonly cause: unknown;
-	  };
-
-export interface ClaimRunForRetentionDeletionParams {
-	readonly driver: SqliteDriver;
-	readonly dbPath: string;
-	readonly runId: string;
-	/** The namespace that owns the canonical path.  When supplied, the
-	 *  database incarnation must prove this exact orchestrator name. */
-	readonly expectedOrchestratorName?: string;
-	readonly busyTimeoutMs: number;
-	readonly contentionDeadlineMs: number;
-	/** Optional clock for lease-critical timestamp capture after
-	 *  BEGIN IMMEDIATE.  Defaults to `Date.now`. */
-	readonly leaseClockEpochMs?: () => number;
-}
-
-function captureDatabaseIdentity(
-	dbPath: string,
-): RunDatabaseFilesystemIdentity | null {
-	try {
-		const dbStat = fs.lstatSync(dbPath, { bigint: true });
-		const dirStat = fs.lstatSync(path.dirname(dbPath), { bigint: true });
-		if (dbStat.isSymbolicLink() || dirStat.isSymbolicLink()) return null;
-		return {
-			dirDev: dirStat.dev.toString(),
-			dirIno: dirStat.ino.toString(),
-			dbDev: dbStat.dev.toString(),
-			dbIno: dbStat.ino.toString(),
-		};
-	} catch {
-		return null;
-	}
-}
-
-function databaseIdentitiesEqual(
-	left: RunDatabaseFilesystemIdentity,
-	right: RunDatabaseFilesystemIdentity,
-): boolean {
-	return (
-		left.dirDev === right.dirDev &&
-		left.dirIno === right.dirIno &&
-		left.dbDev === right.dbDev &&
-		left.dbIno === right.dbIno
-	);
-}
+export type {
+	ClaimRunForRetentionDeletionParams,
+	RunDatabaseFilesystemIdentity,
+	RunRetentionClaimResult,
+} from "./retention-claim-contracts.js";
 
 /** Validate an already-RETIRING database before authorizing filesystem
  *  retirement resume.

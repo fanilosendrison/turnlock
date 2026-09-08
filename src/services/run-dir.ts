@@ -2,10 +2,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { InvalidConfigError } from "../errors/concrete.js";
 import { RUN_NAMESPACE_DIR_NAME } from "./run-namespace-mutex.js";
-import {
-	RETIRED_DIR_NAME,
-	type RunRetirementOutcome,
-} from "./run-retirement.js";
+import type {
+	RunDirRetirement,
+	RunRetirementOutcome,
+} from "./run-retirement-contracts.js";
+import { RETIRED_DIR_NAME } from "./run-retirement-layout.js";
+
+export type { RunDirRetirement } from "./run-retirement-contracts.js";
 
 const DEFAULT_RUN_DIR_ROOT = path.join(".turnlock", "runs");
 const RUN_DIR_ROOT_ENV_VAR = "TURNLOCK_RUN_DIR_ROOT";
@@ -18,47 +21,6 @@ function resolveRunDirRoot(cwd: string, configRoot?: string): string {
 				? configRoot
 				: DEFAULT_RUN_DIR_ROOT;
 	return path.isAbsolute(root) ? root : path.join(cwd, root);
-}
-/** Filesystem retirement delegate for retention candidates.
- *
- *  `cleanupOldRuns` is destructive; it never deletes on a read-only
- *  observation.  The delegate must perform the durable, irreversible
- *  retirement claim in the run's own SQLite authority and only then move
- *  the canonical pathname atomically into the retirement-specific area
- *  before any recursive deletion (see `run-retirement.ts`).
- *
- *  Deletion happens exclusively through:
- *    - `retireRunDirectory`: claim → identity verify → atomic rename →
- *      delete retired path;
- *    - `sweepRetiredDirectories`: finish/retry deletion of already-retired
- *      entries (crash recovery).
- *
- *  Any delegate failure throws, and the cleanup treats it fail-closed
- *  (candidate kept). */
-export interface RunDirRetirement {
-	/**
-	 * Atomically retire a candidate RUN_DIR.
-	 *
-	 * @param runDir absolute path of the candidate directory
-	 * @param runId the directory name (the run identifier)
-	 */
-	readonly retireRunDirectory: (
-		runDir: string,
-		runId: string,
-		orchestratorName?: string,
-	) => RunRetirementOutcome;
-	/**
-	 * Sweep the `.retired` area of one orchestrator namespace, finishing
-	 * or retrying deletions of already-retired incarnations.
-	 *
-	 * @param retiredRoot absolute path of the `.retired` directory
-	 * @param orchestratorName name of the owning orchestrator — used to
-	 *   cross-validate READY markers (foreign markers are kept)
-	 */
-	readonly sweepRetiredDirectories: (
-		retiredRoot: string,
-		orchestratorName: string,
-	) => number;
 }
 export function resolveRunDir(
 	cwd: string,
