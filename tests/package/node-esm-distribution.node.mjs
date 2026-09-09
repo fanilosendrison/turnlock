@@ -58,7 +58,7 @@ test("the packed package resolves runtime and types from an isolated consumer", 
 		const archives = readdirSync(packDirectory).filter((name) =>
 			name.endsWith(".tgz"),
 		);
-		assert.deepEqual(archives, ["turnlock-0.11.0.tgz"]);
+		assert.deepEqual(archives, ["turnlock-0.12.0.tgz"]);
 		const archivePath = join(packDirectory, archives[0]);
 
 		writeFileSync(

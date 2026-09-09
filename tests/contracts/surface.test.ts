@@ -101,8 +101,8 @@ describe("[GREEN-L1] " + "constantes (C-GL-05..06)", () => {
 	test("C-GL-06 | STATE_SCHEMA_VERSION === 4", () => {
 		assert.strictEqual(publicApi.STATE_SCHEMA_VERSION, 4);
 	});
-	test("package version is 0.11.0", () => {
-		assert.strictEqual(pkg.version, "0.11.0");
+	test("package version is 0.12.0", () => {
+		assert.strictEqual(pkg.version, "0.12.0");
 	});
 });
 describe("[GREEN-L1] " + "dépendances (C-GL-07..08)", () => {
