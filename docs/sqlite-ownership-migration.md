@@ -247,17 +247,30 @@ This marker is about **protocol migration**, not about retention:
   is permanently non-resumable), the latter is a deployment-level rule
   documented here.
 
-## Retention protocol — three distinct boundaries
+## Retention protocol — independent durable boundaries
 
-Retention cleanup uses three distinct persistence layers with disjoint
-responsibilities.  They must not be conflated as a single "authority":
+Retention cleanup uses distinct persistence layers and state machines with
+separate responsibilities. They must not be conflated as a single authority:
 
-1. **Run-local SQLite authority** (`RUN_DIR/turnlock.sqlite3`) — the ONLY
-   workflow authority.  It holds ownership, incarnation, retention
-   eligibility, and the authoritative state.  The irreversible
-   `run_retention` ACTIVE → RETIRING COMMIT (serialized with every
-   ownership acquisition on the same `BEGIN IMMEDIATE`) is the frontier
-   after which the old run can never regain ownership.
+1. **Run-local SQLite authority** (`RUN_DIR/turnlock.sqlite3`) — the only
+   workflow authority. It holds the incarnation, execution ownership,
+   workflow lifecycle, retention state, and authoritative snapshot.
+
+   - `run_ownership` answers whether a process currently owns execution.
+     `FREE` and an expired `HELD` lease do not prove workflow completion.
+   - `run_workflow_lifecycle` answers whether a valid continuation may remain.
+     Bootstrap starts `NONTERMINAL`; only the state commits produced by
+     explicit `io.done()` or `io.fail()` results atomically and irreversibly
+     transition it to `TERMINAL` with a durable timestamp.
+   - `run_retention` answers whether the run remains admissible to future
+     ownership. The irreversible `ACTIVE` → `RETIRING` commit is permitted
+     only for a terminal workflow older than the retention cutoff. It is
+     serialized with every ownership acquisition on the same
+     `BEGIN IMMEDIATE` transaction.
+
+   Turnlock defines no implicit abandonment or orphan timeout. Suspended,
+   crashed, indeterminate, and otherwise nonterminal workflows remain
+   ineligible for retention regardless of ownership or directory age.
 
 2. **Namespace sidecar SQLite** (`RUN_ROOT/<orchestrator>/.namespace/<runId>.sqlite3`)
    — an EPHEMERAL MUTEX ONLY.  It carries no run state, no ownership, no
@@ -284,3 +297,21 @@ The protocol guarantee applies to protocol-compatible Turnlock processes:
 concurrent access from older builds that predate the namespace protocol
 is not supported and remains governed by the open
 package/version/compatibility item.
+
+### SQLite authority schema v3 migration
+
+Turnlock 0.12.0 upgrades run-local SQLite authorities from schema v1 or v2 to
+schema v3 in the same atomic schema transaction. Migration infers `DONE` only
+when the authoritative state digest, state version, run identity, canonical
+shape, terminal result, and absence of continuations or initial-dispatch
+markers all agree. Every ambiguous state migrates to `NONTERMINAL`.
+
+A schema-v2 run already marked `RETIRING` crossed the irreversible deletion
+frontier before lifecycle evidence existed. It migrates with the explicit
+`LEGACY_RETENTION_CLAIM` provenance and resumes retirement without being
+misrepresented as `DONE`. Strictly read-only retired-payload recovery also
+accepts coherent schema-v2 `RETIRING` authorities so an upgrade cannot strand
+payloads detached by an older compatible cleanup.
+
+Downgrading a schema-v3 authority to Turnlock 0.11.x or earlier is unsupported;
+those binaries fail closed on the unknown SQLite schema version.
