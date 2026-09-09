@@ -9,6 +9,7 @@ import { bootstrapNewRunAtomic } from "../../src/persistence/sqlite/run-bootstra
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
 import { buildRunRetirement } from "../../src/services/run-retirement.js";
 import type { OrchestratorConfig } from "../../src/types/config.js";
+import { commitTerminalDone } from "../helpers/terminal-workflow.js";
 
 export const ORCHESTRATOR_NAME = "retention-orch";
 export const RUN_A = "01HX000000000000000000000A";
@@ -45,14 +46,15 @@ export function makeConfig(
 	};
 }
 
-/** Bootstrap a genuine Turnlock run database via the production primitive.
+/** Bootstrap a genuine run and, by default, commit an old terminal DONE.
  *
- * Ownership is HELD with a live lease (now + 30min). Returns the bootstrap
- * result (including the LockHandle) for fencing proofs.
+ * Ownership remains HELD with a live lease. Pass `false` only for tests that
+ * require a fresh nonterminal incarnation rather than a retention candidate.
  */
 export function bootstrapForeignRun(
 	runDir: string,
 	runId: string,
+	terminal = true,
 ): ReturnType<typeof bootstrapNewRunAtomic> {
 	mkdirSync(runDir, { recursive: true });
 	const dbPath = join(runDir, "turnlock.sqlite3");
@@ -87,8 +89,11 @@ export function bootstrapForeignRun(
 		stateSchemaVersion: STATE_SCHEMA_VERSION,
 		contentionDeadlineMs: 5000,
 	});
-	runDb.close();
 	assert.strictEqual(result.kind, "BOOTSTRAPPED");
+	if (terminal && result.kind === "BOOTSTRAPPED") {
+		commitTerminalDone(runDb.connection, result, Date.now() - 100 * DAY_MS);
+	}
+	runDb.close();
 	return result;
 }
 
@@ -123,6 +128,7 @@ export function claimB(runDir: string, runId = RUN_B) {
 		runId,
 		busyTimeoutMs: 2000,
 		contentionDeadlineMs: 5000,
+		retentionThresholdEpochMs: Date.now(),
 	});
 }
 

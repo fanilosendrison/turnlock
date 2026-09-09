@@ -53,7 +53,12 @@ describe("retention namespace initial serialization", () => {
 			// Full production retirement flow with the internal fault point.
 			const barrierSab = new Int32Array(new SharedArrayBuffer(4));
 			const outcome = retireRunDirectoryInternal(
-				{ driver: nodeSqliteDriver, runDir: runBDir, runId: RUN_B },
+				{
+					driver: nodeSqliteDriver,
+					runDir: runBDir,
+					runId: RUN_B,
+					retentionThresholdEpochMs: Date.now(),
+				},
 				{
 					onFaultPoint: (point) => {
 						if (point !== "AFTER_PRE_RENAME_VERIFICATION") return;

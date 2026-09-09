@@ -41,6 +41,7 @@ import type { StateFile } from "../../src/services/state-io.js";
 import type { OrchestratorConfig } from "../../src/types/config.js";
 import { createMockLogger } from "../helpers/mock-logger.js";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
+import { commitTerminalDone } from "../helpers/terminal-workflow.js";
 
 const ORCHESTRATOR_NAME = "stale-writer-orch";
 const RUN_B = "01HX000000000000000000000B";
@@ -100,8 +101,11 @@ function bootstrapForeignRun(
 		stateSchemaVersion: STATE_SCHEMA_VERSION,
 		contentionDeadlineMs: 5000,
 	});
-	runDb.close();
 	assert.strictEqual(result.kind, "BOOTSTRAPPED");
+	if (result.kind === "BOOTSTRAPPED") {
+		commitTerminalDone(runDb.connection, result, nowEpochMs - 100_000);
+	}
+	runDb.close();
 	return result;
 }
 
@@ -122,6 +126,7 @@ function expireAndFence(runDir: string): void {
 		runId: RUN_B,
 		busyTimeoutMs: 2000,
 		contentionDeadlineMs: 5000,
+		retentionThresholdEpochMs: Date.now(),
 	});
 	assert.strictEqual(claim.kind, "CLAIMED");
 }

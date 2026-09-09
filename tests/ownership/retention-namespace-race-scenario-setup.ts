@@ -5,6 +5,7 @@ import { STATE_SCHEMA_VERSION } from "../../src/constants.js";
 import { nodeSqliteDriver } from "../../src/persistence/sqlite/node-sqlite-driver.js";
 import { bootstrapNewRunAtomic } from "../../src/persistence/sqlite/run-bootstrap.js";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
+import { commitTerminalDone } from "../helpers/terminal-workflow.js";
 
 export const ORCHESTRATOR_NAME = "retention-namespace-orch";
 export const RUN_B = "01HX000000000000000000000B";
@@ -56,8 +57,11 @@ export function bootstrapForeignRun(
 		stateSchemaVersion: STATE_SCHEMA_VERSION,
 		contentionDeadlineMs: 5000,
 	});
-	runDb.close();
 	assert.strictEqual(result.kind, "BOOTSTRAPPED");
+	if (result.kind === "BOOTSTRAPPED") {
+		commitTerminalDone(runDb.connection, result, Date.now() - 100 * DAY_MS);
+	}
+	runDb.close();
 	return result;
 }
 

@@ -15,6 +15,7 @@ import { inspectRetiredRunAuthority } from "../../src/persistence/sqlite/retired
 import { bootstrapNewRunAtomic } from "../../src/persistence/sqlite/run-bootstrap.js";
 import { openRunDatabase } from "../../src/persistence/sqlite/run-database.js";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
+import { commitTerminalDone } from "../helpers/terminal-workflow.js";
 
 const RUN_ID = "01HX000000000000000000000B";
 const ORCHESTRATOR_NAME = "inspection-orch";
@@ -53,8 +54,11 @@ function bootstrap(runDir: string) {
 		stateSchemaVersion: STATE_SCHEMA_VERSION,
 		contentionDeadlineMs: 5000,
 	});
-	runDb.close();
 	assert.strictEqual(result.kind, "BOOTSTRAPPED");
+	if (result.kind === "BOOTSTRAPPED") {
+		commitTerminalDone(runDb.connection, result, now - 100_000);
+	}
+	runDb.close();
 	return dbPath;
 }
 
@@ -65,6 +69,7 @@ function claim(runDir: string) {
 		runId: RUN_ID,
 		busyTimeoutMs: 2000,
 		contentionDeadlineMs: 5000,
+		retentionThresholdEpochMs: Date.now(),
 	});
 }
 

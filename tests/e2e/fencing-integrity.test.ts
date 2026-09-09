@@ -89,6 +89,9 @@ function openDb(runDir: string): ReturnType<typeof nodeSqliteDriver.open> {
 function deleteStateRow(runDir: string): void {
 	const db = openDb(runDir);
 	db.exec("DELETE FROM run_state WHERE singleton = 1");
+	// Simulate a crash before lifecycle establishment rather than corrupting
+	// an established terminal workflow into a resumable one.
+	db.exec("DELETE FROM run_workflow_lifecycle WHERE singleton = 1");
 	// Also set ownership to FREE so the next process can acquire.
 	db.exec(
 		"UPDATE run_ownership SET ownership_status = 'FREE', owner_token = NULL, owner_pid = NULL WHERE singleton = 1",

@@ -94,6 +94,13 @@ describe("run-database", () => {
 			prepare: (sql: string) => ({
 				run: () => ({ changes: 1 }),
 				get: <T>() => {
+					if (
+						sql.includes("run_incarnation") ||
+						sql.includes("run_workflow_lifecycle") ||
+						sql.includes("run_state")
+					) {
+						return undefined as T;
+					}
 					if (sql.includes("run_retention")) {
 						return {
 							retention_status: "ACTIVE",

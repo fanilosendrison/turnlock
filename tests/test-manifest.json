@@ -1,6 +1,6 @@
 {
 	"version": 1,
-	"expectedFiles": 72,
+	"expectedFiles": 76,
 	"testFiles": [
 		"tests/bindings/batch-binding.test.ts",
 		"tests/bindings/external-request-binding.test.ts",
@@ -21,6 +21,7 @@
 		"tests/e2e/legacy-delegation-multi-retry.test.ts",
 		"tests/e2e/legacy-delegation-target-compat.test.ts",
 		"tests/e2e/process-runtime.test.ts",
+		"tests/e2e/retention-workflow-lifecycle.test.ts",
 		"tests/engine/artifact-fencing.test.ts",
 		"tests/engine/authority-loss.test.ts",
 		"tests/engine/bootstrap-recovery.test.ts",
@@ -56,8 +57,11 @@
 		"tests/persistence/ownership-refresh-release.test.ts",
 		"tests/persistence/ownership.test.ts",
 		"tests/persistence/retired-run-inspection.test.ts",
+		"tests/persistence/run-bootstrap-transaction.test.ts",
 		"tests/persistence/run-state-store.test.ts",
 		"tests/persistence/v3v4-migration.test.ts",
+		"tests/persistence/workflow-lifecycle-migration.test.ts",
+		"tests/persistence/workflow-lifecycle.test.ts",
 		"tests/services/abortable-sleep.test.ts",
 		"tests/services/clock.test.ts",
 		"tests/services/content-digest.test.ts",

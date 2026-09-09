@@ -40,13 +40,18 @@ describe("canonical namespace identity", () => {
 			// canonical pathname with the production primitives.
 			let newIncarnationBootstrapped = false;
 			const windowDelegate: typeof productionRetirement = {
-				retireRunDirectory: (runDir, runId) => {
+				retireRunDirectory: (
+					runDir,
+					runId,
+					orchestratorName,
+					retentionThresholdEpochMs,
+				) => {
 					const claim = claimB(runDir, runId);
 					assert.strictEqual(claim.kind, "CLAIMED");
 					for (const entry of readdirSync(runDir)) {
 						rmSync(join(runDir, entry), { recursive: true, force: true });
 					}
-					const fresh = bootstrapForeignRun(runDir, runId);
+					const fresh = bootstrapForeignRun(runDir, runId, false);
 					assert.strictEqual(fresh.kind, "BOOTSTRAPPED");
 					if (fresh.kind === "BOOTSTRAPPED") {
 						assert.ok(fresh.handle.leaseUntilEpochMs > Date.now());
@@ -54,7 +59,12 @@ describe("canonical namespace identity", () => {
 					newIncarnationBootstrapped = true;
 					// Hand over to the REAL production flow: it must refuse
 					// to act on the new incarnation.
-					return productionRetirement.retireRunDirectory(runDir, runId);
+					return productionRetirement.retireRunDirectory(
+						runDir,
+						runId,
+						orchestratorName,
+						retentionThresholdEpochMs,
+					);
 				},
 				sweepRetiredDirectories: (retiredRoot, orchestratorName) =>
 					productionRetirement.sweepRetiredDirectories(
@@ -106,19 +116,29 @@ describe("canonical namespace identity", () => {
 			ageDir(runBDir, 100);
 			let newIncarnationBootstrapped = false;
 			const swapDelegate: typeof productionRetirement = {
-				retireRunDirectory: (runDir, runId) => {
+				retireRunDirectory: (
+					runDir,
+					runId,
+					orchestratorName,
+					retentionThresholdEpochMs,
+				) => {
 					const claim = claimB(runDir, runId);
 					assert.strictEqual(claim.kind, "CLAIMED");
 					// Pathname substitution: the whole directory object the
 					// claim referred to is replaced by a brand-new one.
 					rmSync(runDir, { recursive: true, force: true });
-					const fresh = bootstrapForeignRun(runDir, runId);
+					const fresh = bootstrapForeignRun(runDir, runId, false);
 					assert.strictEqual(fresh.kind, "BOOTSTRAPPED");
 					if (fresh.kind === "BOOTSTRAPPED") {
 						assert.ok(fresh.handle.leaseUntilEpochMs > Date.now());
 					}
 					newIncarnationBootstrapped = true;
-					return productionRetirement.retireRunDirectory(runDir, runId);
+					return productionRetirement.retireRunDirectory(
+						runDir,
+						runId,
+						orchestratorName,
+						retentionThresholdEpochMs,
+					);
 				},
 				sweepRetiredDirectories: (retiredRoot, orchestratorName) =>
 					productionRetirement.sweepRetiredDirectories(
@@ -177,7 +197,7 @@ describe("canonical namespace identity", () => {
 			if (rename.kind !== "RENAMED") throw new Error("setup");
 			assert.strictEqual(existsSync(runDir), false);
 			// 3. A NEW incarnation bootstraps at the canonical pathname.
-			const fresh = bootstrapForeignRun(runDir, RUN_B);
+			const fresh = bootstrapForeignRun(runDir, RUN_B, false);
 			assert.strictEqual(fresh.kind, "BOOTSTRAPPED");
 			// 4. Deletion of the retired path runs to completion.
 			const deletion = deleteRetiredRunDirectory(rename.retiredPath);
@@ -209,7 +229,7 @@ describe("canonical namespace identity", () => {
 			// Swap the canonical path with a brand-new incarnation BEFORE
 			// the filesystem phase.
 			rmSync(runDir, { recursive: true, force: true });
-			const fresh = bootstrapForeignRun(runDir, RUN_B);
+			const fresh = bootstrapForeignRun(runDir, RUN_B, false);
 			assert.strictEqual(fresh.kind, "BOOTSTRAPPED");
 			// The stale claim's identity must refuse the rename.
 			const rename = renameRunDirectoryToRetired({

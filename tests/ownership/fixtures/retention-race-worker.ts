@@ -32,6 +32,7 @@ if (MODE === "cleanup") {
 		runDir: RUN_DIR,
 		runId: RUN_ID,
 		orchestratorName: ORCHESTRATOR_NAME,
+		retentionThresholdEpochMs: Date.now(),
 	});
 	out({
 		mode: MODE,

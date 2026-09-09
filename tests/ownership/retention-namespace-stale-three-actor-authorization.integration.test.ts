@@ -98,7 +98,12 @@ describe("stale three-actor retirement authorization", () => {
 			let initialCBlockedWhileAHeldMutex = false;
 			const barrierSab = new Int32Array(new SharedArrayBuffer(4));
 			const outcome = retireRunDirectoryInternal(
-				{ driver: nodeSqliteDriver, runDir: runBDir, runId: RUN_B },
+				{
+					driver: nodeSqliteDriver,
+					runDir: runBDir,
+					runId: RUN_B,
+					retentionThresholdEpochMs: Date.now(),
+				},
 				{
 					onFaultPoint: (point) => {
 						if (point === "AFTER_PRE_RENAME_VERIFICATION") {

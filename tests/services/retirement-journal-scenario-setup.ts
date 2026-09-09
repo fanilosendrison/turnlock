@@ -12,6 +12,7 @@ import {
 	type RetirementReadyMarkerV1,
 	retiredDirectoryName,
 } from "../../src/services/retirement-journal.js";
+import { commitTerminalDone } from "../helpers/terminal-workflow.js";
 
 export const RUN_ID = "01HX000000000000000000000B";
 export const ORCHESTRATOR_NAME = "journal-orch";
@@ -78,6 +79,9 @@ export function makeRetiredPayload(root: string): {
 		contentionDeadlineMs: 5000,
 	});
 	assert.strictEqual(bootstrapped.kind, "BOOTSTRAPPED");
+	if (bootstrapped.kind === "BOOTSTRAPPED") {
+		commitTerminalDone(runDb.connection, bootstrapped, now - 100_000);
+	}
 	runDb.connection.exec(
 		`UPDATE run_ownership SET lease_until_epoch_ms = ${Date.now() - 1000} WHERE singleton = 1`,
 	);
@@ -88,6 +92,7 @@ export function makeRetiredPayload(root: string): {
 		runId: RUN_ID,
 		busyTimeoutMs: 2000,
 		contentionDeadlineMs: 5000,
+		retentionThresholdEpochMs: Date.now(),
 	});
 	assert.strictEqual(claim.kind, "CLAIMED");
 	if (claim.kind !== "CLAIMED") throw new Error("setup");

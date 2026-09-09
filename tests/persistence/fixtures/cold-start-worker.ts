@@ -31,9 +31,13 @@ try {
 	const retention = database.connection
 		.prepare("SELECT retention_status FROM run_retention WHERE singleton = 1")
 		.get<{ readonly retention_status: string }>();
+	const lifecycleRows = database.connection
+		.prepare("SELECT COUNT(*) AS count FROM run_workflow_lifecycle")
+		.get<{ readonly count: number }>();
 	if (
 		metadata?.schema_version !== CURRENT_SCHEMA_VERSION ||
-		retention?.retention_status !== "ACTIVE"
+		retention?.retention_status !== "ACTIVE" ||
+		lifecycleRows?.count !== 0
 	) {
 		throw new Error("cold-start worker observed an incomplete schema");
 	}

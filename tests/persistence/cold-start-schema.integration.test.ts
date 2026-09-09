@@ -122,6 +122,9 @@ describe("atomic cold-start schema initialization", () => {
 						"SELECT retention_status FROM run_retention WHERE singleton = 1",
 					)
 					.all<{ readonly retention_status: string }>();
+				const lifecycleRows = database.connection
+					.prepare("SELECT lifecycle_status FROM run_workflow_lifecycle")
+					.all<{ readonly lifecycle_status: string }>();
 				assert.strictEqual(integrity?.integrity_check, "ok");
 				assert.deepStrictEqual(
 					metadataRows.map(({ schema_version }) => schema_version),
@@ -131,6 +134,7 @@ describe("atomic cold-start schema initialization", () => {
 					retentionRows.map(({ retention_status }) => retention_status),
 					["ACTIVE"],
 				);
+				assert.deepStrictEqual(lifecycleRows, []);
 			} finally {
 				database.close();
 			}

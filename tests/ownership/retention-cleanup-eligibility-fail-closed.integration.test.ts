@@ -104,9 +104,19 @@ describe("retention eligibility and fail-closed selection", () => {
 			ageDir(runADir, 100);
 			let retirements = 0;
 			const spy: typeof productionRetirement = {
-				retireRunDirectory: (runDir, runId) => {
+				retireRunDirectory: (
+					runDir,
+					runId,
+					orchestratorName,
+					retentionThresholdEpochMs,
+				) => {
 					retirements++;
-					return productionRetirement.retireRunDirectory(runDir, runId);
+					return productionRetirement.retireRunDirectory(
+						runDir,
+						runId,
+						orchestratorName,
+						retentionThresholdEpochMs,
+					);
 				},
 				sweepRetiredDirectories: (retiredRoot, orchestratorName) =>
 					productionRetirement.sweepRetiredDirectories(

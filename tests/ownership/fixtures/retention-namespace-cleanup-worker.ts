@@ -45,6 +45,7 @@ const outcome = retireRunDirectory({
 	runDir: RUN_DIR,
 	runId: RUN_ID,
 	orchestratorName: ORCHESTRATOR_NAME,
+	retentionThresholdEpochMs: Date.now(),
 });
 writeResult({
 	kind: outcome.kind,

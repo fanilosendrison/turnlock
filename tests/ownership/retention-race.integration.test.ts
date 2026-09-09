@@ -21,6 +21,7 @@ import {
 } from "../../src/services/run-retirement.js";
 import { spawnNode } from "../helpers/node-subprocess.js";
 import { cleanupTempDir, makeTempDir } from "../helpers/temp-run-dir.js";
+import { commitTerminalDone } from "../helpers/terminal-workflow.js";
 
 const ORCHESTRATOR_NAME = "retention-race-orch";
 const RUN_ID = "01HX000000000000000000000B";
@@ -61,6 +62,9 @@ function seedExpiredForeignRun(runDir: string): void {
 		contentionDeadlineMs: 5000,
 	});
 	assert.strictEqual(result.kind, "BOOTSTRAPPED");
+	if (result.kind === "BOOTSTRAPPED") {
+		commitTerminalDone(runDb.connection, result, Date.now() - 100 * DAY_MS);
+	}
 	// Adversarial initial state: HELD with an expired lease — both the
 	// takeover and the retirement claim consider it a valid target.
 	runDb.connection.exec(
@@ -98,6 +102,7 @@ describe("retention cleanup vs takeover race", () => {
 				expectedOrchestratorName: ORCHESTRATOR_NAME,
 				busyTimeoutMs: 2000,
 				contentionDeadlineMs: 5000,
+				retentionThresholdEpochMs: Date.now(),
 			});
 			assert.strictEqual(claim.kind, "CLAIMED");
 			if (claim.kind !== "CLAIMED" || claim.databaseIdentity === null) {
@@ -128,6 +133,7 @@ describe("retention cleanup vs takeover race", () => {
 					runDir,
 					runId: RUN_ID,
 					orchestratorName: ORCHESTRATOR_NAME,
+					retentionThresholdEpochMs: Date.now(),
 				}),
 				{ kind: "DELETED" },
 			);
@@ -211,6 +217,7 @@ describe("retention cleanup vs takeover race", () => {
 						runDir,
 						runId: RUN_ID,
 						orchestratorName: ORCHESTRATOR_NAME,
+						retentionThresholdEpochMs: Date.now(),
 					});
 					assert.deepStrictEqual(retry, { kind: "DELETED" });
 					assert.strictEqual(existsSync(runDir), false);
