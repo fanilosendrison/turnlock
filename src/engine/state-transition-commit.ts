@@ -13,6 +13,7 @@ import {
 	claimInitialDispatchUnderFence as sqliteClaimInitialDispatchUnderFence,
 	commitState as sqliteCommitState,
 } from "../persistence/sqlite/run-state-store.js";
+import type { WorkflowCompletionKind } from "../persistence/sqlite/workflow-lifecycle.js";
 import { clock as defaultClock } from "../services/clock.js";
 import type { StateFile } from "../services/state-io.js";
 import {
@@ -30,6 +31,7 @@ import type { StateTransitionContext } from "./state-commit-contracts.js";
 export function commitStateWithProjection<S extends object>(
 	ctx: StateTransitionContext,
 	nextState: StateFile<S>,
+	terminalKind?: WorkflowCompletionKind,
 ): CommittedState<object> {
 	const stateRecord: StateRecord<S> = {
 		schemaVersion: nextState.schemaVersion,
@@ -61,6 +63,7 @@ export function commitStateWithProjection<S extends object>(
 		nowEpochMs: defaultClock.nowEpochMs(),
 		nowIso: defaultClock.nowWallIso(),
 		leaseClockEpochMs: () => defaultClock.nowEpochMs(),
+		...(terminalKind !== undefined ? { terminalKind } : {}),
 	});
 	switch (result.kind) {
 		case "COMMITTED": {
@@ -95,6 +98,11 @@ export function commitStateWithProjection<S extends object>(
 		case "REVISION_CONFLICT":
 			throw new StateRevisionConflictError(
 				`State revision conflict: expected ${ctx.stateRevision}`,
+				stateOperationErrorOptions(ctx),
+			);
+		case "WORKFLOW_TERMINAL":
+			throw new ProtocolError(
+				"State commit rejected because the workflow is already terminal",
 				stateOperationErrorOptions(ctx),
 			);
 		case "DB_FAILURE":

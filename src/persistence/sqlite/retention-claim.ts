@@ -26,8 +26,8 @@
 //
 // Failure policy for the destructive operation: only CLAIMED and
 // ALREADY_RETIRING authorize the filesystem retirement.  Every other
-// result (LIVE_OWNER, UNKNOWN, DB_CONTENTION_TIMEOUT, DB_FAILURE) keeps
-// the directory.
+// result (LIVE_OWNER, NOT_ELIGIBLE, UNKNOWN, DB_CONTENTION_TIMEOUT,
+// DB_FAILURE) keeps the directory.
 import * as fs from "node:fs";
 import { generateRunId } from "../../services/run-id.js";
 import {
@@ -53,6 +53,7 @@ import {
 	captureDatabaseIdentity,
 	databaseIdentitiesEqual,
 } from "./run-database-filesystem-identity.js";
+import { evaluateWorkflowRetentionEligibilityInTransaction } from "./workflow-lifecycle.js";
 
 export type {
 	ClaimRunForRetentionDeletionParams,
@@ -114,16 +115,24 @@ function validateRetiredStateInTransaction(
  *       ALREADY_RETIRING with the persisted token (or UNKNOWN when the
  *       state is incoherent — never authorize deletion on it).
  *    4. HELD + live lease → LIVE_OWNER (must keep).
- *    5. FREE, or HELD with an expired lease → commit ACTIVE → RETIRING
- *       (fresh durable token, fence the stale owner) in one transaction.
- *       The transition must mutate exactly one row or the claim fails.
- *    6. Anything unreadable, mismatched, or incoherent → UNKNOWN (keep).
+ *    5. FREE, or HELD with an expired lease → require durable TERMINAL
+ *       workflow status older than the cleanup-pass retention threshold.
+ *    6. Eligible workflow → commit ACTIVE → RETIRING (fresh durable token,
+ *       fence the stale owner) in one transaction. The transition must
+ *       mutate exactly one row or the claim fails.
+ *    7. Anything unreadable, mismatched, or incoherent → UNKNOWN (keep).
  *
  *  The claim NEVER creates a database file: a RUN_DIR without a SQLite
  *  authority returns UNKNOWN so legacy directories fail closed (kept). */
 export function claimRunForRetentionDeletion(
 	params: ClaimRunForRetentionDeletionParams,
 ): RunRetentionClaimResult {
+	if (
+		!Number.isFinite(params.retentionThresholdEpochMs) ||
+		!Number.isInteger(params.retentionThresholdEpochMs)
+	) {
+		return { kind: "UNKNOWN", reason: "invalid retention threshold" };
+	}
 	if (!fs.existsSync(params.dbPath)) {
 		return {
 			kind: "UNKNOWN",
@@ -294,6 +303,20 @@ export function claimRunForRetentionDeletion(
 					reason: `incoherent ownership state: status=${ownership.status}, lease=${String(ownership.leaseUntilEpochMs)}`,
 				};
 			}
+			// 4. Workflow terminality and retention age are authoritative.
+			// Directory mtime is only a discovery prefilter outside this claim.
+			const eligibility = evaluateWorkflowRetentionEligibilityInTransaction(
+				db,
+				incarnationRow.incarnation_id,
+				params.retentionThresholdEpochMs,
+			);
+			if (eligibility.kind !== "ELIGIBLE") {
+				rollback(db);
+				return {
+					kind: "NOT_ELIGIBLE",
+					reason: eligibility.kind,
+				};
+			}
 			// Re-check the path immediately before the irreversible claim.
 			// Production callers hold the namespace mutex, while this second
 			// identity check also fails closed for direct/adversarial callers.
@@ -308,7 +331,7 @@ export function claimRunForRetentionDeletion(
 					reason: "SQLite authority filesystem identity changed before claim",
 				};
 			}
-			// 4. Irreversible retirement claim: fence the stale owner and
+			// 5. Irreversible retirement claim: fence the stale owner and
 			//    flip ACTIVE → RETIRING in the same transaction.  The
 			//    transition must mutate exactly one row (proven inside
 			//    applyRetirementInTransaction) or this fails closed.

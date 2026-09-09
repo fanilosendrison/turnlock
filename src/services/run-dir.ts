@@ -71,6 +71,7 @@ export function cleanupOldRuns(
 					runDir,
 					entry.name,
 					orchestratorName,
+					thresholdEpoch,
 				);
 			} catch {
 				// A retirement failure is an ambiguous state — fail closed

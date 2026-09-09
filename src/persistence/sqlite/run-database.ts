@@ -7,11 +7,17 @@
 import { DbIntegrityError } from "./errors.js";
 import { beginImmediate, commit, rollback } from "./ownership.js";
 import {
+	ensureRetentionRowInTransaction,
+	RETENTION_STATUS_ACTIVE,
 	RETENTION_STATUS_RETIRING,
 	readRetentionRow,
 } from "./retention-state.js";
 import { CURRENT_SCHEMA_VERSION, SCHEMA_DDL } from "./schema.js";
 import type { SqliteConnection, SqliteDriver } from "./sqlite-driver.js";
+import {
+	migrateWorkflowLifecycleInTransaction,
+	validateWorkflowLifecycleSchemaInTransaction,
+} from "./workflow-lifecycle-migration.js";
 export interface RunDatabaseConfig {
 	readonly driver: SqliteDriver;
 	readonly dbPath: string;
@@ -30,77 +36,117 @@ function configurePragmas(db: SqliteConnection, busyTimeoutMs: number): void {
 	db.exec(`PRAGMA synchronous = FULL`);
 	db.exec(`PRAGMA foreign_keys = ON`);
 }
-/** Atomic schema initialization, metadata check, and v1 → v2 migration.
- *
- *  `SCHEMA_DDL` and every metadata mutation share one
- *  BEGIN IMMEDIATE ... COMMIT transaction. Concurrent first-open attempts
- *  therefore serialize before creating any schema object, and a failure at
- *  any initialization frontier rolls the complete schema back:
- *    - no metadata row        → fresh database: insert version 2 + ACTIVE
- *      retention row;
- *    - version 1              → v1→v2 migration: create the retention row
- *      as ACTIVE (v1 databases could not be RETIRING) and bump the version;
- *    - version 2              → VALIDATE the existing retention row: it
- *      must exist with a recognized status, and a RETIRING row must carry
- *      a retirement token and claim timestamp.  A v2 database with a
- *      missing or incoherent security row is an integrity failure — the
- *      open fails closed, never silently recreating ACTIVE;
- *    - anything else          → fail closed.
- *
- *  Every existing v1 database therefore migrates safely to ACTIVE
- *  retention eligibility; a run can only ever be RETIRING through the
- *  transactional retirement claim. */
+function assertRetiringOwnershipIsCoherent(db: SqliteConnection): void {
+	const ownership = db
+		.prepare(`SELECT incarnation_id, ownership_status, owner_token, owner_pid,
+		        acquired_at_epoch_ms, lease_until_epoch_ms
+		 FROM run_ownership WHERE singleton = 1`)
+		.get() as
+		| {
+				readonly incarnation_id: string;
+				readonly ownership_status: string;
+				readonly owner_token: string | null;
+				readonly owner_pid: number | null;
+				readonly acquired_at_epoch_ms: number | null;
+				readonly lease_until_epoch_ms: number | null;
+		  }
+		| undefined;
+	const incarnation = db
+		.prepare("SELECT incarnation_id FROM run_incarnation WHERE singleton = 1")
+		.get<{ readonly incarnation_id: string }>();
+	const state = db
+		.prepare("SELECT incarnation_id FROM run_state WHERE singleton = 1")
+		.get<{ readonly incarnation_id: string }>();
+	if (
+		ownership === undefined ||
+		incarnation === undefined ||
+		state === undefined ||
+		ownership.incarnation_id !== incarnation.incarnation_id ||
+		state.incarnation_id !== incarnation.incarnation_id ||
+		ownership.ownership_status !== "FREE" ||
+		ownership.owner_token !== null ||
+		ownership.owner_pid !== null ||
+		ownership.acquired_at_epoch_ms !== null ||
+		ownership.lease_until_epoch_ms !== null
+	) {
+		throw new DbIntegrityError(
+			"RETIRING authority lacks coherent released ownership and state",
+		);
+	}
+}
+
+/** Validate the retention singleton without ever rebuilding current state. */
+function validateRetentionSchemaState(db: SqliteConnection): number | null {
+	const retention = readRetentionRow(db);
+	if (retention === null || retention.retentionStatus === null) {
+		throw new DbIntegrityError(
+			"run_retention row missing or unrecognized — database integrity failure",
+		);
+	}
+	if (retention.retentionStatus === RETENTION_STATUS_ACTIVE) {
+		if (
+			retention.retirementToken !== null ||
+			retention.retirementClaimedAtEpochMs !== null
+		) {
+			throw new DbIntegrityError(
+				"ACTIVE retention row carries retirement metadata",
+			);
+		}
+		return null;
+	}
+	if (
+		retention.retentionStatus !== RETENTION_STATUS_RETIRING ||
+		retention.retirementToken === null ||
+		retention.retirementClaimedAtEpochMs === null ||
+		!Number.isSafeInteger(retention.retirementClaimedAtEpochMs) ||
+		retention.retirementClaimedAtEpochMs < 0
+	) {
+		throw new DbIntegrityError(
+			"RETIRING row lacks coherent retirement metadata",
+		);
+	}
+	assertRetiringOwnershipIsCoherent(db);
+	return retention.retirementClaimedAtEpochMs;
+}
+
+/** Atomically initialize or migrate the SQLite authority through schema v3. */
 function initializeSchema(db: SqliteConnection): void {
 	beginImmediate(db);
 	try {
 		db.exec(SCHEMA_DDL);
 		const existing = db
 			.prepare("SELECT schema_version FROM schema_metadata WHERE singleton = 1")
-			.get() as
-			| {
-					schema_version: number;
-			  }
-			| undefined;
+			.get() as { readonly schema_version: number } | undefined;
 		if (existing === undefined) {
 			db.prepare(
 				"INSERT INTO schema_metadata (singleton, schema_version) VALUES (1, ?)",
 			).run(CURRENT_SCHEMA_VERSION);
-			db.prepare(`INSERT OR IGNORE INTO run_retention
-				 (singleton, retention_status)
-				 VALUES (1, 'ACTIVE')`).run();
-		} else if (existing.schema_version === 1) {
-			// v1 → v2 migration: establish retention eligibility as ACTIVE.
-			db.prepare(`INSERT OR IGNORE INTO run_retention
-				 (singleton, retention_status)
-				 VALUES (1, 'ACTIVE')`).run();
+			ensureRetentionRowInTransaction(db);
+			validateWorkflowLifecycleSchemaInTransaction(db);
+		} else if (existing.schema_version === 1 || existing.schema_version === 2) {
+			if (existing.schema_version === 1) {
+				ensureRetentionRowInTransaction(db);
+			}
+			const legacyRetirementClaimedAtEpochMs = validateRetentionSchemaState(db);
+			if (
+				existing.schema_version === 1 &&
+				legacyRetirementClaimedAtEpochMs !== null
+			) {
+				throw new DbIntegrityError(
+					"schema-v1 authority cannot carry a RETIRING claim",
+				);
+			}
+			migrateWorkflowLifecycleInTransaction(
+				db,
+				legacyRetirementClaimedAtEpochMs,
+			);
 			db.prepare(
 				"UPDATE schema_metadata SET schema_version = ? WHERE singleton = 1",
 			).run(CURRENT_SCHEMA_VERSION);
+			validateWorkflowLifecycleSchemaInTransaction(db);
 		} else if (existing.schema_version === CURRENT_SCHEMA_VERSION) {
-			// v2: the retention security row is part of the schema contract.
-			// A missing row must never be silently rebuilt as ACTIVE — that
-			// would resurrect deletion eligibility in the permissive
-			// direction.
-			const retention = readRetentionRow(db);
-			if (retention === null) {
-				throw new DbIntegrityError(
-					"schema v2 run_retention row missing — database integrity failure",
-				);
-			}
-			if (retention.retentionStatus === null) {
-				throw new DbIntegrityError(
-					"schema v2 run_retention status unrecognized — database integrity failure",
-				);
-			}
-			if (
-				retention.retentionStatus === RETENTION_STATUS_RETIRING &&
-				(retention.retirementToken === null ||
-					retention.retirementClaimedAtEpochMs === null)
-			) {
-				throw new DbIntegrityError(
-					"schema v2 RETIRING row lacks retirement token/timestamp — database integrity failure",
-				);
-			}
+			validateRetentionSchemaState(db);
+			validateWorkflowLifecycleSchemaInTransaction(db);
 		} else {
 			throw new Error(
 				`SQLite schema version mismatch: expected ${CURRENT_SCHEMA_VERSION}, got ${existing.schema_version}`,

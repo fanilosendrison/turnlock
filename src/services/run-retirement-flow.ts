@@ -38,6 +38,7 @@ function retireUnderMutex(params: {
 	readonly driver: SqliteDriver;
 	readonly runDir: string;
 	readonly runId: string;
+	readonly retentionThresholdEpochMs: number;
 	readonly orchestratorName?: string;
 	readonly orchestratorBaseDir: string;
 	readonly dependencies: RunRetirementInternalDependencies;
@@ -52,10 +53,13 @@ function retireUnderMutex(params: {
 			: {}),
 		busyTimeoutMs: 2000,
 		contentionDeadlineMs: 5000,
+		retentionThresholdEpochMs: params.retentionThresholdEpochMs,
 	});
 	switch (claim.kind) {
 		case "LIVE_OWNER":
 			return { kind: "KEPT", reason: "LIVE_OWNER" };
+		case "NOT_ELIGIBLE":
+			return { kind: "KEPT", reason: claim.reason };
 		case "UNKNOWN":
 			return { kind: "KEPT", reason: "UNKNOWN" };
 		case "DB_FAILURE":
@@ -136,7 +140,7 @@ export function retireRunDirectoryInternal(
 	params: RetireRunDirectoryParams,
 	dependencies: RunRetirementInternalDependencies,
 ): RunRetirementOutcome {
-	const { driver, runDir, runId } = params;
+	const { driver, runDir, runId, retentionThresholdEpochMs } = params;
 	if (!isValidRunId(runId)) {
 		return { kind: "KEPT", reason: "UNKNOWN" };
 	}
@@ -162,6 +166,7 @@ export function retireRunDirectoryInternal(
 			driver,
 			runDir,
 			runId,
+			retentionThresholdEpochMs,
 			...(params.orchestratorName !== undefined
 				? { orchestratorName: params.orchestratorName }
 				: {}),
@@ -204,12 +209,18 @@ export function retireRunDirectoryInternal(
 /** Build the production filesystem-retirement delegate for a driver. */
 export function buildRunRetirement(driver: SqliteDriver): RunDirRetirement {
 	return {
-		retireRunDirectory: (runDir, runId, orchestratorName) =>
+		retireRunDirectory: (
+			runDir,
+			runId,
+			orchestratorName,
+			retentionThresholdEpochMs,
+		) =>
 			retireRunDirectory({
 				driver,
 				runDir,
 				runId,
-				...(orchestratorName !== undefined ? { orchestratorName } : {}),
+				orchestratorName,
+				retentionThresholdEpochMs,
 			}),
 		sweepRetiredDirectories: (retiredRoot, orchestratorName) =>
 			sweepRetiredRunDirectories({ driver, retiredRoot, orchestratorName }),

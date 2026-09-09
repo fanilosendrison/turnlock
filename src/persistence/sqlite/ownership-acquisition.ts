@@ -28,6 +28,10 @@ import {
 	readRetentionStatus,
 } from "./retention-state.js";
 import type { SqliteConnection } from "./sqlite-driver.js";
+import {
+	ensureWorkflowLifecycleRowInTransaction,
+	readWorkflowLifecycleRow,
+} from "./workflow-lifecycle.js";
 
 const CAS_SQL = `
 UPDATE run_ownership
@@ -86,6 +90,11 @@ export function acquireOwnershipDirectInTransaction(
 	nowEpochMs: number,
 	leaseDurationMs: number,
 ): AcquireOwnershipDirectInTransactionResult {
+	if (readWorkflowLifecycleRow(db, incarnationId) === null) {
+		throw new DbIntegrityError(
+			"workflow lifecycle missing — direct acquisition refused",
+		);
+	}
 	ensureRetentionRowInTransaction(db);
 	const retentionStatus = readRetentionStatus(db);
 	if (retentionStatus === RETENTION_STATUS_RETIRING) {
@@ -201,6 +210,22 @@ export function acquireOwnership(params: AcquireParams): AcquireResult {
 			return { kind: "DB_FAILURE", cause: error };
 		}
 		const lockEpochMs = (params.leaseClockEpochMs ?? Date.now)();
+		try {
+			if (readWorkflowLifecycleRow(db, incarnationId) === null) {
+				const stateExists =
+					db.prepare("SELECT 1 FROM run_state WHERE singleton = 1").get() !==
+					undefined;
+				if (stateExists) {
+					throw new DbIntegrityError(
+						"established run is missing workflow lifecycle state",
+					);
+				}
+				ensureWorkflowLifecycleRowInTransaction(db, incarnationId);
+			}
+		} catch (error) {
+			rollback(db);
+			return { kind: "DB_FAILURE", cause: error };
+		}
 		ensureRetentionRowInTransaction(db);
 		const retentionStatus = readRetentionStatus(db);
 		if (retentionStatus === RETENTION_STATUS_RETIRING) {

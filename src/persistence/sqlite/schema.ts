@@ -1,5 +1,5 @@
 // SQLite schema — authoritative tables for run incarnation, ownership,
-// retention eligibility, and state.  All mutations happen inside
+// workflow lifecycle, retention eligibility, and state. All mutations happen inside
 // transactions fenced by the owner's fence token (or by the retention
 // retirement claim).
 //
@@ -7,7 +7,9 @@
 //   1 — initial (TL-F-001 fix)
 //   2 — added run_retention: durable, irreversible retirement claim that
 //       serializes retention deletion against ownership acquisition.
-export const CURRENT_SCHEMA_VERSION = 2;
+//   3 — added run_workflow_lifecycle: durable terminality evidence that
+//       separates workflow completion from execution ownership.
+export const CURRENT_SCHEMA_VERSION = 3;
 // DDL is idempotent (CREATE TABLE IF NOT EXISTS) and executed at every
 // database open inside the same BEGIN IMMEDIATE ... COMMIT transaction as
 // the schema_metadata version check/migration. This makes first-open schema
@@ -57,6 +59,33 @@ CREATE TABLE IF NOT EXISTS run_retention (
         CHECK (retention_status IN ('ACTIVE', 'RETIRING')),
     retirement_token TEXT,
     retirement_claimed_at_epoch_ms INTEGER
+);
+
+-- Exactly one row per established run. Workflow lifecycle is independent
+-- from execution ownership and from the irreversible retention claim.
+-- Only explicit done/fail transitions terminalize a current workflow. The
+-- legacy-retention kind records a v2 claim that had already crossed its
+-- no-return frontier before schema-v3 migration.
+CREATE TABLE IF NOT EXISTS run_workflow_lifecycle (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    incarnation_id TEXT NOT NULL,
+    lifecycle_status TEXT NOT NULL
+        CHECK (lifecycle_status IN ('NONTERMINAL', 'TERMINAL')),
+    terminal_kind TEXT
+        CHECK (terminal_kind IN ('DONE', 'FAIL', 'LEGACY_RETENTION_CLAIM')),
+    terminal_at_epoch_ms INTEGER,
+    CHECK (
+        (lifecycle_status = 'NONTERMINAL'
+         AND terminal_kind IS NULL
+         AND terminal_at_epoch_ms IS NULL)
+        OR
+        (lifecycle_status = 'TERMINAL'
+         AND terminal_kind IS NOT NULL
+         AND terminal_at_epoch_ms IS NOT NULL
+         AND terminal_at_epoch_ms >= 0)
+    ),
+    FOREIGN KEY (incarnation_id)
+        REFERENCES run_incarnation(incarnation_id)
 );
 
 -- Exactly one row per run.  The authoritative state snapshot.

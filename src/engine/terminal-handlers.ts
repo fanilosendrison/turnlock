@@ -112,7 +112,7 @@ export async function handleDone<S extends object>(
 		accumulatedDurationMs,
 		terminalResult,
 	};
-	commitStateWithProjection(ctx, newState);
+	commitStateWithProjection(ctx, newState, "DONE");
 	// 4. Project canonical output.json (fenced) — must happen before
 	//    announcing success, so a crash after commit but before projection
 	//    does not emit a misleading success event.
@@ -169,7 +169,7 @@ export async function handleFail<S extends object>(
 		phasesExecuted: state.phasesExecuted + 1,
 		accumulatedDurationMs,
 	};
-	commitStateWithProjection(ctx, newState);
+	commitStateWithProjection(ctx, newState, "FAIL");
 	const nowIso = clock.nowWallIso();
 	ctx.logger.emit({
 		eventType: "phase_error",

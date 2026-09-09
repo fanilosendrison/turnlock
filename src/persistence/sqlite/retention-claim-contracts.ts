@@ -33,6 +33,10 @@ export type RunRetentionClaimResult =
 			readonly kind: "LIVE_OWNER";
 			readonly leaseUntilEpochMs: number;
 	  }
+	| {
+			readonly kind: "NOT_ELIGIBLE";
+			readonly reason: "WORKFLOW_NOT_TERMINAL" | "RETENTION_WINDOW";
+	  }
 	| { readonly kind: "UNKNOWN"; readonly reason: string }
 	| { readonly kind: "DB_CONTENTION_TIMEOUT" }
 	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
@@ -44,5 +48,7 @@ export interface ClaimRunForRetentionDeletionParams {
 	readonly expectedOrchestratorName?: string;
 	readonly busyTimeoutMs: number;
 	readonly contentionDeadlineMs: number;
+	/** Durable terminal time must be at or before this cleanup-pass cutoff. */
+	readonly retentionThresholdEpochMs: number;
 	readonly leaseClockEpochMs?: () => number;
 }

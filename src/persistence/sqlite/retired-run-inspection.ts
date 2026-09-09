@@ -15,6 +15,12 @@
 import * as fs from "node:fs";
 import { CURRENT_SCHEMA_VERSION } from "./schema.js";
 import type { SqliteDriver } from "./sqlite-driver.js";
+import {
+	readWorkflowLifecycleRow,
+	WORKFLOW_STATUS_TERMINAL,
+} from "./workflow-lifecycle.js";
+
+const LEGACY_RETIRING_SCHEMA_VERSION = 2;
 
 export interface InspectRetiredRunAuthorityParams {
 	readonly driver: SqliteDriver;
@@ -93,10 +99,13 @@ export function inspectRetiredRunAuthority(
 		if (metadata === undefined) {
 			return { kind: "INVALID", reason: "schema_metadata row missing" };
 		}
-		if (metadata.schema_version !== CURRENT_SCHEMA_VERSION) {
+		if (
+			metadata.schema_version !== CURRENT_SCHEMA_VERSION &&
+			metadata.schema_version !== LEGACY_RETIRING_SCHEMA_VERSION
+		) {
 			return {
 				kind: "INVALID",
-				reason: `schema version mismatch: expected ${CURRENT_SCHEMA_VERSION}, got ${metadata.schema_version}`,
+				reason: `unsupported retired schema version: ${metadata.schema_version}`,
 			};
 		}
 		// 2. Run identity — run_id matches, incarnation id present,
@@ -174,7 +183,28 @@ export function inspectRetiredRunAuthority(
 		if (retention.retirement_claimed_at_epoch_ms === null) {
 			return { kind: "INVALID", reason: "retirement claim timestamp missing" };
 		}
-		// 4. Ownership — must be FREE with every stale-owner field cleared:
+		// 4. Workflow lifecycle — schema-v3 payloads must prove terminality.
+		// Schema-v2 payloads are grandfathered only after the RETIRING proof
+		// above because they crossed the irreversible frontier before lifecycle
+		// evidence existed.
+		if (metadata.schema_version === CURRENT_SCHEMA_VERSION) {
+			let lifecycle: ReturnType<typeof readWorkflowLifecycleRow>;
+			try {
+				lifecycle = readWorkflowLifecycleRow(
+					connection,
+					incarnation.incarnation_id,
+				);
+			} catch (error) {
+				return { kind: "UNREADABLE", cause: error };
+			}
+			if (lifecycle === null || lifecycle.status !== WORKFLOW_STATUS_TERMINAL) {
+				return {
+					kind: "INVALID",
+					reason: "retired workflow lifecycle is not terminal",
+				};
+			}
+		}
+		// 5. Ownership — must be FREE with every stale-owner field cleared:
 		//    the retirement claim fenced the owner.
 		const ownership = connection
 			.prepare(

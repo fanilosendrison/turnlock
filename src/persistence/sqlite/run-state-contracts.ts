@@ -1,6 +1,7 @@
 import type { TerminalDoneRecord } from "../../types/artifacts.js";
 import type { LockHandle } from "./ownership-contracts.js";
 import type { SqliteConnection } from "./sqlite-driver.js";
+import type { WorkflowCompletionKind } from "./workflow-lifecycle.js";
 
 export interface StateAuthorityMetadata {
 	readonly runIncarnationId: string;
@@ -54,6 +55,8 @@ export interface CommitStateParams<S extends object> {
 	readonly nowEpochMs: number;
 	readonly nowIso: string;
 	readonly leaseClockEpochMs?: () => number;
+	/** Explicit irreversible workflow transition committed with this state. */
+	readonly terminalKind?: WorkflowCompletionKind;
 }
 
 export type CommitStateResult =
@@ -61,6 +64,7 @@ export type CommitStateResult =
 	| { readonly kind: "STALE_HANDLE" }
 	| { readonly kind: "EXPIRED_HANDLE" }
 	| { readonly kind: "REVISION_CONFLICT" }
+	| { readonly kind: "WORKFLOW_TERMINAL" }
 	| { readonly kind: "DB_FAILURE"; readonly cause: unknown };
 
 export interface ClaimInitialDispatchParams {

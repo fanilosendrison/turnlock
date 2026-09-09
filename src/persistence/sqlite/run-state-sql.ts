@@ -22,6 +22,13 @@ WHERE singleton = 1
         AND run_ownership.fence_token = :fence_token
         AND run_ownership.lease_until_epoch_ms > :now_epoch
   )
+  AND EXISTS (
+      SELECT 1
+      FROM run_workflow_lifecycle
+      WHERE run_workflow_lifecycle.singleton = 1
+        AND run_workflow_lifecycle.incarnation_id = :incarnation_id
+        AND run_workflow_lifecycle.lifecycle_status = 'NONTERMINAL'
+  )
 RETURNING
     state_revision,
     state_json,
@@ -86,6 +93,13 @@ WHERE EXISTS (
       AND fence_token = :fence_token
       AND lease_until_epoch_ms > :now_epoch
 )
+  AND EXISTS (
+      SELECT 1
+      FROM run_workflow_lifecycle
+      WHERE run_workflow_lifecycle.singleton = 1
+        AND run_workflow_lifecycle.incarnation_id = :incarnation_id
+        AND run_workflow_lifecycle.lifecycle_status = 'NONTERMINAL'
+  )
   AND NOT EXISTS (
     SELECT 1 FROM run_state WHERE singleton = 1
   )

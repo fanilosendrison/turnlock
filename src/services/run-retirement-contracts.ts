@@ -22,6 +22,8 @@ export type RunRetirementOutcome =
 			readonly kind: "KEPT";
 			readonly reason:
 				| "LIVE_OWNER"
+				| "WORKFLOW_NOT_TERMINAL"
+				| "RETENTION_WINDOW"
 				| "UNKNOWN"
 				| "DB_FAILURE"
 				| "DB_CONTENTION_TIMEOUT"
@@ -49,6 +51,7 @@ export interface RetireRunDirectoryParams {
 	readonly driver: SqliteDriver;
 	readonly runDir: string;
 	readonly runId: string;
+	readonly retentionThresholdEpochMs: number;
 	readonly orchestratorName?: string;
 }
 
@@ -57,7 +60,8 @@ export interface RunDirRetirement {
 	readonly retireRunDirectory: (
 		runDir: string,
 		runId: string,
-		orchestratorName?: string,
+		orchestratorName: string,
+		retentionThresholdEpochMs: number,
 	) => RunRetirementOutcome;
 	readonly sweepRetiredDirectories: (
 		retiredRoot: string,

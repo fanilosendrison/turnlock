@@ -4,8 +4,42 @@ import { bigintFromStateRow, computeStateDigest } from "./run-state-codec.js";
 import type {
 	CommitStateParams,
 	CommitStateResult,
+	StateRecord,
 } from "./run-state-contracts.js";
 import { COMMIT_STATE_SQL } from "./run-state-sql.js";
+import {
+	readWorkflowLifecycleRow,
+	transitionWorkflowToTerminalInTransaction,
+	WORKFLOW_STATUS_TERMINAL,
+} from "./workflow-lifecycle.js";
+
+function assertTerminalTransitionMatchesState(
+	state: StateRecord<object>,
+	terminalKind: CommitStateParams<object>["terminalKind"],
+): void {
+	const hasPendingContinuation =
+		state.pendingDelegation !== undefined ||
+		state.pendingExternalRequest !== undefined;
+	if (terminalKind === undefined) {
+		if (state.terminalResult !== undefined) {
+			throw new DbIntegrityError(
+				"terminalResult requires an explicit terminal workflow transition",
+			);
+		}
+		return;
+	}
+	if (hasPendingContinuation) {
+		throw new DbIntegrityError(
+			"terminal workflow transition cannot retain a continuation",
+		);
+	}
+	if (terminalKind === "DONE" && state.terminalResult === undefined) {
+		throw new DbIntegrityError("DONE transition requires terminalResult");
+	}
+	if (terminalKind === "FAIL" && state.terminalResult !== undefined) {
+		throw new DbIntegrityError("FAIL transition cannot carry terminalResult");
+	}
+}
 
 /** Commit a state revision under the current ownership fence. */
 export function commitState<S extends object>(
@@ -89,10 +123,34 @@ export function commitState<S extends object>(
 			) {
 				return { kind: "REVISION_CONFLICT" };
 			}
+			const lifecycle = readWorkflowLifecycleRow(db, handle.incarnationId);
+			if (lifecycle === null) {
+				return {
+					kind: "DB_FAILURE",
+					cause: new DbIntegrityError(
+						"workflow lifecycle row missing during commit",
+					),
+				};
+			}
+			if (lifecycle.status === WORKFLOW_STATUS_TERMINAL) {
+				return { kind: "WORKFLOW_TERMINAL" };
+			}
 			return {
 				kind: "DB_FAILURE",
 				cause: new DbIntegrityError("state commit failed for unknown reason"),
 			};
+		}
+		assertTerminalTransitionMatchesState(
+			nextState as StateRecord<object>,
+			params.terminalKind,
+		);
+		if (params.terminalKind !== undefined) {
+			transitionWorkflowToTerminalInTransaction(
+				db,
+				handle.incarnationId,
+				params.terminalKind,
+				lockEpochMs,
+			);
 		}
 		try {
 			commit(db);
