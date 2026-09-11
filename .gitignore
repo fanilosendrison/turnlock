@@ -92,9 +92,10 @@ docs/formalizing-fsm-builder/
 .turnlock/
 .claude/run/
 .pi-subagents/
-AGENTS.md
 !/docs
 /docs/*
+!/docs/repository-governance/
+!/docs/repository-governance/**
 !/docs/sqlite-ownership-migration.md
 !/docs/migrations/
 !/docs/migrations/**
