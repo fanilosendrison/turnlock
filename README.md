@@ -8,6 +8,11 @@
 
 ---
 
+Repository contribution rules and mandatory validation are defined in
+[AGENTS.md](AGENTS.md). Issue routing and Project-specific work classification
+are defined in the
+[Turnlock Engineering profile](docs/repository-governance/turnlock-engineering.md).
+
 ## The problem
 
 In Claude Code (or Codex, or Cursor), you can invoke a script from a skill:
