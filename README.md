@@ -271,6 +271,36 @@ worker("reviewer")
 
 ---
 
+## Shared workspace and resource safety
+
+Turnlock isolates durable workflow authority by run; it does **not** make the
+workspace or another external mutable resource exclusive to that run. Two
+independent runs may be valid and concurrently authoritative while still having
+access to the same files, Git index, repository refs, remote branch, database,
+or API resource.
+
+The boundary is explicit:
+
+```text
+run ownership    != resource ownership
+run fencing      != resource fencing
+run-state safety != external-effect safety
+```
+
+The consumer/runtime owns the physical execution context, the domain
+orchestrator owns knowledge of resource conflicts and concurrency policy, and a
+resource-aware system must enforce any required worktree isolation, lease,
+fencing token, CAS, transaction, or other serialization mechanism. Turnlock
+Core does not infer those semantics from `cwd`, paths, Git metadata, or External
+Request payloads.
+
+A Turnlock run reaching `DONE` therefore proves a valid terminal workflow
+transition, not that concurrent external business effects were correctly
+serialized. See [ADR-0003](docs/adr/0003-shared-resource-safety-boundary.md) and
+the [shared resource safety boundary](docs/architecture/resource-safety-boundary.md).
+
+---
+
 ## External effects and robustness levels
 
 Turnlock does not make phases transactional. Consumers choose the robustness level that matches each external effect. Existing delegation remains the level for agent work with Turnlock's delegation retry policy; External Requests use a separate, non-retrying path.
@@ -384,6 +414,7 @@ pnpm run build     # emit ./dist from src/
 |----------|-------------|
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records (why decisions were made) |
 | [`docs/architecture/delegation-model.md`](docs/architecture/delegation-model.md) | Current delegation model: shape, logical target, runtime execution |
+| [`docs/architecture/resource-safety-boundary.md`](docs/architecture/resource-safety-boundary.md) | Shared workspace and external-resource safety responsibilities |
 | [`docs/sqlite-ownership-migration.md`](docs/sqlite-ownership-migration.md) | **Upgrade guide**: migrating from legacy `.lock` to SQLite ownership |
 | [`docs/migrations/node-pnpm/`](docs/migrations/node-pnpm/) | Bun → Node/pnpm migration notes and parity contract |
 

@@ -24,3 +24,4 @@ This directory holds Architecture Decision Records (ADRs) for turnlock.
 | - | ----- | ------ |
 | [0001](0001-logical-delegation-targets.md) | Separate Logical Delegation Targets from Runtime Execution | accepted |
 | [0002](0002-process-invocation-run-boundary.md) | Bind Each Process Invocation to One Run | accepted |
+| [0003](0003-shared-resource-safety-boundary.md) | Separate Run Authority from Shared Resource Safety | accepted |
