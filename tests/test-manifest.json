@@ -1,6 +1,6 @@
 {
 	"version": 1,
-	"expectedFiles": 76,
+	"expectedFiles": 77,
 	"testFiles": [
 		"tests/bindings/batch-binding.test.ts",
 		"tests/bindings/external-request-binding.test.ts",
@@ -12,6 +12,7 @@
 		"tests/contracts/external-request-retry-isolation.test.ts",
 		"tests/contracts/surface.test.ts",
 		"tests/contracts/test-integrity.test.ts",
+		"tests/e2e/distinct-run-concurrency.test.ts",
 		"tests/e2e/external-request-durability.test.ts",
 		"tests/e2e/external-request-failures.test.ts",
 		"tests/e2e/external-request-lifecycle.test.ts",
